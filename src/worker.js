@@ -31,9 +31,14 @@ function safeEqual(a, b) {
   return out === 0;
 }
 
-function authOk(request, env) {
+function authOk(request, env, url) {
   if (!env.APP_PASSWORD) return true; // gate disabled
-  const provided = request.headers.get("x-app-password") || "";
+  // Header is used by fetch() calls; the `pw` query param is used by <img>,
+  // <video> and download links, which cannot set custom headers.
+  const provided =
+    request.headers.get("x-app-password") ||
+    (url && url.searchParams.get("pw")) ||
+    "";
   return safeEqual(provided, env.APP_PASSWORD);
 }
 
@@ -55,7 +60,7 @@ export default {
       }
 
       // Everything below is gated.
-      if (!authOk(request, env)) {
+      if (!authOk(request, env, url)) {
         return json({ error: "Unauthorized. Wrong or missing app password." }, 401);
       }
 

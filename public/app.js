@@ -443,8 +443,16 @@ async function runGeneration(model, input, kind, onProgress) {
   }
 }
 
+function resultUrl(prunaUrl) {
+  // <img>/<video>/<a download> can't send headers, so pass the password as a
+  // query param when the gate is on.
+  let u = "/api/result?url=" + encodeURIComponent(prunaUrl);
+  if (authRequired && getPw()) u += "&pw=" + encodeURIComponent(getPw());
+  return u;
+}
+
 function showResult(prunaUrl, kind) {
-  const proxied = "/api/result?url=" + encodeURIComponent(prunaUrl);
+  const proxied = resultUrl(prunaUrl);
   const box = $("result");
   box.innerHTML = "";
   if (kind === "video") {
