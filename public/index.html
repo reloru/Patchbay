@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Pruna Studio</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍊</text></svg>" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <!-- Password gate -->
+    <div id="gate" class="gate hidden">
+      <form id="gate-form" class="gate-card">
+        <h1>🍊 Pruna Studio</h1>
+        <p>Enter the app password to continue.</p>
+        <input id="gate-input" type="password" placeholder="App password" autocomplete="current-password" />
+        <button type="submit">Unlock</button>
+        <p id="gate-error" class="error hidden"></p>
+      </form>
+    </div>
+
+    <!-- Main app -->
+    <div id="app" class="app hidden">
+      <header>
+        <h1>🍊 Pruna Studio</h1>
+        <p class="subtitle">Image &amp; video generation / editing via the Pruna AI API. Nothing is stored.</p>
+      </header>
+
+      <main>
+        <section class="panel controls">
+          <label class="field">
+            <span class="field-label">Model</span>
+            <select id="model-select"></select>
+          </label>
+          <p id="model-blurb" class="blurb"></p>
+
+          <form id="gen-form">
+            <div id="fields"></div>
+            <div class="actions">
+              <button id="generate-btn" type="submit">Generate</button>
+              <button id="reset-btn" type="button" class="secondary">Reset params</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel output">
+          <div id="status" class="status hidden"></div>
+          <div id="result" class="result"></div>
+        </section>
+      </main>
+
+      <footer>
+        <span id="footer-note"></span>
+      </footer>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
