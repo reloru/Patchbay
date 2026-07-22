@@ -155,11 +155,15 @@ function inputControl(f) {
     const c = document.createElement("input");
     c.type = "checkbox";
     c.dataset.field = f.name;
-    c.checked = Boolean(f.default);
+    const base = Boolean(f.default);
+    c.checked = f.invert ? !base : base; // show the user-facing (possibly inverted) value
     label.appendChild(c);
     const span = document.createElement("span");
-    span.textContent = "Enabled";
+    span.textContent = "On";
     label.appendChild(span);
+    c.addEventListener("change", () => {
+      span.textContent = c.checked ? "On" : "Off";
+    });
     return label;
   }
   if (f.type === "enum") {
@@ -276,6 +280,25 @@ function renderRequired(f) {
   return field;
 }
 
+function defaultText(f) {
+  if (f.defaultLabel) return f.defaultLabel;
+  if (f.type === "bool") {
+    const base = Boolean(f.default);
+    return (f.invert ? !base : base) ? "On" : "Off";
+  }
+  if (f.type === "enum") {
+    const o = f.options.find((o) => o.value === f.default);
+    return o ? o.label : String(f.default);
+  }
+  if (f.type === "int" || f.type === "number") {
+    return f.default == null ? null : String(f.default);
+  }
+  if (f.type === "text" || f.type === "textarea") {
+    return f.default ? String(f.default) : "none";
+  }
+  return null;
+}
+
 function renderOptional(f) {
   const opt = document.createElement("div");
   opt.className = "opt disabled";
@@ -290,7 +313,8 @@ function renderOptional(f) {
   name.textContent = f.label;
   const tag = document.createElement("span");
   tag.className = "tag";
-  tag.textContent = "override";
+  const dflt = defaultText(f);
+  tag.textContent = dflt != null ? "Default: " + dflt : "customize";
   head.appendChild(cb);
   head.appendChild(name);
   head.appendChild(tag);
@@ -326,7 +350,7 @@ function readControlValue(f, scope) {
   }
   const el = scope.querySelector(`[data-field="${f.name}"]`);
   if (!el) return undefined;
-  if (f.type === "bool") return el.checked;
+  if (f.type === "bool") return f.invert ? !el.checked : el.checked;
   if (f.type === "int") {
     if (el.value === "") return undefined;
     return parseInt(el.value, 10);
