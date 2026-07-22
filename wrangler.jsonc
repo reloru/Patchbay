@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pruna-studio",
+  "main": "src/worker.js",
+  "compatibility_date": "2025-05-05",
+  "assets": {
+    // Static frontend. Assets are served first; requests with no matching
+    // asset (e.g. /api/*) fall through to the Worker in src/worker.js.
+    "directory": "./public"
+  },
+  "observability": {
+    "enabled": true
+  }
+  // Secrets are NOT stored here. They are set with `wrangler secret put`:
+  //   PRUNA_API_KEY  (required) — your Pruna API key
+  //   APP_PASSWORD   (optional) — shared password gate for the UI
+}
