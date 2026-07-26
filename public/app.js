@@ -76,6 +76,7 @@ function startApp() {
   $("app").classList.remove("hidden");
   buildModelSelect();
   selectModel(MODELS[0].id);
+  initPromptLibrary();
   $("footer-note").textContent =
     "Generations are proxied through a Cloudflare Worker and not stored. Media is cached at most 30s.";
 }
@@ -519,13 +520,168 @@ function showResult(prunaUrls, kind) {
       img.src = proxied;
       item.appendChild(img);
     }
-    const dl = document.createElement("a");
-    dl.className = "download";
-    dl.href = proxied;
-    dl.download = kind === "video" ? "pruna-output.mp4" : "pruna-output";
-    dl.textContent = prunaUrls.length > 1 ? `⬇ Download #${i + 1}` : "⬇ Download";
-    item.appendChild(dl);
+    item.appendChild(downloadButton(proxied, kind, i, prunaUrls.length));
     box.appendChild(item);
+  });
+}
+
+function extFromType(type, kind) {
+  const map = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "video/mp4": "mp4",
+    "video/webm": "webm",
+  };
+  return map[(type || "").toLowerCase()] || (kind === "video" ? "mp4" : "jpg");
+}
+
+// Saving must never navigate the page. A plain <a download> sends iOS Safari to
+// a full-screen file viewer with no way back, which strands the app. Instead we
+// fetch the bytes, then hand them to the native share sheet ("Save Image" /
+// "Save to Files") when available, or trigger a blob download everywhere else.
+function downloadButton(proxiedUrl, kind, index, total) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "download";
+  const idle = total > 1 ? `⬇ Save #${index + 1}` : "⬇ Save";
+  btn.textContent = idle;
+
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "Preparing…";
+    try {
+      const res = await fetch(proxiedUrl);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const blob = await res.blob();
+      const ext = extFromType(blob.type, kind);
+      const name = `pruna-${Date.now()}${total > 1 ? "-" + (index + 1) : ""}.${ext}`;
+      const file = new File([blob], name, { type: blob.type || "application/octet-stream" });
+
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file] });
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      }
+    } catch (err) {
+      if (err && err.name !== "AbortError") setStatus("Save failed: " + err.message, "err");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = idle;
+    }
+  });
+  return btn;
+}
+
+// ---------------------------------------------------------------------------
+// Prompt library
+//
+// Saved prompts live in this browser's localStorage only — they are never sent
+// to the Worker or to Pruna. (The "don't store anything" rule was about
+// generated media; these are your own notes, on your own device.)
+// ---------------------------------------------------------------------------
+const PROMPTS_KEY = "pruna_prompts";
+
+function loadPrompts() {
+  try {
+    const v = JSON.parse(localStorage.getItem(PROMPTS_KEY));
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+function storePrompts(list) {
+  localStorage.setItem(PROMPTS_KEY, JSON.stringify(list));
+}
+
+// The box a saved prompt should load into, for whichever model is selected.
+function primaryPromptEl() {
+  const form = $("gen-form");
+  return (
+    form.querySelector('[data-field="prompt"]') ||
+    form.querySelector('[data-field="voice_script"]') ||
+    form.querySelector('[data-field="instruction_prompt"]') ||
+    form.querySelector("textarea")
+  );
+}
+
+function refreshPromptSelect(keepValue) {
+  const sel = $("prompt-select");
+  const list = loadPrompts();
+  sel.innerHTML = "";
+  const ph = document.createElement("option");
+  ph.value = "";
+  ph.textContent = list.length ? "Saved prompts…" : "No saved prompts yet";
+  sel.appendChild(ph);
+  list.forEach((p, i) => {
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = p.name;
+    sel.appendChild(o);
+  });
+  if (keepValue != null && list[keepValue]) sel.value = String(keepValue);
+}
+
+function initPromptLibrary() {
+  refreshPromptSelect();
+
+  $("prompt-select").addEventListener("change", (e) => {
+    const idx = e.target.value;
+    if (idx === "") return;
+    const p = loadPrompts()[Number(idx)];
+    const el = primaryPromptEl();
+    if (!p || !el) return;
+    el.value = p.text;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    setStatus(`Loaded prompt "${p.name}".`, "ok");
+  });
+
+  $("prompt-save").addEventListener("click", () => {
+    const el = primaryPromptEl();
+    const text = el && el.value.trim();
+    if (!text) {
+      setStatus("Nothing to save — write a prompt first.", "err");
+      return;
+    }
+    const suggested = text.length > 40 ? text.slice(0, 40).trim() + "…" : text;
+    const name = (window.prompt("Save this prompt as:", suggested) || "").trim();
+    if (!name) return;
+
+    const list = loadPrompts();
+    const existing = list.findIndex((p) => p.name === name);
+    if (existing >= 0) {
+      if (!window.confirm(`"${name}" already exists. Replace it?`)) return;
+      list[existing].text = text;
+    } else {
+      list.push({ name, text });
+    }
+    storePrompts(list);
+    refreshPromptSelect(existing >= 0 ? existing : list.length - 1);
+    setStatus(`Saved prompt "${name}".`, "ok");
+  });
+
+  $("prompt-del").addEventListener("click", () => {
+    const sel = $("prompt-select");
+    if (sel.value === "") {
+      setStatus("Pick a saved prompt to delete.", "err");
+      return;
+    }
+    const list = loadPrompts();
+    const p = list[Number(sel.value)];
+    if (!p || !window.confirm(`Delete saved prompt "${p.name}"?`)) return;
+    list.splice(Number(sel.value), 1);
+    storePrompts(list);
+    refreshPromptSelect();
+    setStatus(`Deleted prompt "${p.name}".`, "ok");
   });
 }
 

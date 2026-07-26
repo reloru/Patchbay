@@ -173,6 +173,14 @@ button.secondary:hover { border-color: var(--accent); }
 }
 .result img, .result video { max-width: 100%; border-radius: 10px; display: block; }
 .result .download { display: inline-block; margin-top: 12px; }
+
+.prompt-lib {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.prompt-lib select { flex: 1; min-width: 0; }
+.prompt-lib button { padding: 9px 12px; }
 .result-item + .result-item { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 18px; }
 
 footer { margin-top: 28px; color: var(--muted); font-size: 12px; }

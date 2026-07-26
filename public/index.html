@@ -36,6 +36,13 @@
           <p id="model-blurb" class="blurb"></p>
 
           <form id="gen-form">
+            <div class="prompt-lib">
+              <select id="prompt-select" aria-label="Saved prompts">
+                <option value="">Saved prompts…</option>
+              </select>
+              <button id="prompt-save" type="button" class="secondary" title="Save current prompt">Save</button>
+              <button id="prompt-del" type="button" class="secondary" title="Delete selected prompt">Delete</button>
+            </div>
             <div id="fields"></div>
             <div class="actions">
               <button id="generate-btn" type="submit">Generate</button>
