@@ -204,6 +204,82 @@ export const MODELS = [
     ],
   },
 
+  {
+    id: "flux-2-klein-4b",
+    label: "FLUX.2 Klein 4B",
+    group: "Image generation",
+    kind: "image",
+    blurb: "Very cheap, fast text-to-image; also accepts reference images.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "1:1",
+        options: [
+          ...AR_COMMON,
+          { value: "21:9", label: "21:9 ultrawide" },
+          { value: "9:21", label: "9:21" },
+          { value: "4:5", label: "4:5" },
+          { value: "5:4", label: "5:4" },
+          { value: "match_input_image", label: "Keep reference image size" },
+        ],
+      },
+      { name: "images", label: "Reference image(s) (optional)", type: "image", maxItems: 5, asArray: true },
+      {
+        name: "output_megapixels",
+        label: "Output size",
+        type: "enum",
+        default: "1",
+        options: [
+          { value: "0.25", label: "0.25 MP (smallest)" },
+          { value: "0.5", label: "0.5 MP" },
+          { value: "1", label: "1 MP" },
+          { value: "2", label: "2 MP" },
+          { value: "4", label: "4 MP (largest)" },
+        ],
+      },
+      { name: "go_fast", label: "Fast mode", type: "bool", default: false },
+      OUTPUT_FORMAT,
+      { ...OUTPUT_QUALITY, default: 95 },
+      SEED,
+      moderationFilter(),
+    ],
+  },
+  {
+    id: "wan-image-small",
+    label: "WAN Image Small",
+    group: "Image generation",
+    kind: "image",
+    blurb: "Lightweight text-to-image; can return up to 4 variations at once.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "16:9",
+        options: [
+          { value: "1:1", label: "1:1 square" },
+          { value: "16:9", label: "16:9 landscape" },
+          { value: "9:16", label: "9:16 portrait" },
+          { value: "4:3", label: "4:3" },
+          { value: "3:4", label: "3:4" },
+          { value: "21:9", label: "21:9 ultrawide" },
+          { value: "custom", label: "Custom size" },
+        ],
+      },
+      { name: "width", label: "Width (custom size)", type: "int", default: 1024, min: 256, max: 2048, step: 16 },
+      { name: "height", label: "Height (custom size)", type: "int", default: 1024, min: 256, max: 2048, step: 16 },
+      { name: "num_outputs", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
+      { name: "juiced", label: "Fast mode (juiced)", type: "bool", default: false },
+      OUTPUT_FORMAT,
+      OUTPUT_QUALITY,
+      SEED,
+    ],
+  },
+
   // ───────────────────────── Image editing ─────────────────────────
   {
     id: "qwen-image-edit-plus",
@@ -254,6 +330,24 @@ export const MODELS = [
       },
       SEED,
       moderationFilter(),
+    ],
+  },
+  {
+    id: "p-image-try-on",
+    label: "P-Image-Try-On (Pruna)",
+    group: "Image editing",
+    kind: "image",
+    blurb: "Put garments from reference photos onto a person.",
+    fields: [
+      { name: "person_image", label: "Person photo", type: "image", required: true },
+      { name: "garment_images", label: "Garment photo(s)", type: "image", required: true, maxItems: 6, asArray: true },
+      { name: "prompt", label: "Extra guidance (optional)", type: "text", default: "" },
+      { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: false },
+      { name: "reference_pose", label: "Reference pose image (experimental)", type: "image" },
+      { name: "preserve_input_size", label: "Keep original size", type: "bool", default: true },
+      OUTPUT_FORMAT,
+      { ...OUTPUT_QUALITY, default: 95 },
+      SEED,
     ],
   },
   {
@@ -373,11 +467,139 @@ export const MODELS = [
     ],
   },
   {
+    id: "p-video-animate",
+    label: "P-Video-Animate (Pruna)",
+    group: "Video",
+    kind: "video",
+    blurb: "Make a person from a photo copy the motion in a source video.",
+    fields: [
+      { name: "video", label: "Motion source video (.mp4)", type: "image", accept: "video/*", required: true },
+      { name: "image", label: "Photo of subject to animate", type: "image", required: true },
+      { name: "instruction_prompt", label: "Extra guidance (optional)", type: "text", default: "" },
+      { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: false },
+      {
+        name: "resolution",
+        label: "Resolution",
+        type: "enum",
+        default: "720p",
+        options: [{ value: "720p", label: "720p" }, { value: "1080p", label: "1080p" }],
+      },
+      {
+        name: "target_fps",
+        label: "Frames per second",
+        type: "enum",
+        default: "original",
+        options: [
+          { value: "original", label: "Match source video" },
+          { value: "24", label: "24" },
+          { value: "48", label: "48" },
+        ],
+      },
+      { name: "save_audio", label: "Keep audio", type: "bool", default: true },
+      { name: "ignore_audio", label: "Ignore source audio", type: "bool", default: false },
+      SEED,
+      moderationFilter(),
+    ],
+  },
+  {
+    id: "p-video-replace",
+    label: "P-Video-Replace (Pruna)",
+    group: "Video",
+    kind: "video",
+    blurb: "Swap the person in a video for someone from reference photos.",
+    fields: [
+      { name: "video", label: "Source video (.mp4)", type: "image", accept: "video/*", required: true },
+      { name: "images", label: "Identity photo(s)", type: "image", required: true, maxItems: 3, asArray: true },
+      { name: "instruction_prompt", label: "Extra guidance (optional)", type: "text", default: "" },
+      { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: false },
+      {
+        name: "resolution",
+        label: "Resolution",
+        type: "enum",
+        default: "720p",
+        options: [{ value: "720p", label: "720p" }, { value: "1080p", label: "1080p" }],
+      },
+      {
+        name: "target_fps",
+        label: "Frames per second",
+        type: "enum",
+        default: "original",
+        options: [
+          { value: "original", label: "Match source video" },
+          { value: "24", label: "24" },
+          { value: "48", label: "48" },
+        ],
+      },
+      { name: "save_audio", label: "Keep audio", type: "bool", default: true },
+      { name: "ignore_audio", label: "Ignore source audio", type: "bool", default: false },
+      SEED,
+      moderationFilter(),
+    ],
+  },
+  {
+    id: "p-video-avatar",
+    label: "P-Video-Avatar (Pruna)",
+    group: "Video",
+    kind: "video",
+    blurb: "Talking-head video from one portrait — type a script or upload audio.",
+    fields: [
+      { name: "image", label: "Portrait photo", type: "image", required: true },
+      {
+        name: "voice_script",
+        label: "Script to speak",
+        type: "textarea",
+        required: true,
+        help: "Ignored if you upload an audio file below.",
+      },
+      { name: "audio", label: "Audio file (optional, overrides script)", type: "image", accept: "audio/*" },
+      {
+        name: "voice",
+        label: "Voice",
+        type: "enum",
+        default: "Zephyr (Female)",
+        options: [
+          "Zephyr (Female)", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
+          "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algenib", "Despina",
+          "Erinome", "Laomedeia", "Achernar", "Algieba", "Schedar", "Gacrux", "Pulcherrima",
+          "Achird", "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
+          "Alnilam", "Rasalgethi",
+        ].map((v) => ({ value: v, label: v })),
+      },
+      {
+        name: "voice_language",
+        label: "Language",
+        type: "enum",
+        default: "English (US)",
+        options: [
+          "English (US)", "English (UK)", "Spanish", "French", "German", "Italian",
+          "Portuguese (Brazil)", "Japanese", "Korean", "Hindi",
+        ].map((v) => ({ value: v, label: v })),
+      },
+      {
+        name: "resolution",
+        label: "Resolution",
+        type: "enum",
+        default: "720p",
+        options: [{ value: "720p", label: "720p" }, { value: "1080p", label: "1080p" }],
+      },
+      { name: "video_prompt", label: "How they should act", type: "text", default: "The person is talking." },
+      { name: "voice_prompt", label: "How they should speak", type: "text", default: "Say the following." },
+      { name: "negative_prompt", label: "Things to avoid", type: "text", default: "" },
+      { name: "strength_negative_prompt", label: "Avoidance strength", type: "number", default: 0.5, min: 0, max: 4, step: 0.1 },
+      { name: "disable_prompt_upsampling", label: "Auto-improve prompt", type: "bool", default: false, invert: true },
+      SEED,
+      moderationFilter("disable_safety_filter", true),
+    ],
+  },
+  {
     id: "vace",
     label: "VACE (reference-to-video)",
     group: "Video",
     kind: "video",
-    blurb: "Character-consistent video from a prompt + reference images/video/mask.",
+    blurb:
+      "Character-consistent video from a prompt + reference images/video/mask. " +
+      "Slowest model here — for a usable wait, turn on Speed vs. quality → Fastest, " +
+      "drop Detail (steps) to ~15–20 and Length to ~33 frames.",
     fields: [
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
       { name: "src_ref_images", label: "Reference image(s)", type: "image", maxItems: 3, asArray: true },
@@ -421,6 +643,36 @@ export const MODELS = [
     ],
   },
 ];
+
+// ───────────────────────── Pricing ─────────────────────────
+// Published Pruna list prices, used only for a client-side *estimate*. Pruna's
+// API exposes no balance/credits endpoint, so the app cannot show a real
+// remaining balance — only what a run is expected to cost.
+//   flat       — usd per image output (multiplied by num_outputs where it applies)
+//   per_second — usd per second of output video, keyed by resolution
+//   variable   — Pruna lists it as "priced by multiple properties"; not estimable
+const PRICING = {
+  "p-image": { type: "flat", usd: 0.005 },
+  "p-image-edit": { type: "flat", usd: 0.01 },
+  "flux-dev": { type: "flat", usd: 0.005 },
+  "flux-2-klein-4b": { type: "flat", usd: 0.0001 },
+  "wan-image-small": { type: "flat", usd: 0.005 },
+  "qwen-image": { type: "flat", usd: 0.025 },
+  "qwen-image-fast": { type: "flat", usd: 0.005 },
+  "z-image-turbo": { type: "flat", usd: 0.005 },
+  "qwen-image-edit-plus": { type: "flat", usd: 0.03 },
+  "p-video-animate": { type: "per_second", usd: { "720p": 0.03, "1080p": 0.06 } },
+  "p-video-replace": { type: "per_second", usd: { "720p": 0.03, "1080p": 0.06 } },
+  "p-image-upscale": { type: "variable" },
+  "p-image-try-on": { type: "variable" },
+  "p-video": { type: "variable" },
+  "p-video-avatar": { type: "variable" },
+  "vace": { type: "variable" },
+  "wan-t2v": { type: "variable" },
+  "wan-i2v": { type: "variable" },
+};
+
+for (const m of MODELS) m.price = PRICING[m.id] || { type: "variable" };
 
 // Allow-list of valid model ids (used by the Worker to reject arbitrary models).
 export const MODEL_IDS = new Set(MODELS.map((m) => m.id));
