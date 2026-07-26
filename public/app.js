@@ -107,9 +107,17 @@ function buildModelSelect() {
 function selectModel(id) {
   currentModel = MODELS.find((m) => m.id === id);
   $("model-select").value = id;
-  $("model-blurb").textContent = currentModel.blurb || "";
+  $("model-blurb").textContent = (currentModel.blurb || "") + " " + priceBlurb(currentModel);
   for (const k of Object.keys(uploads)) delete uploads[k];
   renderFields();
+}
+
+function priceBlurb(model) {
+  const p = model.price;
+  if (!p) return "";
+  if (p.type === "flat") return `List price: ${fmtUsd(p.usd)} per image.`;
+  if (p.type === "per_second") return `List price: ${fmtUsd(p.usd["720p"])}/s at 720p, ${fmtUsd(p.usd["1080p"])}/s at 1080p.`;
+  return "List price: varies with your settings.";
 }
 
 // ---------------------------------------------------------------------------
@@ -411,12 +419,14 @@ $("gen-form").addEventListener("submit", async (e) => {
   setStatus("Submitting…", "load");
 
   try {
-    const url = await runGeneration(currentModel.id, input, kind, (state, secs) => {
+    const urls = await runGeneration(currentModel.id, input, kind, (state, secs) => {
       setStatus(`${cap(state)}… ${secs}s elapsed`, "load");
     });
-    if (!url) throw new Error("No output URL returned.");
-    showResult(url, kind);
-    setStatus(`Done in ${Math.round((Date.now() - started) / 1000)}s.`, "ok");
+    if (!urls.length) throw new Error("No output URL returned.");
+    showResult(urls, kind);
+    const secs = Math.round((Date.now() - started) / 1000);
+    const cost = addSpend(currentModel, input, urls.length);
+    setStatus(`Done in ${secs}s.${cost ? " " + cost : ""}`, "ok");
   } catch (err) {
     setStatus("Error: " + err.message, "err");
   } finally {
@@ -439,7 +449,7 @@ async function runGeneration(model, input, kind, onProgress) {
   const data = await startRes.json();
   if (!startRes.ok) throw new Error(data.error || data.message || `HTTP ${startRes.status}`);
 
-  if (data.status === "succeeded" && data.generation_url) return data.generation_url;
+  if (data.status === "succeeded" && data.generation_url) return asUrlList(data.generation_url);
   if (data.status === "failed" || data.status === "error") {
     throw new Error(data.message || data.error || "Generation failed.");
   }
@@ -452,19 +462,32 @@ async function runGeneration(model, input, kind, onProgress) {
   if (!id) throw new Error("No job id returned. Response: " + JSON.stringify(data).slice(0, 240));
 
   const started = Date.now();
-  const maxMs = 12 * 60 * 1000;
+  // Heavy video jobs (VACE especially) can run well past 10 minutes.
+  const maxMs = (kind === "video" ? 30 : 10) * 60 * 1000;
   while (true) {
     await sleep(2500);
-    if (Date.now() - started > maxMs) throw new Error("Timed out waiting for result.");
+    if (Date.now() - started > maxMs) {
+      throw new Error(
+        `Timed out after ${Math.round(maxMs / 60000)} min. Try a lower resolution, ` +
+          "fewer frames/steps, or a faster speed mode."
+      );
+    }
     const sRes = await api("/api/status?id=" + encodeURIComponent(id));
     const s = await sRes.json();
     if (!sRes.ok) throw new Error(s.error || `Status HTTP ${sRes.status}`);
-    if (s.status === "succeeded") return s.generation_url || s.output || s.output_url;
+    if (s.status === "succeeded") return asUrlList(s.generation_url || s.output || s.output_url);
     if (s.status === "failed" || s.status === "error" || s.status === "canceled") {
       throw new Error(s.message || s.error || "Generation failed.");
     }
     onProgress(s.status || "processing", Math.round((Date.now() - started) / 1000));
   }
+}
+
+// Pruna returns generation_url as a plain string for some models and as an
+// array for others (flux-2-klein-4b, wan-image-small with num_outputs > 1).
+function asUrlList(v) {
+  if (!v) return [];
+  return (Array.isArray(v) ? v : [v]).filter(Boolean);
 }
 
 function resultUrl(prunaUrl) {
@@ -475,30 +498,84 @@ function resultUrl(prunaUrl) {
   return u;
 }
 
-function showResult(prunaUrl, kind) {
-  const proxied = resultUrl(prunaUrl);
+function showResult(prunaUrls, kind) {
   const box = $("result");
   box.innerHTML = "";
-  if (kind === "video") {
-    const v = document.createElement("video");
-    v.src = proxied;
-    v.controls = true;
-    v.autoplay = true;
-    v.loop = true;
-    v.muted = true;
-    v.playsInline = true;
-    box.appendChild(v);
-  } else {
-    const img = document.createElement("img");
-    img.src = proxied;
-    box.appendChild(img);
+  prunaUrls.forEach((prunaUrl, i) => {
+    const proxied = resultUrl(prunaUrl);
+    const item = document.createElement("div");
+    item.className = "result-item";
+    if (kind === "video") {
+      const v = document.createElement("video");
+      v.src = proxied;
+      v.controls = true;
+      v.autoplay = true;
+      v.loop = true;
+      v.muted = true;
+      v.playsInline = true;
+      item.appendChild(v);
+    } else {
+      const img = document.createElement("img");
+      img.src = proxied;
+      item.appendChild(img);
+    }
+    const dl = document.createElement("a");
+    dl.className = "download";
+    dl.href = proxied;
+    dl.download = kind === "video" ? "pruna-output.mp4" : "pruna-output";
+    dl.textContent = prunaUrls.length > 1 ? `⬇ Download #${i + 1}` : "⬇ Download";
+    item.appendChild(dl);
+    box.appendChild(item);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Cost estimate
+//
+// Pruna's API has no balance/credits endpoint, so the real remaining balance
+// can only be seen on dashboard.pruna.ai. What we can do is estimate what each
+// run costs from Pruna's published list prices and keep a running total for
+// this browser session (in memory only — nothing is stored).
+// ---------------------------------------------------------------------------
+let sessionSpend = 0;
+let sessionRuns = 0;
+
+function estimateCost(model, input, outputCount) {
+  const p = model.price;
+  if (!p || p.type === "variable") return null;
+  if (p.type === "flat") {
+    const n = Number(input.num_outputs) || outputCount || 1;
+    return p.usd * n;
   }
-  const dl = document.createElement("a");
-  dl.className = "download";
-  dl.href = proxied;
-  dl.download = kind === "video" ? "pruna-output.mp4" : "pruna-output";
-  dl.textContent = "⬇ Download";
-  box.appendChild(dl);
+  if (p.type === "per_second") {
+    const rate = p.usd[input.resolution || "720p"];
+    if (rate == null) return null;
+    const secs = Number(input.duration);
+    if (!secs) return null; // length comes from the source video — unknown here
+    return rate * secs;
+  }
+  return null;
+}
+
+function fmtUsd(v) {
+  return "$" + (v < 0.01 ? v.toFixed(4) : v.toFixed(3)).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function addSpend(model, input, outputCount) {
+  const cost = estimateCost(model, input, outputCount);
+  sessionRuns++;
+  if (cost != null) sessionSpend += cost;
+  updateSpendBar();
+  return cost == null ? "Cost: varies by settings." : `Est. ${fmtUsd(cost)}.`;
+}
+
+function updateSpendBar() {
+  const el = $("spend");
+  if (!el) return;
+  el.textContent =
+    `Session estimate: ${fmtUsd(sessionSpend)} over ${sessionRuns} run${sessionRuns === 1 ? "" : "s"}` +
+    " · estimate only, not a balance";
+  el.classList.remove("hidden");
 }
 
 // ---------------------------------------------------------------------------

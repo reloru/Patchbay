@@ -173,6 +173,16 @@ button.secondary:hover { border-color: var(--accent); }
 }
 .result img, .result video { max-width: 100%; border-radius: 10px; display: block; }
 .result .download { display: inline-block; margin-top: 12px; }
+.result-item + .result-item { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 18px; }
 
 footer { margin-top: 28px; color: var(--muted); font-size: 12px; }
+.spend {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+}
 .error { color: var(--danger); font-size: 13px; }
