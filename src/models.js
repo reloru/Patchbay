@@ -644,6 +644,156 @@ export const MODELS = [
   },
 ];
 
+// ───────────────────── Cloudflare Workers AI ─────────────────────
+// These run on Cloudflare's GPUs via the AI binding and are billed to the
+// Cloudflare account (Workers AI free allowance, then per-neuron) rather than
+// to Pruna, so they need no API key. `cfModel` is the Workers AI model id.
+//
+// Two output shapes exist and the Worker normalises both: newer models return
+// JSON `{image: "<base64>"}`, the Stable Diffusion family returns a raw PNG
+// stream.
+
+const CF_NEGATIVE = { name: "negative_prompt", label: "Things to avoid", type: "text", default: "" };
+const CF_SEED = { name: "seed", label: "Seed", type: "int", default: 0, min: 0, defaultLabel: "random" };
+
+const WORKERS_AI_MODELS = [
+  {
+    id: "cf-flux-1-schnell",
+    cfModel: "@cf/black-forest-labs/flux-1-schnell",
+    label: "FLUX.1 schnell",
+    group: "Cloudflare Workers AI",
+    kind: "image",
+    blurb: "12B rectified-flow model. Very fast, capped at 8 steps.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "steps", label: "Detail (steps)", type: "int", default: 4, min: 1, max: 8 },
+      CF_SEED,
+    ],
+  },
+  {
+    id: "cf-lucid-origin",
+    cfModel: "@cf/leonardo/lucid-origin",
+    label: "Leonardo Lucid Origin",
+    group: "Cloudflare Workers AI",
+    kind: "image",
+    blurb: "Strong prompt adherence and legible text; wide style range.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "guidance", label: "Prompt adherence", type: "number", default: 4.5, min: 0, max: 10, step: 0.1 },
+      { name: "steps", label: "Detail (steps)", type: "int", default: 25, min: 1, max: 40 },
+      { name: "width", label: "Width", type: "int", default: 1120, min: 256, max: 2500, step: 8 },
+      { name: "height", label: "Height", type: "int", default: 1120, min: 256, max: 2500, step: 8 },
+      CF_SEED,
+    ],
+  },
+  {
+    id: "cf-phoenix-1",
+    cfModel: "@cf/leonardo/phoenix-1.0",
+    label: "Leonardo Phoenix 1.0",
+    group: "Cloudflare Workers AI",
+    kind: "image",
+    blurb: "Exceptional prompt adherence and coherent text rendering.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      CF_NEGATIVE,
+      { name: "guidance", label: "Prompt adherence", type: "number", default: 2, min: 0, max: 10, step: 0.1 },
+      { name: "steps", label: "Detail (steps)", type: "int", default: 25, min: 1, max: 50 },
+      { name: "width", label: "Width", type: "int", default: 1024, min: 256, max: 2048, step: 8 },
+      { name: "height", label: "Height", type: "int", default: 1024, min: 256, max: 2048, step: 8 },
+      CF_SEED,
+    ],
+  },
+  {
+    id: "cf-sdxl-base",
+    cfModel: "@cf/stabilityai/stable-diffusion-xl-base-1.0",
+    label: "Stable Diffusion XL 1.0",
+    group: "Cloudflare Workers AI",
+    kind: "image",
+    blurb: "The classic SDXL base model.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      CF_NEGATIVE,
+      { name: "num_steps", label: "Detail (steps)", type: "int", default: 20, min: 1, max: 20 },
+      { name: "guidance", label: "Prompt adherence", type: "number", default: 7.5, min: 0, max: 20, step: 0.1 },
+      { name: "width", label: "Width", type: "int", default: 1024, min: 256, max: 2048, step: 8 },
+      { name: "height", label: "Height", type: "int", default: 1024, min: 256, max: 2048, step: 8 },
+      CF_SEED,
+    ],
+  },
+  {
+    id: "cf-sdxl-lightning",
+    cfModel: "@cf/bytedance/stable-diffusion-xl-lightning",
+    label: "SDXL Lightning",
+    group: "Cloudflare Workers AI",
+    kind: "image",
+    blurb: "Lightning-fast 1024px SDXL variant.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      CF_NEGATIVE,
+      { name: "num_steps", label: "Detail (steps)", type: "int", default: 20, min: 1, max: 20 },
+      { name: "guidance", label: "Prompt adherence", type: "number", default: 7.5, min: 0, max: 20, step: 0.1 },
+      { name: "width", label: "Width", type: "int", default: 1024, min: 256, max: 2048, step: 8 },
+      { name: "height", label: "Height", type: "int", default: 1024, min: 256, max: 2048, step: 8 },
+      CF_SEED,
+    ],
+  },
+  {
+    id: "cf-dreamshaper-8",
+    cfModel: "@cf/lykon/dreamshaper-8-lcm",
+    label: "DreamShaper 8 LCM",
+    group: "Cloudflare Workers AI",
+    kind: "image",
+    blurb: "SD fine-tune tuned for photorealism without losing range.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      CF_NEGATIVE,
+      { name: "num_steps", label: "Detail (steps)", type: "int", default: 20, min: 1, max: 20 },
+      { name: "guidance", label: "Prompt adherence", type: "number", default: 7.5, min: 0, max: 20, step: 0.1 },
+      { name: "width", label: "Width", type: "int", default: 512, min: 256, max: 2048, step: 8 },
+      { name: "height", label: "Height", type: "int", default: 512, min: 256, max: 2048, step: 8 },
+      CF_SEED,
+    ],
+  },
+  {
+    id: "cf-sd15-img2img",
+    cfModel: "@cf/runwayml/stable-diffusion-v1-5-img2img",
+    label: "SD 1.5 Image-to-Image",
+    group: "Cloudflare Workers AI",
+    kind: "image",
+    blurb: "Redraw an existing image from a prompt.",
+    fields: [
+      { name: "image_b64", label: "Image to edit", type: "image", required: true, asBase64: true },
+      { name: "prompt", label: "What to change", type: "textarea", required: true },
+      CF_NEGATIVE,
+      { name: "strength", label: "How much to change it", type: "number", default: 1, min: 0, max: 1, step: 0.05 },
+      { name: "num_steps", label: "Detail (steps)", type: "int", default: 20, min: 1, max: 20 },
+      { name: "guidance", label: "Prompt adherence", type: "number", default: 7.5, min: 0, max: 20, step: 0.1 },
+      CF_SEED,
+    ],
+  },
+  {
+    id: "cf-sd15-inpainting",
+    cfModel: "@cf/runwayml/stable-diffusion-v1-5-inpainting",
+    label: "SD 1.5 Inpainting",
+    group: "Cloudflare Workers AI",
+    kind: "image",
+    blurb: "Repaint only the masked area. White in the mask = repaint.",
+    fields: [
+      { name: "image_b64", label: "Image to edit", type: "image", required: true, asBase64: true },
+      { name: "mask_b64", label: "Mask (white = repaint)", type: "image", required: true, asBase64: true },
+      { name: "prompt", label: "What to paint there", type: "textarea", required: true },
+      CF_NEGATIVE,
+      { name: "num_steps", label: "Detail (steps)", type: "int", default: 20, min: 1, max: 20 },
+      { name: "guidance", label: "Prompt adherence", type: "number", default: 7.5, min: 0, max: 20, step: 0.1 },
+      CF_SEED,
+    ],
+  },
+];
+
+for (const m of WORKERS_AI_MODELS) m.provider = "workers-ai";
+for (const m of MODELS) m.provider = "pruna";
+MODELS.push(...WORKERS_AI_MODELS);
+
 // ───────────────────────── Pricing ─────────────────────────
 // Published Pruna list prices, used only for a client-side *estimate*. Pruna's
 // API exposes no balance/credits endpoint, so the app cannot show a real
@@ -672,7 +822,11 @@ const PRICING = {
   "wan-i2v": { type: "variable" },
 };
 
-for (const m of MODELS) m.price = PRICING[m.id] || { type: "variable" };
+for (const m of MODELS) {
+  // Workers AI is billed to the Cloudflare account in "neurons", not per image,
+  // so there is no per-run dollar figure to show.
+  m.price = m.provider === "workers-ai" ? { type: "cf_neurons" } : PRICING[m.id] || { type: "variable" };
+}
 
 // Allow-list of valid model ids (used by the Worker to reject arbitrary models).
 export const MODEL_IDS = new Set(MODELS.map((m) => m.id));

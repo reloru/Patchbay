@@ -113,9 +113,20 @@ function selectModel(id) {
   renderFields();
 }
 
+// Reads a file as bare base64 (no data: prefix) for Workers AI inputs.
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] || "");
+    r.onerror = () => reject(new Error("Could not read file"));
+    r.readAsDataURL(file);
+  });
+}
+
 function priceBlurb(model) {
   const p = model.price;
   if (!p) return "";
+  if (p.type === "cf_neurons") return "Runs on Cloudflare Workers AI — billed to your Cloudflare account, not Pruna.";
   if (p.type === "flat") return `List price: ${fmtUsd(p.usd)} per image.`;
   if (p.type === "per_second") return `List price: ${fmtUsd(p.usd["720p"])}/s at 720p, ${fmtUsd(p.usd["1080p"])}/s at 1080p.`;
   return "List price: varies with your settings.";
@@ -246,12 +257,17 @@ function imageControl(f) {
       uploads[f.name].push(placeholder);
       redraw();
       try {
-        const fd = new FormData();
-        fd.append("file", file);
-        const res = await api("/api/upload", { method: "POST", body: fd });
-        const data = await res.json();
-        if (!res.ok || !data.url) throw new Error(data.error || "Upload failed");
-        placeholder.url = data.url;
+        if (f.asBase64) {
+          // Workers AI takes the bytes inline; nothing is uploaded to Pruna.
+          placeholder.url = await fileToBase64(file);
+        } else {
+          const fd = new FormData();
+          fd.append("file", file);
+          const res = await api("/api/upload", { method: "POST", body: fd });
+          const data = await res.json();
+          if (!res.ok || !data.url) throw new Error(data.error || "Upload failed");
+          placeholder.url = data.url;
+        }
         placeholder.uploading = false;
       } catch (e) {
         const i = uploads[f.name].indexOf(placeholder);
@@ -450,6 +466,8 @@ async function runGeneration(model, input, kind, onProgress) {
   const data = await startRes.json();
   if (!startRes.ok) throw new Error(data.error || data.message || `HTTP ${startRes.status}`);
 
+  // Workers AI returns finished images inline as data URIs (no job to poll).
+  if (Array.isArray(data.images) && data.images.length) return data.images;
   if (data.status === "succeeded" && data.generation_url) return asUrlList(data.generation_url);
   if (data.status === "failed" || data.status === "error") {
     throw new Error(data.message || data.error || "Generation failed.");
@@ -492,6 +510,8 @@ function asUrlList(v) {
 }
 
 function resultUrl(prunaUrl) {
+  // Workers AI results are already inline data URIs — nothing to proxy.
+  if (prunaUrl.startsWith("data:")) return prunaUrl;
   // <img>/<video>/<a download> can't send headers, so pass the password as a
   // query param when the gate is on.
   let u = "/api/result?url=" + encodeURIComponent(prunaUrl);

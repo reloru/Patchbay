@@ -8,6 +8,11 @@
     // asset (e.g. /api/*) fall through to the Worker in src/worker.js.
     "directory": "./public"
   },
+  // Cloudflare Workers AI. Runs on Cloudflare's own GPUs and is billed to this
+  // account, so it needs no API key of its own — unlike the Pruna path.
+  "ai": {
+    "binding": "AI"
+  },
   "observability": {
     "enabled": true
   }
