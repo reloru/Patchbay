@@ -9,6 +9,8 @@
 
 import { MODELS, MODEL_IDS } from "./models.js";
 
+const MODELS_BY_ID = new Map(MODELS.map((m) => [m.id, m]));
+
 const PRUNA_BASE = "https://api.pruna.ai/v1";
 const CACHE_SECONDS = 30;
 
@@ -92,6 +94,9 @@ async function handleGenerate(request, env) {
   if (!MODEL_IDS.has(model)) return json({ error: `Unknown model: ${model}` }, 400);
   if (!input || typeof input !== "object") return json({ error: "Missing input object." }, 400);
 
+  const spec = MODELS_BY_ID.get(model);
+  if (spec.provider === "workers-ai") return await runWorkersAI(spec, input, env);
+
   const headers = {
     apikey: env.PRUNA_API_KEY,
     Model: model,
@@ -112,6 +117,59 @@ async function handleGenerate(request, env) {
     status: res.status,
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
+}
+
+// Runs a model on Cloudflare Workers AI via the `AI` binding and normalises the
+// two output shapes into data URIs the browser can render directly. Unlike the
+// Pruna path these are synchronous — there is no job id to poll.
+async function runWorkersAI(spec, input, env) {
+  if (!env.AI) return json({ error: "Workers AI binding is not configured." }, 500);
+
+  const payload = { ...input };
+
+  // Browser sends images as bare base64. Models differ in what they accept:
+  // image_b64 is passed through, mask has to become a byte array.
+  if (typeof payload.mask_b64 === "string") {
+    payload.mask = base64ToBytes(payload.mask_b64);
+    delete payload.mask_b64;
+  }
+  // A seed of 0 means "unset" in our UI — let the model pick its own.
+  if (payload.seed === 0 || payload.seed === -1) delete payload.seed;
+
+  let out;
+  try {
+    out = await env.AI.run(spec.cfModel, payload);
+  } catch (err) {
+    return json({ error: "Workers AI: " + (err && err.message ? err.message : String(err)) }, 502);
+  }
+
+  // Shape 1: JSON { image: "<base64>" } (FLUX, Leonardo).
+  if (out && typeof out === "object" && typeof out.image === "string") {
+    return json({ status: "succeeded", images: ["data:image/jpeg;base64," + out.image] });
+  }
+  // Shape 2: raw PNG stream (Stable Diffusion family).
+  if (out instanceof ReadableStream || out instanceof ArrayBuffer || ArrayBuffer.isView(out)) {
+    const buf = out instanceof ReadableStream ? await new Response(out).arrayBuffer() : out;
+    return json({ status: "succeeded", images: ["data:image/png;base64," + bytesToBase64(buf)] });
+  }
+  return json({ error: "Unexpected Workers AI response shape." }, 502);
+}
+
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const arr = new Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
+}
+
+function bytesToBase64(buf) {
+  const bytes = buf instanceof ArrayBuffer ? new Uint8Array(buf) : new Uint8Array(buf.buffer || buf);
+  let bin = "";
+  const CHUNK = 0x8000; // avoid blowing the argument limit on large images
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
 }
 
 async function handleStatus(request, env, url) {
