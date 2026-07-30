@@ -689,6 +689,56 @@ function initPromptLibrary() {
     setStatus(`Saved prompt "${name}".`, "ok");
   });
 
+  // "Improve" rewrites the prompt in place via a small chat model, keeping the
+  // previous text so a second click can undo it.
+  let preImprove = null;
+  const improveBtn = $("prompt-improve");
+  improveBtn.addEventListener("click", async () => {
+    const el = primaryPromptEl();
+    if (!el) return;
+
+    if (preImprove !== null) {
+      el.value = preImprove;
+      preImprove = null;
+      improveBtn.textContent = "✨ Improve";
+      setStatus("Reverted to your original prompt.", "ok");
+      return;
+    }
+
+    const text = el.value.trim();
+    if (!text) {
+      setStatus("Write a prompt first, then hit Improve.", "err");
+      return;
+    }
+
+    improveBtn.disabled = true;
+    improveBtn.textContent = "Improving…";
+    try {
+      const res = await api("/api/improve-prompt", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: text, kind: currentModel.kind }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.prompt) throw new Error(data.error || `HTTP ${res.status}`);
+      preImprove = text;
+      el.value = data.prompt;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      improveBtn.textContent = "↩ Undo";
+      setStatus("Prompt improved — click Undo to revert.", "ok");
+    } catch (e) {
+      setStatus("Improve failed: " + e.message, "err");
+    } finally {
+      improveBtn.disabled = false;
+    }
+  });
+
+  // A new prompt from any other source invalidates the undo buffer.
+  $("prompt-select").addEventListener("change", () => {
+    preImprove = null;
+    improveBtn.textContent = "✨ Improve";
+  });
+
   $("prompt-del").addEventListener("click", () => {
     const sel = $("prompt-select");
     if (sel.value === "") {
