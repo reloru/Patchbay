@@ -75,6 +75,9 @@ export default {
       if (path === "/api/upload" && request.method === "POST") {
         return await handleUpload(request, env);
       }
+      if (path === "/api/improve-prompt" && request.method === "POST") {
+        return await handleImprovePrompt(request, env);
+      }
       if (path === "/api/result" && request.method === "GET") {
         return await handleResult(request, env, url);
       }
@@ -153,6 +156,47 @@ async function runWorkersAI(spec, input, env) {
     return json({ status: "succeeded", images: ["data:image/png;base64," + bytesToBase64(buf)] });
   }
   return json({ error: "Unexpected Workers AI response shape." }, 502);
+}
+
+// Rewrites a short prompt into a richer one using a small chat model on
+// Workers AI. Used by the "Improve" button and works for any provider's models.
+// NB: @cf/qwen/qwen1.5-0.5b-chat was deprecated by Cloudflare on 2025-10-01 and
+// now returns error 5028, so this uses a current small instruct model instead.
+const IMPROVE_MODEL = "@cf/meta/llama-3.2-3b-instruct";
+
+async function handleImprovePrompt(request, env) {
+  if (!env.AI) return json({ error: "Workers AI binding is not configured." }, 500);
+
+  const body = await request.json().catch(() => null);
+  const prompt = body && typeof body.prompt === "string" ? body.prompt.trim() : "";
+  if (!prompt) return json({ error: "Nothing to improve — write a prompt first." }, 400);
+  if (prompt.length > 2000) return json({ error: "Prompt is too long to improve." }, 400);
+
+  const forVideo = body.kind === "video";
+  const system =
+    `You expand short prompts into vivid ${forVideo ? "video" : "image"} generation prompts. ` +
+    `Add concrete visual detail: subject, setting, lighting, composition, style` +
+    (forVideo ? ", camera movement" : "") +
+    `. Keep the user's original intent and subject. ` +
+    `Reply with the rewritten prompt only — no preamble, no quotes, no explanation, under 80 words.`;
+
+  let out;
+  try {
+    out = await env.AI.run(IMPROVE_MODEL, {
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: prompt },
+      ],
+      max_tokens: 220,
+    });
+  } catch (err) {
+    return json({ error: "Improve failed: " + (err && err.message ? err.message : String(err)) }, 502);
+  }
+
+  let text = (out && (out.response ?? out.result ?? "")) || "";
+  text = String(text).trim().replace(/^["'\s]+|["'\s]+$/g, "");
+  if (!text) return json({ error: "The model returned nothing usable." }, 502);
+  return json({ prompt: text });
 }
 
 function base64ToBytes(b64) {
