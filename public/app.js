@@ -4,6 +4,8 @@
 // State
 // ---------------------------------------------------------------------------
 let MODELS = [];
+let improveModels = [];
+let defaultImproveModel = "";
 let authRequired = false;
 let currentModel = null;
 const uploads = {}; // fieldName -> [{url, name, isImage}]
@@ -44,6 +46,8 @@ async function boot() {
     return;
   }
   MODELS = cfg.models || [];
+  improveModels = cfg.improveModels || [];
+  defaultImproveModel = cfg.defaultImproveModel || "";
   authRequired = Boolean(cfg.authRequired);
 
   if (authRequired && !getPw()) {
@@ -132,7 +136,9 @@ function priceBlurb(model) {
   const p = model.price;
   if (!p) return "";
   if (p.type === "cf_neurons") {
-    if (p.free) return "Workers AI: free — Cloudflare charges no neurons for this model.";
+    if (p.free) {
+      return "Workers AI: no per-image charge listed — but still needs daily allowance left.";
+    }
     // Show the cost of a default 1024x1024 run so the trade-off is visible up front.
     const n = estimateNeurons(model, { width: 1024, height: 1024, steps: defaultSteps(model) });
     if (n == null) return "Runs on Cloudflare Workers AI (free daily allowance).";
@@ -667,8 +673,29 @@ function refreshPromptSelect(keepValue) {
   if (keepValue != null && list[keepValue]) sel.value = String(keepValue);
 }
 
+const IMPROVE_MODEL_KEY = "pruna_improve_model";
+
+function initImproveModelPicker() {
+  const sel = $("improve-model");
+  sel.innerHTML = "";
+  for (const m of improveModels) {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = `${m.label} · ~${m.neurons} neurons`;
+    sel.appendChild(o);
+  }
+  const saved = localStorage.getItem(IMPROVE_MODEL_KEY);
+  sel.value = improveModels.some((m) => m.id === saved) ? saved : defaultImproveModel;
+  sel.addEventListener("change", () => {
+    localStorage.setItem(IMPROVE_MODEL_KEY, sel.value);
+    const m = improveModels.find((x) => x.id === sel.value);
+    setStatus(`Improve will use ${m ? m.label : sel.value}.`, "ok");
+  });
+}
+
 function initPromptLibrary() {
   refreshPromptSelect();
+  initImproveModelPicker();
 
   $("prompt-select").addEventListener("change", (e) => {
     const idx = e.target.value;
@@ -733,7 +760,7 @@ function initPromptLibrary() {
       const res = await api("/api/improve-prompt", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt: text, kind: currentModel.kind }),
+        body: JSON.stringify({ prompt: text, kind: currentModel.kind, model: $("improve-model").value }),
       });
       const data = await res.json();
       if (!res.ok || !data.prompt) throw new Error(data.error || `HTTP ${res.status}`);
@@ -843,7 +870,7 @@ function addSpend(model, input, outputCount) {
   if (neurons != null) {
     sessionNeurons += neurons;
     updateSpendBar();
-    if (neurons === 0) return "Free — this model draws no neurons.";
+    if (neurons === 0) return "No per-image charge listed for this model.";
     const pct = Math.round((neurons / CF_FREE_NEURONS) * 100);
     return (
       `Est. ~${Math.round(neurons).toLocaleString()} neurons ` +
