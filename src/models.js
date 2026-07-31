@@ -671,6 +671,43 @@ const WORKERS_AI_MODELS = [
     ],
   },
   {
+    id: "cf-flux-2-klein-4b",
+    cfModel: "@cf/black-forest-labs/flux-2-klein-4b",
+    label: "FLUX.2 Klein 4B",
+    group: "Cloudflare Workers AI",
+    kind: "image",
+    multipart: true,
+    blurb: "Ultra-fast distilled FLUX.2. Generates and edits; steps fixed at 4.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "input_images", label: "Reference image(s) to edit (optional)", type: "image", maxItems: 4, asArray: true, asBase64: true },
+      { name: "width", label: "Width", type: "int", default: 1024, min: 256, max: 2048, step: 32 },
+      { name: "height", label: "Height", type: "int", default: 1024, min: 256, max: 2048, step: 32 },
+      CF_SEED,
+    ],
+  },
+  {
+    id: "cf-flux-2-klein-9b",
+    cfModel: "@cf/black-forest-labs/flux-2-klein-9b",
+    label: "FLUX.2 Klein 9B",
+    group: "Cloudflare Workers AI",
+    kind: "image",
+    multipart: true,
+    blurb: "Higher-quality Klein variant. Generates and edits from references.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "input_images", label: "Reference image(s) to edit (optional)", type: "image", maxItems: 4, asArray: true, asBase64: true },
+      { name: "steps", label: "Detail (steps)", type: "int", default: 4, min: 1, max: 50 },
+      { name: "width", label: "Width", type: "int", default: 1024, min: 256, max: 2048, step: 32 },
+      { name: "height", label: "Height", type: "int", default: 1024, min: 256, max: 2048, step: 32 },
+      CF_SEED,
+    ],
+  },
+  // @cf/black-forest-labs/flux-2-dev is deliberately omitted: it returns
+  // "3043: Internal server error" for every request, including plain
+  // multipart calls straight to Cloudflare's REST API with no app code in the
+  // path. Re-add it once Cloudflare's side works.
+  {
     id: "cf-lucid-origin",
     cfModel: "@cf/leonardo/lucid-origin",
     label: "Leonardo Lucid Origin",
