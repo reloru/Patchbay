@@ -123,10 +123,22 @@ function fileToBase64(file) {
   });
 }
 
+function defaultSteps(model) {
+  const f = model.fields.find((x) => x.name === "steps" || x.name === "num_steps");
+  return f ? f.default : 0;
+}
+
 function priceBlurb(model) {
   const p = model.price;
   if (!p) return "";
-  if (p.type === "cf_neurons") return "Runs on Cloudflare Workers AI — billed to your Cloudflare account, not Pruna.";
+  if (p.type === "cf_neurons") {
+    // Show the cost of a default 1024x1024 run so the trade-off is visible up front.
+    const n = estimateNeurons(model, { width: 1024, height: 1024, steps: defaultSteps(model) });
+    if (n == null) return "Runs on Cloudflare Workers AI (free daily allowance).";
+    const perDay = Math.floor(CF_FREE_NEURONS / n);
+    return `Workers AI: ~${Math.round(n).toLocaleString()} neurons per 1024×1024 image — about ${perDay} free per day.`;
+  }
+  if (p.type === "cf_unpriced") return "Runs on Cloudflare Workers AI (no published rate).";
   if (p.type === "flat") return `List price: ${fmtUsd(p.usd)} per image.`;
   if (p.type === "per_second") return `List price: ${fmtUsd(p.usd["720p"])}/s at 720p, ${fmtUsd(p.usd["1080p"])}/s at 1080p.`;
   return "List price: varies with your settings.";
@@ -765,10 +777,36 @@ function initPromptLibrary() {
 // ---------------------------------------------------------------------------
 let sessionSpend = 0;
 let sessionRuns = 0;
+let sessionNeurons = 0;
+const CF_FREE_NEURONS = 10000; // Workers AI free allowance per day, resets 00:00 UTC
+
+// Neurons for one Workers AI run, from Cloudflare's published per-model rates.
+function estimateNeurons(model, input) {
+  const p = model.price;
+  if (!p || p.type !== "cf_neurons") return null;
+
+  const w = Number(input.width) || 1024;
+  const h = Number(input.height) || 1024;
+  const tiles = Math.ceil(w / 512) * Math.ceil(h / 512);
+  const steps = Number(input.steps ?? input.num_steps) || 0;
+  const refs = Array.isArray(input.input_images) ? input.input_images.length : 0;
+
+  if (p.perFirstMp != null) {
+    const mp = (w * h) / (1024 * 1024);
+    return p.perFirstMp + Math.max(0, mp - 1) * p.perExtraMp + refs * (p.perInputMp || 0);
+  }
+  if (p.perOutputTile != null) {
+    return tiles * p.perOutputTile + refs * tiles * (p.perInputTile || 0);
+  }
+  if (p.perTile != null) {
+    return tiles * p.perTile + steps * (p.perStep || 0);
+  }
+  return null;
+}
 
 function estimateCost(model, input, outputCount) {
   const p = model.price;
-  if (!p || p.type === "variable") return null;
+  if (!p || p.type === "variable" || p.type === "cf_neurons" || p.type === "cf_unpriced") return null;
   if (p.type === "flat") {
     const n = Number(input.num_outputs) || outputCount || 1;
     return p.usd * n;
@@ -788,8 +826,21 @@ function fmtUsd(v) {
 }
 
 function addSpend(model, input, outputCount) {
-  const cost = estimateCost(model, input, outputCount);
   sessionRuns++;
+
+  const neurons = estimateNeurons(model, input);
+  if (neurons != null) {
+    sessionNeurons += neurons;
+    updateSpendBar();
+    const pct = Math.round((neurons / CF_FREE_NEURONS) * 100);
+    return `Est. ~${Math.round(neurons).toLocaleString()} neurons (~${pct || "<1"}% of the daily free allowance).`;
+  }
+  if (model.price && model.price.type === "cf_unpriced") {
+    updateSpendBar();
+    return "Cloudflare does not publish a rate for this model.";
+  }
+
+  const cost = estimateCost(model, input, outputCount);
   if (cost != null) sessionSpend += cost;
   updateSpendBar();
   return cost == null ? "Cost: varies by settings." : `Est. ${fmtUsd(cost)}.`;
@@ -798,9 +849,15 @@ function addSpend(model, input, outputCount) {
 function updateSpendBar() {
   const el = $("spend");
   if (!el) return;
+  const parts = [];
+  if (sessionSpend > 0) parts.push(`Pruna ~${fmtUsd(sessionSpend)}`);
+  if (sessionNeurons > 0) {
+    const pct = Math.round((sessionNeurons / CF_FREE_NEURONS) * 100);
+    parts.push(`Workers AI ~${Math.round(sessionNeurons).toLocaleString()} neurons (~${pct}% of today's free 10,000)`);
+  }
+  if (!parts.length) parts.push("no billable runs yet");
   el.textContent =
-    `Session estimate: ${fmtUsd(sessionSpend)} over ${sessionRuns} run${sessionRuns === 1 ? "" : "s"}` +
-    " · estimate only, not a balance";
+    `Session estimate: ${parts.join(" · ")} over ${sessionRuns} run${sessionRuns === 1 ? "" : "s"} · estimates only`;
   el.classList.remove("hidden");
 }
 
