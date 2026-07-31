@@ -859,10 +859,29 @@ const PRICING = {
   "wan-i2v": { type: "variable" },
 };
 
+// Workers AI is billed in "neurons" against a 10,000/day free allowance, with
+// a different shape per model. Published rates, used for a client-side estimate:
+//   perTile / perStep       — neurons per 512x512 output tile, and per step
+//   perOutputTile/perInputTile — flat per-tile (no step component)
+//   perFirstMp/perExtraMp   — per megapixel, first MP charged higher
+// Models absent from Cloudflare's pricing table are left unpriced rather than
+// guessed at.
+export const CF_FREE_NEURONS_PER_DAY = 10000;
+
+const CF_NEURONS = {
+  "cf-flux-1-schnell": { perTile: 4.8, perStep: 9.6 },
+  "cf-lucid-origin": { perTile: 636, perStep: 12 },
+  "cf-phoenix-1": { perTile: 530, perStep: 10 },
+  "cf-flux-2-klein-4b": { perOutputTile: 26.05, perInputTile: 5.37 },
+  "cf-flux-2-klein-9b": { perFirstMp: 1363.64, perExtraMp: 181.82, perInputMp: 181.82 },
+};
+
 for (const m of MODELS) {
-  // Workers AI is billed to the Cloudflare account in "neurons", not per image,
-  // so there is no per-run dollar figure to show.
-  m.price = m.provider === "workers-ai" ? { type: "cf_neurons" } : PRICING[m.id] || { type: "variable" };
+  if (m.provider === "workers-ai") {
+    m.price = CF_NEURONS[m.id] ? { type: "cf_neurons", ...CF_NEURONS[m.id] } : { type: "cf_unpriced" };
+  } else {
+    m.price = PRICING[m.id] || { type: "variable" };
+  }
 }
 
 // Allow-list of valid model ids (used by the Worker to reject arbitrary models).
