@@ -888,8 +888,11 @@ const CF_NEURONS = {
   "cf-phoenix-1": { perTile: 530, perStep: 10 },
   "cf-flux-2-klein-4b": { perOutputTile: 26.05, perInputTile: 5.37 },
   "cf-flux-2-klein-9b": { perFirstMp: 1363.64, perExtraMp: 181.82, perInputMp: 181.82 },
-  // Cloudflare lists these at $0.00 per step — they draw no neurons at all,
-  // so they run unmetered rather than against the daily free allowance.
+  // Cloudflare lists these at $0.00 per step, so there is no per-image charge
+  // to estimate. That is NOT the same as unlimited: verified against the API,
+  // once the account's daily neuron allowance is spent these return
+  // "429 / 4006: you have used up your daily free allocation" exactly like the
+  // metered models. The allowance gate is account-wide, not per model.
   "cf-sdxl-base": { free: true },
   "cf-sdxl-lightning": { free: true },
   "cf-sd15-img2img": { free: true },
@@ -907,6 +910,24 @@ for (const m of MODELS) {
     m.price = PRICING[m.id] || { type: "variable" };
   }
 }
+
+// Chat models offered for the "Improve" button, cheapest first. `neurons` is
+// the rough cost of one rewrite (~120 input + ~200 output tokens) at
+// Cloudflare's published per-million-token rates.
+export const IMPROVE_MODELS = [
+  { id: "@cf/ibm-granite/granite-4.0-h-micro", label: "Granite 4.0 Micro — cheapest", neurons: 2.2 },
+  { id: "@cf/meta/llama-3.2-1b-instruct", label: "Llama 3.2 1B — fast", neurons: 3.9 },
+  { id: "@cf/meta/llama-3.2-3b-instruct", label: "Llama 3.2 3B — balanced (default)", neurons: 6.6 },
+  { id: "@cf/zai-org/glm-4.7-flash", label: "GLM 4.7 Flash", neurons: 7.9 },
+  { id: "@cf/meta/llama-3.1-8b-instruct-fp8-fast", label: "Llama 3.1 8B — sharper", neurons: 7.5 },
+  { id: "@cf/openai/gpt-oss-20b", label: "GPT-OSS 20B", neurons: 7.7 },
+  { id: "@cf/google/gemma-4-26b-a4b-it", label: "Gemma 4 26B", neurons: 6.6 },
+  { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", label: "Mistral Small 24B", neurons: 13.9 },
+  { id: "@cf/openai/gpt-oss-120b", label: "GPT-OSS 120B — strongest", neurons: 17.5 },
+];
+
+export const IMPROVE_MODEL_IDS = new Set(IMPROVE_MODELS.map((m) => m.id));
+export const DEFAULT_IMPROVE_MODEL = "@cf/meta/llama-3.2-3b-instruct";
 
 // Allow-list of valid model ids (used by the Worker to reject arbitrary models).
 export const MODEL_IDS = new Set(MODELS.map((m) => m.id));

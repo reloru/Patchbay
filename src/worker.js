@@ -7,7 +7,7 @@
 // - Nothing is persisted. The only caching is a <=30s edge/browser cache on
 //   already-generated media so re-displaying it doesn't re-hit Pruna.
 
-import { MODELS, MODEL_IDS } from "./models.js";
+import { MODELS, MODEL_IDS, IMPROVE_MODELS, IMPROVE_MODEL_IDS, DEFAULT_IMPROVE_MODEL } from "./models.js";
 
 const MODELS_BY_ID = new Map(MODELS.map((m) => [m.id, m]));
 
@@ -58,7 +58,12 @@ export default {
     try {
       // Public: lets the UI know whether a password is required + the catalog.
       if (path === "/api/config" && request.method === "GET") {
-        return json({ authRequired: Boolean(env.APP_PASSWORD), models: MODELS });
+        return json({
+          authRequired: Boolean(env.APP_PASSWORD),
+          models: MODELS,
+          improveModels: IMPROVE_MODELS,
+          defaultImproveModel: DEFAULT_IMPROVE_MODEL,
+        });
       }
 
       // Everything below is gated.
@@ -160,12 +165,11 @@ async function runWorkersAI(spec, input, env) {
   return json({ error: "Unexpected Workers AI response shape." }, 502);
 }
 
-// Rewrites a short prompt into a richer one using a small chat model on
-// Workers AI. Used by the "Improve" button and works for any provider's models.
+// Rewrites a short prompt into a richer one using a chat model on Workers AI.
+// Used by the "Improve" button and works for any provider's models. The model
+// is chosen in the UI from IMPROVE_MODELS.
 // NB: @cf/qwen/qwen1.5-0.5b-chat was deprecated by Cloudflare on 2025-10-01 and
-// now returns error 5028, so this uses a current small instruct model instead.
-const IMPROVE_MODEL = "@cf/meta/llama-3.2-3b-instruct";
-
+// now returns error 5028, so it is not offered.
 async function handleImprovePrompt(request, env) {
   if (!env.AI) return json({ error: "Workers AI binding is not configured." }, 500);
 
@@ -182,9 +186,12 @@ async function handleImprovePrompt(request, env) {
     `. Keep the user's original intent and subject. ` +
     `Reply with the rewritten prompt only — no preamble, no quotes, no explanation, under 80 words.`;
 
+  // Only models from the offered list may be run here.
+  const improveModel = IMPROVE_MODEL_IDS.has(body.model) ? body.model : DEFAULT_IMPROVE_MODEL;
+
   let out;
   try {
-    out = await env.AI.run(IMPROVE_MODEL, {
+    out = await env.AI.run(improveModel, {
       messages: [
         { role: "system", content: system },
         { role: "user", content: prompt },
