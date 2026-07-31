@@ -141,7 +141,9 @@ async function runWorkersAI(spec, input, env) {
 
   let out;
   try {
-    out = await env.AI.run(spec.cfModel, payload);
+    out = spec.multipart
+      ? await env.AI.run(spec.cfModel, { multipart: buildMultipart(payload) })
+      : await env.AI.run(spec.cfModel, payload);
   } catch (err) {
     return json({ error: "Workers AI: " + (err && err.message ? err.message : String(err)) }, 502);
   }
@@ -197,6 +199,27 @@ async function handleImprovePrompt(request, env) {
   text = String(text).trim().replace(/^["'\s]+|["'\s]+$/g, "");
   if (!text) return json({ error: "The model returned nothing usable." }, 502);
   return json({ prompt: text });
+}
+
+// The FLUX.2 family takes multipart/form-data rather than JSON. Reference
+// images must be fields named input_image_0 … input_image_3.
+function buildMultipart(payload) {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(payload)) {
+    if (v == null || v === "") continue;
+    if (k === "input_images") {
+      const list = Array.isArray(v) ? v : [v];
+      list.slice(0, 4).forEach((b64, i) => {
+        const bytes = new Uint8Array(base64ToBytes(b64));
+        form.append(`input_image_${i}`, new Blob([bytes], { type: "image/png" }), `input_${i}.png`);
+      });
+      continue;
+    }
+    form.append(k, String(v));
+  }
+  // Serialising through Response gives us the multipart boundary header.
+  const res = new Response(form);
+  return { body: res.body, contentType: res.headers.get("content-type") };
 }
 
 function base64ToBytes(b64) {
