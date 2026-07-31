@@ -888,7 +888,17 @@ const CF_NEURONS = {
   "cf-phoenix-1": { perTile: 530, perStep: 10 },
   "cf-flux-2-klein-4b": { perOutputTile: 26.05, perInputTile: 5.37 },
   "cf-flux-2-klein-9b": { perFirstMp: 1363.64, perExtraMp: 181.82, perInputMp: 181.82 },
+  // Cloudflare lists these at $0.00 per step — they draw no neurons at all,
+  // so they run unmetered rather than against the daily free allowance.
+  "cf-sdxl-base": { free: true },
+  "cf-sdxl-lightning": { free: true },
+  "cf-sd15-img2img": { free: true },
+  "cf-sd15-inpainting": { free: true },
+  // dreamshaper-8-lcm has no published rate at all — left unpriced.
 };
+
+// USD per neuron beyond the free daily allowance ($0.011 per 1,000).
+export const CF_USD_PER_NEURON = 0.011 / 1000;
 
 for (const m of MODELS) {
   if (m.provider === "workers-ai") {
