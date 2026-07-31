@@ -132,11 +132,15 @@ function priceBlurb(model) {
   const p = model.price;
   if (!p) return "";
   if (p.type === "cf_neurons") {
+    if (p.free) return "Workers AI: free — Cloudflare charges no neurons for this model.";
     // Show the cost of a default 1024x1024 run so the trade-off is visible up front.
     const n = estimateNeurons(model, { width: 1024, height: 1024, steps: defaultSteps(model) });
     if (n == null) return "Runs on Cloudflare Workers AI (free daily allowance).";
     const perDay = Math.floor(CF_FREE_NEURONS / n);
-    return `Workers AI: ~${Math.round(n).toLocaleString()} neurons per 1024×1024 image — about ${perDay} free per day.`;
+    return (
+      `Workers AI: ~${Math.round(n).toLocaleString()} neurons per 1024×1024 image — ` +
+      `about ${perDay} free per day, then ${fmtUsd(n * CF_USD_PER_NEURON)} each.`
+    );
   }
   if (p.type === "cf_unpriced") return "Runs on Cloudflare Workers AI (no published rate).";
   if (p.type === "flat") return `List price: ${fmtUsd(p.usd)} per image.`;
@@ -779,11 +783,13 @@ let sessionSpend = 0;
 let sessionRuns = 0;
 let sessionNeurons = 0;
 const CF_FREE_NEURONS = 10000; // Workers AI free allowance per day, resets 00:00 UTC
+const CF_USD_PER_NEURON = 0.011 / 1000; // $0.011 per 1,000 neurons beyond the allowance
 
 // Neurons for one Workers AI run, from Cloudflare's published per-model rates.
 function estimateNeurons(model, input) {
   const p = model.price;
   if (!p || p.type !== "cf_neurons") return null;
+  if (p.free) return 0; // Cloudflare lists these at $0.00 — unmetered.
 
   const w = Number(input.width) || 1024;
   const h = Number(input.height) || 1024;
@@ -837,8 +843,12 @@ function addSpend(model, input, outputCount) {
   if (neurons != null) {
     sessionNeurons += neurons;
     updateSpendBar();
+    if (neurons === 0) return "Free — this model draws no neurons.";
     const pct = Math.round((neurons / CF_FREE_NEURONS) * 100);
-    return `Est. ~${Math.round(neurons).toLocaleString()} neurons (~${pct || "<1"}% of the daily free allowance).`;
+    return (
+      `Est. ~${Math.round(neurons).toLocaleString()} neurons ` +
+      `(~${pct || "<1"}% of the daily free allowance, ${fmtUsd(neurons * CF_USD_PER_NEURON)} beyond it).`
+    );
   }
   if (model.price && model.price.type === "cf_unpriced") {
     updateSpendBar();
