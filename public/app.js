@@ -795,6 +795,11 @@ function estimateNeurons(model, input) {
     const mp = (w * h) / (1024 * 1024);
     return p.perFirstMp + Math.max(0, mp - 1) * p.perExtraMp + refs * (p.perInputMp || 0);
   }
+  if (p.perOutputTilePerStep != null) {
+    // flux-2-dev bills per tile *per step*, so steps dominate the cost.
+    const s = steps || 1;
+    return s * (tiles * p.perOutputTilePerStep + refs * tiles * (p.perInputTilePerStep || 0));
+  }
   if (p.perOutputTile != null) {
     return tiles * p.perOutputTile + refs * tiles * (p.perInputTile || 0);
   }
