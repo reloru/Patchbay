@@ -203,6 +203,9 @@ async function handleImprovePrompt(request, env) {
 
   // Only models from the offered list may be run here.
   const improveModel = IMPROVE_MODEL_IDS.has(body.model) ? body.model : DEFAULT_IMPROVE_MODEL;
+  // Reasoning models burn tokens thinking before they answer; too small a
+  // budget and `content` comes back null.
+  const isReasoning = IMPROVE_MODELS.some((m) => m.id === improveModel && m.reasoning);
 
   let out;
   try {
@@ -211,13 +214,13 @@ async function handleImprovePrompt(request, env) {
         { role: "system", content: system },
         { role: "user", content: prompt },
       ],
-      max_tokens: 220,
+      max_tokens: isReasoning ? 1500 : 220,
     });
   } catch (err) {
     return json({ error: "Improve failed: " + (err && err.message ? err.message : String(err)) }, 502);
   }
 
-  const text = pickText(out).replace(/^["'\s]+|["'\s]+$/g, "");
+  const text = stripReasoning(pickText(out)).replace(/^["'\s]+|["'\s]+$/g, "");
   if (!text) return json({ error: "The model returned nothing usable." }, 502);
   return json({ prompt: text });
 }
@@ -292,6 +295,19 @@ function pickText(out) {
   return "";
 }
 
+// Distill-style reasoning models (DeepSeek R1) emit a <think> monologue before
+// the answer. Drop it so the prompt box gets the rewrite, not the thinking.
+function stripReasoning(text) {
+  let t = String(text)
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/^[\s\S]*?<\/think>/i, "");
+  // An unterminated <think> means the model ran out of budget while thinking
+  // and never wrote an answer. Drop the monologue so the caller reports a
+  // clean error instead of pasting the thinking into the prompt box.
+  if (/<think>/i.test(t)) t = t.replace(/<think>[\s\S]*$/i, "");
+  return t.trim();
+}
+
 // Captions an uploaded image so the text can seed a prompt. The two vision
 // models take quite different inputs, so each payload is built separately.
 async function handleDescribe(request, env) {
@@ -317,7 +333,7 @@ async function handleDescribe(request, env) {
       max_tokens: 512,
     };
   } else {
-    // llava wants the raw bytes as an array of 8-bit ints.
+    // llava and llama-3.2-11b-vision both want raw bytes as 8-bit ints.
     input = { image: base64ToBytes(b64), prompt: question, max_tokens: 512 };
   }
 
