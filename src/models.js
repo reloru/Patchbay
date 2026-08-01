@@ -926,6 +926,19 @@ export const IMPROVE_MODELS = [
   { id: "@cf/openai/gpt-oss-120b", label: "GPT-OSS 120B — strongest", neurons: 17.5 },
 ];
 
+// Vision models for the "Describe" button (image -> text). Their inputs differ
+// enough that the Worker builds each payload separately:
+//   llava     takes `image` as a byte array, returns {description}
+//   moondream takes `image` as a data URI, streams by default (must disable),
+//             and returns {caption} for task="caption"
+export const DESCRIBE_MODELS = [
+  { id: "@cf/llava-hf/llava-1.5-7b-hf", label: "LLaVA 1.5 7B — beta, no listed price" },
+  { id: "@cf/moondream/moondream3.1-9B-A2B", label: "Moondream 3.1 — richer detail" },
+];
+
+export const DESCRIBE_MODEL_IDS = new Set(DESCRIBE_MODELS.map((m) => m.id));
+export const DEFAULT_DESCRIBE_MODEL = "@cf/llava-hf/llava-1.5-7b-hf";
+
 export const IMPROVE_MODEL_IDS = new Set(IMPROVE_MODELS.map((m) => m.id));
 export const DEFAULT_IMPROVE_MODEL = "@cf/meta/llama-3.2-3b-instruct";
 
