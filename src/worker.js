@@ -293,6 +293,7 @@ async function runXai(spec, input, env) {
 
   const payload = { model: spec.xaiModel, prompt: input.prompt, response_format: "b64_json" };
   if (input.aspect_ratio) payload.aspect_ratio = input.aspect_ratio;
+  if (input.resolution) payload.resolution = input.resolution;
   if (input.n) payload.n = Number(input.n);
   if (refs.length) payload.images = refs;
 

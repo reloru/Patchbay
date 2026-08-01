@@ -907,7 +907,7 @@ const XAI_PRICING = {
   // Published xAI list prices: output per image, plus a per-reference-image
   // input charge. Text input is free.
   "xai-imagine-image": { type: "flat", usd: 0.02, inputUsd: 0.002 },
-  "xai-imagine-image-quality": { type: "flat", usd: 0.05, inputUsd: 0.01 },
+  "xai-imagine-image-quality": { type: "flat", usd: 0.05, usd2k: 0.07, inputUsd: 0.01 },
 };
 
 for (const m of MODELS) {
@@ -965,6 +965,16 @@ const XAI_MODELS = [
     fields: [
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
       { name: "images", label: "Reference image(s) to edit (optional)", type: "image", maxItems: 3, asArray: true, asDataUri: true },
+      {
+        name: "resolution",
+        label: "Resolution",
+        type: "enum",
+        default: "1k",
+        options: [
+          { value: "1k", label: "1K (1024×1024)" },
+          { value: "2k", label: "2K (2048×2048)" },
+        ],
+      },
       { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "1:1", options: XAI_AR },
       { name: "n", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
     ],
@@ -979,6 +989,16 @@ const XAI_MODELS = [
     fields: [
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
       { name: "images", label: "Reference image(s) to edit (optional)", type: "image", maxItems: 3, asArray: true, asDataUri: true },
+      {
+        name: "resolution",
+        label: "Resolution",
+        type: "enum",
+        default: "1k",
+        options: [
+          { value: "1k", label: "1K (1024×1024)" },
+          { value: "2k", label: "2K (2048×2048)" },
+        ],
+      },
       { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "1:1", options: XAI_AR },
       { name: "n", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
     ],
