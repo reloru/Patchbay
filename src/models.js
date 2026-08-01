@@ -925,12 +925,17 @@ export const IMPROVE_MODELS = [
   { id: "@cf/ibm-granite/granite-4.0-h-micro", label: "Granite 4.0 Micro — cheapest", neurons: 2.2 },
   { id: "@cf/meta/llama-3.2-1b-instruct", label: "Llama 3.2 1B — fast", neurons: 3.9 },
   { id: "@cf/meta/llama-3.2-3b-instruct", label: "Llama 3.2 3B — balanced (default)", neurons: 6.6 },
-  { id: "@cf/zai-org/glm-4.7-flash", label: "GLM 4.7 Flash", neurons: 7.9 },
+  { id: "@cf/qwen/qwen3-30b-a3b-fp8", label: "Qwen3 30B — cheap for its size", neurons: 6.6, reasoning: true },
   { id: "@cf/meta/llama-3.1-8b-instruct-fp8-fast", label: "Llama 3.1 8B — sharper", neurons: 7.5 },
-  { id: "@cf/openai/gpt-oss-20b", label: "GPT-OSS 20B", neurons: 7.7 },
-  { id: "@cf/google/gemma-4-26b-a4b-it", label: "Gemma 4 26B", neurons: 6.6 },
+  { id: "@cf/openai/gpt-oss-20b", label: "GPT-OSS 20B", neurons: 7.7, reasoning: true },
+  { id: "@cf/zai-org/glm-4.7-flash", label: "GLM 4.7 Flash", neurons: 7.9, reasoning: true },
   { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", label: "Mistral Small 24B", neurons: 13.9 },
-  { id: "@cf/openai/gpt-oss-120b", label: "GPT-OSS 120B — strongest", neurons: 17.5 },
+  { id: "@cf/openai/gpt-oss-120b", label: "GPT-OSS 120B", neurons: 17.5, reasoning: true },
+  { id: "@cf/meta/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout 17B", neurons: 18.4 },
+  { id: "@cf/qwen/qwq-32b", label: "QwQ 32B — reasoning", neurons: 25.4, reasoning: true },
+  { id: "@cf/nvidia/nemotron-3-120b-a12b", label: "Nemotron 3 120B", neurons: 32.7, reasoning: true },
+  { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", label: "Llama 3.3 70B — strong", neurons: 44.2 },
+  { id: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", label: "DeepSeek R1 32B — priciest", neurons: 94.2, reasoning: true },
 ];
 
 // ───────────────────────── xAI (Grok Imagine) ─────────────────────────
@@ -993,6 +998,7 @@ for (const m of XAI_MODELS) m.price = XAI_PRICING[m.id] || { type: "variable" };
 export const DESCRIBE_MODELS = [
   { id: "@cf/llava-hf/llava-1.5-7b-hf", label: "LLaVA 1.5 7B — beta, no listed price" },
   { id: "@cf/moondream/moondream3.1-9B-A2B", label: "Moondream 3.1 — richer detail" },
+  { id: "@cf/meta/llama-3.2-11b-vision-instruct", label: "Llama 3.2 11B Vision — most descriptive" },
 ];
 
 export const DESCRIBE_MODEL_IDS = new Set(DESCRIBE_MODELS.map((m) => m.id));
