@@ -194,3 +194,52 @@ footer { margin-top: 28px; color: var(--muted); font-size: 12px; }
   color: var(--text);
 }
 .error { color: var(--danger); font-size: 13px; }
+
+
+/* ── Mobile fixes ─────────────────────────────────────────────────────────
+   The prompt toolbar grew past the viewport once Improve/Describe and their
+   model pickers were added, which pushed the whole page sideways. */
+html, body { max-width: 100%; overflow-x: hidden; }
+.panel { min-width: 0; }
+.blurb, .field-label, .opt-head .name { overflow-wrap: anywhere; }
+select, input, textarea, button { max-width: 100%; }
+
+.prompt-lib { flex-wrap: wrap; }
+.prompt-lib > * { flex: 1 1 auto; min-width: 0; }
+.prompt-lib select { flex: 1 1 160px; }
+.prompt-lib button { flex: 0 0 auto; }
+
+/* Reset sits with the parameter heading, well away from Generate, so it is
+   no longer a mis-tap target. */
+.params-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 4px 2px 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+button.tiny { padding: 4px 10px; font-size: 12px; }
+
+.actions { margin-top: 14px; }
+.actions #generate-btn { flex: 1; padding: 12px 18px; font-size: 16px; }
+
+/* Styled file picker: the native control kept showing "no file selected"
+   after a choice and gave no way to swap an image. */
+.file-input { display: none; }
+.file-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.file-status { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+
+/* Bigger remove target — the old one was hard to hit on a phone. */
+.thumbs .thumb { width: 72px; height: 72px; }
+.thumbs .thumb .rm {
+  width: 26px; height: 26px; font-size: 16px;
+  top: 3px; right: 3px; line-height: 1;
+}
+
+@media (max-width: 560px) {
+  .app { padding: 16px 12px 48px; }
+  .prompt-lib > * { flex: 1 1 100%; }
+  .prompt-lib button { flex: 1 1 48%; }
+}

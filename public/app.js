@@ -305,6 +305,27 @@ function imageControl(f) {
   input.type = "file";
   input.accept = f.accept || "image/*";
   input.multiple = maxItems > 1;
+  input.className = "file-input"; // hidden; the button below drives it
+
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "secondary file-pick";
+  pick.addEventListener("click", () => input.click());
+
+  const status = document.createElement("span");
+  status.className = "file-status";
+
+  const updateLabel = () => {
+    const n = (uploads[f.name] || []).length;
+    if (maxItems === 1) {
+      pick.textContent = n ? "Replace image" : "Choose image";
+      status.textContent = n ? (uploads[f.name][0].name || "1 file") : "No image chosen";
+    } else {
+      pick.textContent = n ? "Add image" : "Choose image(s)";
+      status.textContent = n ? `${n} of ${maxItems} chosen` : "No images chosen";
+      pick.disabled = n >= maxItems;
+    }
+  };
 
   const thumbs = document.createElement("div");
   thumbs.className = "thumbs";
@@ -312,6 +333,7 @@ function imageControl(f) {
   uploads[f.name] = uploads[f.name] || [];
 
   const redraw = () => {
+    updateLabel();
     thumbs.innerHTML = "";
     for (let idx = 0; idx < uploads[f.name].length; idx++) {
       const u = uploads[f.name][idx];
@@ -341,6 +363,8 @@ function imageControl(f) {
   input.addEventListener("change", async () => {
     const files = Array.from(input.files || []);
     input.value = "";
+    // A single-image field swaps the picture rather than refusing the new one.
+    if (maxItems === 1 && files.length) uploads[f.name].length = 0;
     for (const file of files) {
       if (uploads[f.name].length >= maxItems) break;
       const placeholder = { file, url: null, name: file.name, isImage: file.type.startsWith("image/"), preview: null, uploading: true };
@@ -377,12 +401,19 @@ function imageControl(f) {
     }
   }
 
+  const row = document.createElement("div");
+  row.className = "file-row";
+  row.appendChild(pick);
+  row.appendChild(status);
   box.appendChild(input);
+  box.appendChild(row);
   box.appendChild(thumbs);
-  const hint = document.createElement("p");
-  hint.className = "help";
-  hint.textContent = maxItems > 1 ? `Up to ${maxItems} file(s).` : "One file.";
-  box.appendChild(hint);
+  if (maxItems > 1) {
+    const hint = document.createElement("p");
+    hint.className = "help";
+    hint.textContent = `Up to ${maxItems} files.`;
+    box.appendChild(hint);
+  }
   redraw();
   return box;
 }
