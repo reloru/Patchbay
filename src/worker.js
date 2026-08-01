@@ -4,8 +4,8 @@
 //   exposed to the browser.
 // - Optional shared-password gate (`APP_PASSWORD` secret) protects your Pruna
 //   credits from anyone who stumbles onto the URL.
-// - Nothing is persisted. The only caching is a <=30s edge/browser cache on
-//   already-generated media so re-displaying it doesn't re-hit Pruna.
+// - Nothing is persisted and nothing is cached: generated media is served
+//   no-store, so neither the browser nor Cloudflare's edge keeps a copy.
 
 import {
   MODELS,
@@ -21,7 +21,6 @@ import {
 const MODELS_BY_ID = new Map(MODELS.map((m) => [m.id, m]));
 
 const PRUNA_BASE = "https://api.pruna.ai/v1";
-const CACHE_SECONDS = 30;
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -519,7 +518,10 @@ async function handleResult(request, env, url) {
   if (ct) headers.set("content-type", ct);
   const cl = upstream.headers.get("content-length");
   if (cl) headers.set("content-length", cl);
-  // Short-lived cache only — no long-term storage of generations.
-  headers.set("cache-control", `public, max-age=${CACHE_SECONDS}`);
+  // Never cached: no-store keeps it out of the browser cache, and the
+  // CDN-specific header stops Cloudflare's edge holding a copy either.
+  headers.set("cache-control", "no-store, no-cache, must-revalidate, max-age=0");
+  headers.set("cdn-cache-control", "no-store");
+  headers.set("pragma", "no-cache");
   return new Response(upstream.body, { status: 200, headers });
 }
