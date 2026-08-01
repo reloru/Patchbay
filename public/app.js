@@ -304,7 +304,7 @@ function imageControl(f) {
           fd.append("file", file);
           const res = await api("/api/upload", { method: "POST", body: fd });
           const data = await res.json();
-          if (!res.ok || !data.url) throw new Error(data.error || "Upload failed");
+          if (!res.ok || !data.url) throw new Error(data.error || data.message || "Upload failed");
           placeholder.url = data.url;
         }
         placeholder.uploading = false;
