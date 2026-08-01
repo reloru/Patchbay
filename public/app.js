@@ -114,11 +114,49 @@ function buildModelSelect() {
 }
 
 function selectModel(id) {
+  // Carry the user's work across the switch: free text by field name, plus the
+  // primary prompt even when the two models name it differently, and any
+  // uploaded files (re-encoded for whatever the new provider expects).
+  const priorText = {};
+  const form = $("gen-form");
+  if (currentModel) {
+    for (const f of currentModel.fields) {
+      if (f.type !== "text" && f.type !== "textarea") continue;
+      const el = form.querySelector(`[data-field="${f.name}"]`);
+      if (el && el.value.trim()) priorText[f.name] = el.value;
+    }
+    const primary = primaryPromptEl();
+    if (primary && primary.value.trim()) priorText.__primary = primary.value;
+    carryFiles = Object.values(uploads)
+      .flat()
+      .map((u) => u.file)
+      .filter(Boolean);
+  }
+
   currentModel = MODELS.find((m) => m.id === id);
   $("model-select").value = id;
   $("model-blurb").textContent = (currentModel.blurb || "") + " " + priceBlurb(currentModel);
   for (const k of Object.keys(uploads)) delete uploads[k];
+  resetImproveState();
   renderFields();
+  carryFiles = [];
+
+  for (const f of currentModel.fields) {
+    if (f.type !== "text" && f.type !== "textarea") continue;
+    const el = form.querySelector(`[data-field="${f.name}"]`);
+    if (!el || priorText[f.name] === undefined) continue;
+    el.value = priorText[f.name];
+    // An optional field only gets sent when its override toggle is on.
+    const enable = form.querySelector(`[data-enable="${f.name}"]`);
+    if (enable && !enable.checked) {
+      enable.checked = true;
+      enable.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
+  const primaryNow = primaryPromptEl();
+  if (primaryNow && !primaryNow.value.trim() && priorText.__primary) {
+    primaryNow.value = priorText.__primary;
+  }
 }
 
 // Reads a file as bare base64 (no data: prefix) for Workers AI inputs.
@@ -243,6 +281,22 @@ function inputControl(f) {
   return i;
 }
 
+// Each provider wants a different encoding, so the File is kept and re-encoded
+// on demand rather than assuming one format.
+async function encodeForField(f, file) {
+  if (f.asDataUri) return await fileToDataUri(file);   // xAI: data: URI in JSON
+  if (f.asBase64) return await fileToBase64(file);     // Workers AI: inline bytes
+  const fd = new FormData();                            // Pruna: upload, use the URL
+  fd.append("file", file);
+  const res = await api("/api/upload", { method: "POST", body: fd });
+  const data = await res.json();
+  if (!res.ok || !data.url) throw new Error(data.error || data.message || "Upload failed");
+  return data.url;
+}
+
+// Files carried across a model switch, consumed by the new model's image fields.
+let carryFiles = [];
+
 function imageControl(f) {
   const box = document.createElement("div");
   const maxItems = f.maxItems || 1;
@@ -288,25 +342,12 @@ function imageControl(f) {
     input.value = "";
     for (const file of files) {
       if (uploads[f.name].length >= maxItems) break;
-      const placeholder = { url: null, name: file.name, isImage: file.type.startsWith("image/"), preview: null, uploading: true };
+      const placeholder = { file, url: null, name: file.name, isImage: file.type.startsWith("image/"), preview: null, uploading: true };
       if (placeholder.isImage) placeholder.preview = URL.createObjectURL(file);
       uploads[f.name].push(placeholder);
       redraw();
       try {
-        if (f.asDataUri) {
-          // xAI takes reference images as full data: URIs in JSON.
-          placeholder.url = await fileToDataUri(file);
-        } else if (f.asBase64) {
-          // Workers AI takes the bytes inline; nothing is uploaded to Pruna.
-          placeholder.url = await fileToBase64(file);
-        } else {
-          const fd = new FormData();
-          fd.append("file", file);
-          const res = await api("/api/upload", { method: "POST", body: fd });
-          const data = await res.json();
-          if (!res.ok || !data.url) throw new Error(data.error || data.message || "Upload failed");
-          placeholder.url = data.url;
-        }
+        placeholder.url = await encodeForField(f, file);
         placeholder.uploading = false;
       } catch (e) {
         const i = uploads[f.name].indexOf(placeholder);
@@ -316,6 +357,24 @@ function imageControl(f) {
       }
     }
   });
+
+  // Adopt files carried over from the previously selected model.
+  if (carryFiles.length) {
+    const taken = carryFiles.splice(0, maxItems - uploads[f.name].length);
+    for (const file of taken) {
+      const placeholder = { file, url: null, name: file.name, isImage: file.type.startsWith("image/"), preview: null, uploading: true };
+      if (placeholder.isImage) placeholder.preview = URL.createObjectURL(file);
+      uploads[f.name].push(placeholder);
+      encodeForField(f, file)
+        .then((url) => { placeholder.url = url; placeholder.uploading = false; })
+        .catch((e) => {
+          const i = uploads[f.name].indexOf(placeholder);
+          if (i >= 0) uploads[f.name].splice(i, 1);
+          redraw();
+          setStatus("Could not carry image over: " + e.message, "err");
+        });
+    }
+  }
 
   box.appendChild(input);
   box.appendChild(thumbs);
@@ -692,6 +751,19 @@ function refreshPromptSelect(keepValue) {
 
 const IMPROVE_MODEL_KEY = "pruna_improve_model";
 
+// "Improve" rewrites the prompt in place and keeps the original so a second
+// click can undo it. Editing the prompt afterwards makes the undo stale, so the
+// button goes back to "Improve" rather than offering to restore unrelated text.
+let preImprove = null;
+let improvedText = null;
+
+function resetImproveState() {
+  preImprove = null;
+  improvedText = null;
+  const b = $("prompt-improve");
+  if (b) b.textContent = "✨ Improve";
+}
+
 function initImproveModelPicker() {
   const sel = $("improve-model");
   sel.innerHTML = "";
@@ -801,7 +873,6 @@ function initPromptLibrary() {
 
   // "Improve" rewrites the prompt in place via a small chat model, keeping the
   // previous text so a second click can undo it.
-  let preImprove = null;
   const improveBtn = $("prompt-improve");
   improveBtn.addEventListener("click", async () => {
     const el = primaryPromptEl();
@@ -809,8 +880,7 @@ function initPromptLibrary() {
 
     if (preImprove !== null) {
       el.value = preImprove;
-      preImprove = null;
-      improveBtn.textContent = "✨ Improve";
+      resetImproveState();
       setStatus("Reverted to your original prompt.", "ok");
       return;
     }
@@ -832,6 +902,7 @@ function initPromptLibrary() {
       const data = await res.json();
       if (!res.ok || !data.prompt) throw new Error(data.error || `HTTP ${res.status}`);
       preImprove = text;
+      improvedText = data.prompt;
       el.value = data.prompt;
       el.dispatchEvent(new Event("input", { bubbles: true }));
       improveBtn.textContent = "↩ Undo";
@@ -844,9 +915,15 @@ function initPromptLibrary() {
   });
 
   // A new prompt from any other source invalidates the undo buffer.
-  $("prompt-select").addEventListener("change", () => {
-    preImprove = null;
-    improveBtn.textContent = "✨ Improve";
+  $("prompt-select").addEventListener("change", resetImproveState);
+
+  // Typing in the prompt invalidates the undo. Delegated on the form because
+  // the prompt element is rebuilt whenever fields re-render.
+  $("gen-form").addEventListener("input", (e) => {
+    if (preImprove === null) return;
+    if (e.target !== primaryPromptEl()) return;
+    if (e.target.value === improvedText) return; // our own programmatic set
+    resetImproveState();
   });
 
   $("prompt-del").addEventListener("click", () => {
