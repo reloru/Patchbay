@@ -97,6 +97,9 @@ export default {
       if (path === "/api/describe" && request.method === "POST") {
         return await handleDescribe(request, env);
       }
+      if (path === "/api/neurons" && request.method === "GET") {
+        return await handleNeurons(env);
+      }
       if (path === "/api/result" && request.method === "GET") {
         return await handleResult(request, env, url);
       }
@@ -223,6 +226,57 @@ async function handleImprovePrompt(request, env) {
   const text = stripReasoning(pickText(out)).replace(/^["'\s]+|["'\s]+$/g, "");
   if (!text) return json({ error: "The model returned nothing usable." }, 502);
   return json({ prompt: text });
+}
+
+// Actual Workers AI neuron usage for the current UTC day, from Cloudflare's
+// GraphQL analytics. There is no REST endpoint for this and no "balance" call —
+// the free allowance is a fixed 10,000/day, so remaining is derived by
+// subtracting what has been spent. Analytics lag inference by a minute or two.
+const CF_FREE_NEURONS_PER_DAY = 10000;
+
+async function handleNeurons(env) {
+  if (!env.CF_ANALYTICS_TOKEN || !env.CF_ACCOUNT_ID) {
+    return json({ error: "Neuron reporting is not configured." }, 501);
+  }
+  const day = new Date().toISOString().slice(0, 10);
+  const query = `query {
+    viewer { accounts(filter: {accountTag: "${env.CF_ACCOUNT_ID}"}) {
+      aiInferenceAdaptiveGroups(limit: 100, filter: {date_geq: "${day}"}) {
+        sum { totalNeurons } dimensions { modelId }
+      } } } }`;
+
+  let data;
+  try {
+    const res = await fetch("https://api.cloudflare.com/client/v4/graphql", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ query }),
+    });
+    data = await res.json();
+  } catch (err) {
+    return json({ error: "Analytics request failed: " + (err && err.message ? err.message : String(err)) }, 502);
+  }
+  if (data.errors) {
+    return json({ error: "Analytics: " + JSON.stringify(data.errors).slice(0, 200) }, 502);
+  }
+
+  const rows = data?.data?.viewer?.accounts?.[0]?.aiInferenceAdaptiveGroups || [];
+  const byModel = rows
+    .map((r) => ({ model: r.dimensions.modelId, neurons: r.sum.totalNeurons }))
+    .filter((r) => r.neurons > 0)
+    .sort((a, b) => b.neurons - a.neurons);
+  const used = rows.reduce((n, r) => n + (r.sum.totalNeurons || 0), 0);
+
+  return json({
+    day,
+    used,
+    limit: CF_FREE_NEURONS_PER_DAY,
+    remaining: Math.max(0, CF_FREE_NEURONS_PER_DAY - used),
+    byModel: byModel.slice(0, 10),
+  });
 }
 
 // Runs a Grok Imagine model directly against api.x.ai. Reference images switch
