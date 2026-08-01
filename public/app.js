@@ -131,6 +131,16 @@ function fileToBase64(file) {
   });
 }
 
+// Full data: URI (xAI reference images).
+function fileToDataUri(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(new Error("Could not read file"));
+    r.readAsDataURL(file);
+  });
+}
+
 function defaultSteps(model) {
   const f = model.fields.find((x) => x.name === "steps" || x.name === "num_steps");
   return f ? f.default : 0;
@@ -283,7 +293,10 @@ function imageControl(f) {
       uploads[f.name].push(placeholder);
       redraw();
       try {
-        if (f.asBase64) {
+        if (f.asDataUri) {
+          // xAI takes reference images as full data: URIs in JSON.
+          placeholder.url = await fileToDataUri(file);
+        } else if (f.asBase64) {
           // Workers AI takes the bytes inline; nothing is uploaded to Pruna.
           placeholder.url = await fileToBase64(file);
         } else {
