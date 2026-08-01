@@ -85,6 +85,7 @@ function startApp() {
   buildModelSelect();
   selectModel(MODELS[0].id);
   initPromptLibrary();
+  refreshNeurons();
   $("footer-note").textContent =
     "Generations are proxied through a Cloudflare Worker and not stored. Media is cached at most 30s.";
 }
@@ -541,6 +542,8 @@ $("gen-form").addEventListener("submit", async (e) => {
     showResult(urls, kind);
     const secs = Math.round((Date.now() - started) / 1000);
     const cost = addSpend(currentModel, input, urls.length);
+    // Analytics lag inference slightly, so give it a moment before re-reading.
+    setTimeout(refreshNeurons, 4000);
     setStatus(`Done in ${secs}s.${cost ? " " + cost : ""}`, "ok");
   } catch (err) {
     setStatus("Error: " + err.message, "err");
@@ -1032,20 +1035,49 @@ function addSpend(model, input, outputCount) {
   return cost == null ? "Cost: varies by settings." : `Est. ${fmtUsd(cost)}.`;
 }
 
+// Actual neurons spent today, straight from Cloudflare analytics. Falls back
+// silently to the estimate if reporting is not configured.
+let actualNeurons = null;
+
+async function refreshNeurons() {
+  try {
+    const res = await api("/api/neurons");
+    if (!res.ok) return;
+    const d = await res.json();
+    if (typeof d.used !== "number") return;
+    actualNeurons = d;
+    updateSpendBar();
+  } catch {
+    /* leave the estimate in place */
+  }
+}
+
 function updateSpendBar() {
   const el = $("spend");
   if (!el) return;
   const parts = [];
-  if (sessionSpend > 0) parts.push(`Pruna ~${fmtUsd(sessionSpend)}`);
-  if (sessionNeurons > 0) {
-    const pct = Math.round((sessionNeurons / CF_FREE_NEURONS) * 100);
-    parts.push(`Workers AI ~${Math.round(sessionNeurons).toLocaleString()} neurons (~${pct}% of today's free 10,000)`);
+
+  // Real usage when analytics are available; the estimate only as a fallback.
+  if (actualNeurons) {
+    const pct = Math.round((actualNeurons.used / actualNeurons.limit) * 100);
+    parts.push(
+      `Workers AI ${Math.round(actualNeurons.used).toLocaleString()} of ` +
+      `${actualNeurons.limit.toLocaleString()} neurons used today (${pct}%, ` +
+      `${Math.round(actualNeurons.remaining).toLocaleString()} left)`
+    );
+  } else if (sessionNeurons > 0) {
+    parts.push(`Workers AI ~${Math.round(sessionNeurons).toLocaleString()} neurons this session (est.)`);
   }
-  if (!parts.length) parts.push("no billable runs yet");
-  el.textContent =
-    `Session estimate: ${parts.join(" · ")} over ${sessionRuns} run${sessionRuns === 1 ? "" : "s"} · estimates only`;
+
+  // Pruna bills in dollars and has no usage API, so it stays an estimate.
+  if (sessionSpend > 0) parts.push(`Pruna ~${fmtUsd(sessionSpend)} this session (est.)`);
+
+  if (!parts.length) parts.push("no usage recorded yet");
+  if (sessionRuns > 0) parts.push(`${sessionRuns} run${sessionRuns === 1 ? "" : "s"} this session`);
+  el.textContent = parts.join(" · ");
   el.classList.remove("hidden");
 }
+
 
 // ---------------------------------------------------------------------------
 // UI helpers
