@@ -1024,8 +1024,11 @@ function estimateCost(model, input, outputCount) {
   const p = model.price;
   if (!p || p.type === "variable" || p.type === "cf_neurons" || p.type === "cf_unpriced") return null;
   if (p.type === "flat") {
-    const n = Number(input.num_outputs) || outputCount || 1;
-    return p.usd * n;
+    const n = Number(input.num_outputs) || Number(input.n) || outputCount || 1;
+    // Grok's quality model charges more at 2k; reference images bill separately.
+    const per = input.resolution === "2k" && p.usd2k != null ? p.usd2k : p.usd;
+    const refs = Array.isArray(input.images) ? input.images.length : 0;
+    return per * n + refs * (p.inputUsd || 0);
   }
   if (p.type === "per_second") {
     const rate = p.usd[input.resolution || "720p"];
