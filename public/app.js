@@ -6,6 +6,8 @@
 let MODELS = [];
 let improveModels = [];
 let defaultImproveModel = "";
+let describeModels = [];
+let defaultDescribeModel = "";
 let authRequired = false;
 let currentModel = null;
 const uploads = {}; // fieldName -> [{url, name, isImage}]
@@ -48,6 +50,8 @@ async function boot() {
   MODELS = cfg.models || [];
   improveModels = cfg.improveModels || [];
   defaultImproveModel = cfg.defaultImproveModel || "";
+  describeModels = cfg.describeModels || [];
+  defaultDescribeModel = cfg.defaultDescribeModel || "";
   authRequired = Boolean(cfg.authRequired);
 
   if (authRequired && !getPw()) {
@@ -693,9 +697,59 @@ function initImproveModelPicker() {
   });
 }
 
+// "Describe" captions an uploaded image straight into the prompt box, so a
+// reference picture can seed a prompt.
+function initDescribe() {
+  const sel = $("describe-model");
+  sel.innerHTML = "";
+  for (const m of describeModels) {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = m.label;
+    sel.appendChild(o);
+  }
+  sel.value = defaultDescribeModel;
+
+  const btn = $("prompt-describe");
+  const file = $("describe-file");
+  btn.addEventListener("click", () => file.click());
+
+  file.addEventListener("change", async () => {
+    const f = file.files && file.files[0];
+    file.value = "";
+    if (!f) return;
+    const el = primaryPromptEl();
+    if (!el) return;
+
+    btn.disabled = true;
+    const idle = btn.textContent;
+    btn.textContent = "Reading…";
+    setStatus("Describing image…", "load");
+    try {
+      const b64 = await fileToBase64(f);
+      const res = await api("/api/describe", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ image_b64: b64, mime: f.type || "image/jpeg", model: sel.value }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.description) throw new Error(data.error || `HTTP ${res.status}`);
+      el.value = data.description;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      setStatus("Prompt filled from the image.", "ok");
+    } catch (e) {
+      setStatus("Describe failed: " + e.message, "err");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = idle;
+    }
+  });
+}
+
 function initPromptLibrary() {
   refreshPromptSelect();
   initImproveModelPicker();
+  initDescribe();
 
   $("prompt-select").addEventListener("change", (e) => {
     const idx = e.target.value;

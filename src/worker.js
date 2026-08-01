@@ -7,7 +7,16 @@
 // - Nothing is persisted. The only caching is a <=30s edge/browser cache on
 //   already-generated media so re-displaying it doesn't re-hit Pruna.
 
-import { MODELS, MODEL_IDS, IMPROVE_MODELS, IMPROVE_MODEL_IDS, DEFAULT_IMPROVE_MODEL } from "./models.js";
+import {
+  MODELS,
+  MODEL_IDS,
+  IMPROVE_MODELS,
+  IMPROVE_MODEL_IDS,
+  DEFAULT_IMPROVE_MODEL,
+  DESCRIBE_MODELS,
+  DESCRIBE_MODEL_IDS,
+  DEFAULT_DESCRIBE_MODEL,
+} from "./models.js";
 
 const MODELS_BY_ID = new Map(MODELS.map((m) => [m.id, m]));
 
@@ -63,6 +72,8 @@ export default {
           models: MODELS,
           improveModels: IMPROVE_MODELS,
           defaultImproveModel: DEFAULT_IMPROVE_MODEL,
+          describeModels: DESCRIBE_MODELS,
+          defaultDescribeModel: DEFAULT_DESCRIBE_MODEL,
         });
       }
 
@@ -82,6 +93,9 @@ export default {
       }
       if (path === "/api/improve-prompt" && request.method === "POST") {
         return await handleImprovePrompt(request, env);
+      }
+      if (path === "/api/describe" && request.method === "POST") {
+        return await handleDescribe(request, env);
       }
       if (path === "/api/result" && request.method === "GET") {
         return await handleResult(request, env, url);
@@ -202,10 +216,72 @@ async function handleImprovePrompt(request, env) {
     return json({ error: "Improve failed: " + (err && err.message ? err.message : String(err)) }, 502);
   }
 
-  let text = (out && (out.response ?? out.result ?? "")) || "";
-  text = String(text).trim().replace(/^["'\s]+|["'\s]+$/g, "");
+  const text = pickText(out).replace(/^["'\s]+|["'\s]+$/g, "");
   if (!text) return json({ error: "The model returned nothing usable." }, 502);
   return json({ prompt: text });
+}
+
+// Workers AI text responses come back in several shapes depending on the
+// model family: a bare {response}, an OpenAI-style {choices[].message.content}
+// (gpt-oss), or nested under {result} (moondream). Pull the text from whichever
+// one is present.
+function pickText(out) {
+  if (!out) return "";
+  if (typeof out === "string") return out.trim();
+  const choice = out.choices && out.choices[0];
+  const candidate =
+    out.response ??
+    out.description ??
+    out.caption ??
+    out.answer ??
+    out.output_text ??
+    (choice && choice.message && choice.message.content) ??
+    (choice && choice.text);
+  if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  // One level of nesting, e.g. moondream's {result: {caption}}.
+  if (out.result && typeof out.result === "object") return pickText(out.result);
+  return "";
+}
+
+// Captions an uploaded image so the text can seed a prompt. The two vision
+// models take quite different inputs, so each payload is built separately.
+async function handleDescribe(request, env) {
+  if (!env.AI) return json({ error: "Workers AI binding is not configured." }, 500);
+
+  const body = await request.json().catch(() => null);
+  const b64 = body && typeof body.image_b64 === "string" ? body.image_b64 : "";
+  if (!b64) return json({ error: "No image provided." }, 400);
+
+  const model = DESCRIBE_MODEL_IDS.has(body.model) ? body.model : DEFAULT_DESCRIBE_MODEL;
+  const question =
+    (typeof body.question === "string" && body.question.trim()) ||
+    "Describe this image in vivid detail, as if writing a prompt to recreate it.";
+
+  let input;
+  if (model.includes("moondream")) {
+    // Streams by default; disable so we get a single JSON body back.
+    input = {
+      task: "caption",
+      image: `data:${body.mime || "image/jpeg"};base64,${b64}`,
+      caption_length: body.caption_length || "normal",
+      stream: false,
+      max_tokens: 512,
+    };
+  } else {
+    // llava wants the raw bytes as an array of 8-bit ints.
+    input = { image: base64ToBytes(b64), prompt: question, max_tokens: 512 };
+  }
+
+  let out;
+  try {
+    out = await env.AI.run(model, input);
+  } catch (err) {
+    return json({ error: "Describe failed: " + (err && err.message ? err.message : String(err)) }, 502);
+  }
+
+  const text = pickText(out);
+  if (!text) return json({ error: "The model returned no description." }, 502);
+  return json({ description: text });
 }
 
 // The FLUX.2 family takes multipart/form-data rather than JSON. Reference
