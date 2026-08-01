@@ -903,6 +903,13 @@ const CF_NEURONS = {
 // USD per neuron beyond the free daily allowance ($0.011 per 1,000).
 export const CF_USD_PER_NEURON = 0.011 / 1000;
 
+const XAI_PRICING = {
+  // Published xAI list prices: output per image, plus a per-reference-image
+  // input charge. Text input is free.
+  "xai-imagine-image": { type: "flat", usd: 0.02, inputUsd: 0.002 },
+  "xai-imagine-image-quality": { type: "flat", usd: 0.05, inputUsd: 0.01 },
+};
+
 for (const m of MODELS) {
   if (m.provider === "workers-ai") {
     m.price = CF_NEURONS[m.id] ? { type: "cf_neurons", ...CF_NEURONS[m.id] } : { type: "cf_unpriced" };
@@ -925,6 +932,58 @@ export const IMPROVE_MODELS = [
   { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", label: "Mistral Small 24B", neurons: 13.9 },
   { id: "@cf/openai/gpt-oss-120b", label: "GPT-OSS 120B — strongest", neurons: 17.5 },
 ];
+
+// ───────────────────────── xAI (Grok Imagine) ─────────────────────────
+// Called directly against api.x.ai with XAI_API_KEY, not through Cloudflare.
+// No reference images -> POST /v1/images/generations
+// With reference images -> POST /v1/images/edits (up to 3, as data URIs)
+// Text input is free; billing is per image, so `price` is a flat USD figure.
+
+const XAI_AR = [
+  { value: "1:1", label: "1:1 square" },
+  { value: "16:9", label: "16:9 landscape" },
+  { value: "9:16", label: "9:16 portrait" },
+  { value: "4:3", label: "4:3" },
+  { value: "3:4", label: "3:4" },
+  { value: "3:2", label: "3:2" },
+  { value: "2:3", label: "2:3" },
+];
+
+const XAI_MODELS = [
+  {
+    id: "xai-imagine-image",
+    xaiModel: "grok-imagine-image",
+    label: "Grok Imagine Image",
+    group: "xAI (Grok)",
+    kind: "image",
+    blurb: "Grok's fast image model. Generates, or edits up to 3 reference images.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "images", label: "Reference image(s) to edit (optional)", type: "image", maxItems: 3, asArray: true, asDataUri: true },
+      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "1:1", options: XAI_AR },
+      { name: "n", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
+    ],
+  },
+  {
+    id: "xai-imagine-image-quality",
+    xaiModel: "grok-imagine-image-quality",
+    label: "Grok Imagine Image Quality",
+    group: "xAI (Grok)",
+    kind: "image",
+    blurb: "Higher-quality Grok image model. Generates, or edits up to 3 references.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "images", label: "Reference image(s) to edit (optional)", type: "image", maxItems: 3, asArray: true, asDataUri: true },
+      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "1:1", options: XAI_AR },
+      { name: "n", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
+    ],
+  },
+];
+
+for (const m of XAI_MODELS) m.provider = "xai";
+MODELS.push(...XAI_MODELS);
+// Priced here rather than in the loop above, which runs before this push.
+for (const m of XAI_MODELS) m.price = XAI_PRICING[m.id] || { type: "variable" };
 
 // Vision models for the "Describe" button (image -> text). Their inputs differ
 // enough that the Worker builds each payload separately:

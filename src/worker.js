@@ -118,6 +118,7 @@ async function handleGenerate(request, env) {
 
   const spec = MODELS_BY_ID.get(model);
   if (spec.provider === "workers-ai") return await runWorkersAI(spec, input, env);
+  if (spec.provider === "xai") return await runXai(spec, input, env);
 
   const headers = {
     apikey: env.PRUNA_API_KEY,
@@ -219,6 +220,54 @@ async function handleImprovePrompt(request, env) {
   const text = pickText(out).replace(/^["'\s]+|["'\s]+$/g, "");
   if (!text) return json({ error: "The model returned nothing usable." }, 502);
   return json({ prompt: text });
+}
+
+// Runs a Grok Imagine model directly against api.x.ai. Reference images switch
+// the call from /images/generations to /images/edits; xAI takes them as JSON
+// (data URIs), not multipart. Synchronous — no job to poll.
+async function runXai(spec, input, env) {
+  if (!env.XAI_API_KEY) return json({ error: "xAI is not configured (XAI_API_KEY missing)." }, 500);
+
+  const refs = []
+    .concat(input.images || [])
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((url) => ({ type: "image_url", url }));
+
+  const payload = { model: spec.xaiModel, prompt: input.prompt, response_format: "b64_json" };
+  if (input.aspect_ratio) payload.aspect_ratio = input.aspect_ratio;
+  if (input.n) payload.n = Number(input.n);
+  if (refs.length) payload.images = refs;
+
+  const path = refs.length ? "edits" : "generations";
+  let res, text;
+  try {
+    res = await fetch(`https://api.x.ai/v1/images/${path}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.XAI_API_KEY}`, "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    text = await res.text();
+  } catch (err) {
+    return json({ error: "xAI request failed: " + (err && err.message ? err.message : String(err)) }, 502);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return json({ error: "xAI returned a non-JSON response." }, 502);
+  }
+  if (!res.ok) {
+    // Surface xAI's own wording (e.g. the no-credits message) rather than hiding it.
+    return json({ error: "xAI: " + (data.error || data.message || `HTTP ${res.status}`) }, res.status);
+  }
+
+  const images = (data.data || [])
+    .map((d) => (d.b64_json ? "data:image/jpeg;base64," + d.b64_json : d.url))
+    .filter(Boolean);
+  if (!images.length) return json({ error: "xAI returned no images." }, 502);
+  return json({ status: "succeeded", images });
 }
 
 // Workers AI text responses come back in several shapes depending on the
@@ -381,11 +430,15 @@ async function handleResult(request, env, url) {
     return json({ error: "Invalid url." }, 400);
   }
   // SSRF guard: only proxy Pruna's own hosts.
-  if (parsed.protocol !== "https:" || !/(^|\.)pruna\.ai$/.test(parsed.hostname)) {
-    return json({ error: "Refusing to proxy non-Pruna URL." }, 400);
+  const allowedHost = /(^|\.)pruna\.ai$/.test(parsed.hostname) || /(^|\.)x\.ai$/.test(parsed.hostname);
+  if (parsed.protocol !== "https:" || !allowedHost) {
+    return json({ error: "Refusing to proxy a URL outside Pruna and xAI." }, 400);
   }
 
-  const upstream = await fetch(parsed.toString(), { headers: { apikey: env.PRUNA_API_KEY } });
+  const isXai = /(^|\.)x\.ai$/.test(parsed.hostname);
+  const upstream = await fetch(parsed.toString(), {
+    headers: isXai ? { authorization: `Bearer ${env.XAI_API_KEY}` } : { apikey: env.PRUNA_API_KEY },
+  });
   if (!upstream.ok) {
     return json({ error: `Delivery fetch failed (${upstream.status}).` }, upstream.status);
   }
