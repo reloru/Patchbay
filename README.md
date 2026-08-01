@@ -10,8 +10,8 @@ A single-user web app for **image & video generation and editing** using the
   turn on are sent; everything else uses Pruna's defaults.
 - **File uploads** (init images, edit references, start/end frames, masks,
   source video/audio) are proxied to Pruna's `/v1/files` and referenced by URL.
-- **No storage.** Nothing is persisted. Generated media is cached at most
-  **30 seconds** (short edge/browser cache), then it's gone.
+- **No storage, no caching.** Nothing is persisted, and generated media is
+  served `no-store` so neither the browser nor Cloudflare's edge keeps a copy.
 - **Credential-hiding proxy.** Your Pruna API key lives only in a Cloudflare
   secret and is never exposed to the browser.
 - **Password gate** (optional) protects your Pruna credits from anyone who
@@ -27,7 +27,7 @@ Browser (public/)  ──►  Cloudflare Worker (src/worker.js)  ──►  Prun
                           /api/generate → POST /v1/predictions
                           /api/status   → GET  /v1/predictions/status/{id}
                           /api/upload   → POST /v1/files
-                          /api/result   → GET  /v1/predictions/delivery/... (adds apikey, ≤30s cache)
+                          /api/result   → GET  /v1/predictions/delivery/... (adds apikey, no-store)
 ```
 
 `src/models.js` is the single source of truth for the model catalog. The

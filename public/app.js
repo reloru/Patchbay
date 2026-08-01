@@ -87,7 +87,7 @@ function startApp() {
   initPromptLibrary();
   refreshNeurons();
   $("footer-note").textContent =
-    "Generations are proxied through a Cloudflare Worker and not stored. Media is cached at most 30s.";
+    "Generations are proxied through a Cloudflare Worker. Nothing is stored and nothing is cached.";
 }
 
 // ---------------------------------------------------------------------------
