@@ -221,6 +221,12 @@ function priceBlurb(model) {
   if (p.type === "thinking_size_tiered") {
     return `List price: ${fmtUsd(p.usd["very low"]["1K"])}–${fmtUsd(p.usd.high["2K"])} per image, by thinking effort and resolution.`;
   }
+  if (p.type === "xai_video") {
+    return (
+      `List price: ${fmtUsd(p.outUsdPerSec["480p"])}/s at 480p, ${fmtUsd(p.outUsdPerSec["720p"])}/s at 720p ` +
+      `(1080p has no published rate), plus ${fmtUsd(p.inputImageUsd)} per input image.`
+    );
+  }
   return "List price: varies with your settings.";
 }
 
@@ -607,6 +613,7 @@ $("reset-btn").addEventListener("click", () => {
 });
 
 async function runGeneration(model, input, kind, onProgress) {
+  lastActualCostUsd = null;
   const startRes = await api("/api/generate", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -648,7 +655,11 @@ async function runGeneration(model, input, kind, onProgress) {
     const sRes = await api("/api/status?id=" + encodeURIComponent(id));
     const s = await sRes.json();
     if (!sRes.ok) throw new Error(s.error || `Status HTTP ${sRes.status}`);
-    if (s.status === "succeeded") return asUrlList(s.generation_url || s.output || s.output_url);
+    if (s.status === "succeeded") {
+      // xAI reports the job's real dollar cost — prefer that over any estimate.
+      lastActualCostUsd = typeof s.actual_cost_usd === "number" ? s.actual_cost_usd : null;
+      return asUrlList(s.generation_url || s.output || s.output_url);
+    }
     if (s.status === "failed" || s.status === "error" || s.status === "canceled") {
       throw new Error(s.message || s.error || "Generation failed.");
     }
@@ -1017,6 +1028,9 @@ function initPromptLibrary() {
 let sessionSpend = 0;
 let sessionRuns = 0;
 let sessionNeurons = 0;
+// Real dollar cost of the most recent xAI video job, reported by xAI itself
+// rather than estimated. Set in runGeneration(), consumed once by addSpend().
+let lastActualCostUsd = null;
 const CF_FREE_NEURONS = 10000; // Workers AI free allowance per day, resets 00:00 UTC
 const CF_USD_PER_NEURON = 0.011 / 1000; // $0.011 per 1,000 neurons beyond the allowance
 
@@ -1093,6 +1107,13 @@ function estimateCost(model, input, outputCount) {
     const rate = thinking[input.image_size || "2K"];
     return rate == null ? null : rate;
   }
+  if (p.type === "xai_video") {
+    const rate = p.outUsdPerSec[input.resolution || "480p"];
+    if (rate == null) return null; // 1080p has no published rate
+    const secs = Number(input.duration) || 8;
+    const refs = (input.image ? 1 : 0) + (Array.isArray(input.reference_images) ? input.reference_images.length : 0);
+    return rate * secs + refs * p.inputImageUsd;
+  }
   return null;
 }
 
@@ -1117,6 +1138,15 @@ function addSpend(model, input, outputCount) {
   if (model.price && model.price.type === "cf_unpriced") {
     updateSpendBar();
     return "Cloudflare does not publish a rate for this model.";
+  }
+
+  // xAI video jobs report their real dollar cost — use that instead of an estimate.
+  if (lastActualCostUsd != null) {
+    const actual = lastActualCostUsd;
+    lastActualCostUsd = null;
+    sessionSpend += actual;
+    updateSpendBar();
+    return `${fmtUsd(actual)} (xAI's reported cost).`;
   }
 
   const cost = estimateCost(model, input, outputCount);

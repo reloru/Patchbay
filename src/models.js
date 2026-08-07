@@ -1042,6 +1042,15 @@ const XAI_PRICING = {
   // input charge. Text input is free.
   "xai-imagine-image": { type: "flat", usd: 0.02, inputUsd: 0.002 },
   "xai-imagine-image-quality": { type: "flat", usd: 0.05, usd2k: 0.07, inputUsd: 0.01 },
+  // Output per second of video, by resolution, plus a per-input-image charge
+  // (start image + reference images). 1080p has no published rate, so it's
+  // left out and priced as "varies" rather than guessed at.
+  "xai-imagine-video": { type: "xai_video", outUsdPerSec: { "480p": 0.05, "720p": 0.07 }, inputImageUsd: 0.002 },
+  // xai-video-edit and xai-video-extend are intentionally absent here: their
+  // cost depends on the input video's own duration, which the browser can't
+  // know before upload, and neither endpoint documents its own rate
+  // separately from generation. They fall through to "variable" below rather
+  // than showing a guessed figure.
 };
 
 for (const m of MODELS) {
@@ -1095,6 +1104,24 @@ const XAI_AR = [
   { value: "9:20", label: "9:20 (tall phone)" },
 ];
 
+// Video's documented aspect ratios are a smaller, distinct set from images'
+// (no "auto", no phone ratios).
+const XAI_VIDEO_AR = [
+  { value: "16:9", label: "16:9 landscape" },
+  { value: "9:16", label: "9:16 portrait" },
+  { value: "1:1", label: "1:1 square" },
+  { value: "4:3", label: "4:3" },
+  { value: "3:4", label: "3:4" },
+  { value: "3:2", label: "3:2" },
+  { value: "2:3", label: "2:3" },
+];
+
+// The video field type reuses "image" with accept="video/*" and asDataUri,
+// the same pattern Pruna's video-input models already use.
+function xaiVideoInputField(label) {
+  return { name: "video", label, type: "image", accept: "video/*", required: true, asDataUri: true };
+}
+
 const XAI_MODELS = [
   {
     id: "xai-imagine-image",
@@ -1142,6 +1169,67 @@ const XAI_MODELS = [
       },
       { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "auto", options: XAI_AR },
       { name: "n", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
+    ],
+  },
+  {
+    id: "xai-imagine-video",
+    xaiModel: "grok-imagine-video",
+    xaiEndpoint: "generations",
+    xaiAsync: true,
+    label: "Grok Imagine Video",
+    group: "xAI (Grok)",
+    kind: "video",
+    blurb: "Text-, image-, or reference-to-video. Async — polls until done.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "image", label: "Starting image (optional, for image-to-video)", type: "image", asDataUri: true },
+      {
+        name: "reference_images",
+        label: "Reference image(s) (optional, for reference-to-video)",
+        type: "image",
+        maxItems: 3,
+        asArray: true,
+        asDataUri: true,
+      },
+      { name: "duration", label: "Length (seconds)", type: "int", default: 8, min: 1, max: 15 },
+      {
+        name: "resolution",
+        label: "Resolution",
+        type: "enum",
+        default: "480p",
+        options: [
+          { value: "480p", label: "480p" },
+          { value: "720p", label: "720p" },
+          { value: "1080p", label: "1080p (no published price)" },
+        ],
+      },
+      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "16:9", options: XAI_VIDEO_AR },
+    ],
+  },
+  {
+    id: "xai-video-edit",
+    xaiModel: "grok-imagine-video",
+    xaiEndpoint: "edits",
+    xaiAsync: true,
+    label: "Grok Video Edit",
+    group: "xAI (Grok)",
+    kind: "video",
+    blurb: "Edit an existing video from a text instruction. Async — polls until done.",
+    fields: [xaiVideoInputField("Video to edit"), { name: "prompt", label: "What to change", type: "textarea", required: true }],
+  },
+  {
+    id: "xai-video-extend",
+    xaiModel: "grok-imagine-video",
+    xaiEndpoint: "extensions",
+    xaiAsync: true,
+    label: "Grok Video Extend",
+    group: "xAI (Grok)",
+    kind: "video",
+    blurb: "Continue a video with new generated footage. Async — polls until done.",
+    fields: [
+      xaiVideoInputField("Video to extend"),
+      { name: "prompt", label: "What happens next", type: "textarea", required: true },
+      { name: "duration", label: "Extra length (seconds)", type: "int", default: 6, min: 2, max: 10 },
     ],
   },
 ];
