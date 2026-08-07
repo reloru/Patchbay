@@ -280,6 +280,52 @@ export const MODELS = [
     ],
   },
 
+  {
+    id: "p-image-ideogram",
+    label: "P-Image-Ideogram (Pruna)",
+    group: "Image generation",
+    kind: "image",
+    blurb: "Ideogram-style generation with an adjustable thinking effort dial.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      {
+        name: "thinking",
+        label: "Thinking effort",
+        type: "enum",
+        default: "medium",
+        options: [
+          { value: "very low", label: "Very low" },
+          { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+          { value: "high", label: "High" },
+        ],
+      },
+      {
+        name: "image_size",
+        label: "Resolution budget",
+        type: "enum",
+        default: "2K",
+        options: [
+          { value: "1K", label: "1K" },
+          { value: "2K", label: "2K" },
+        ],
+      },
+      { name: "prompt_upsampling", label: "Auto-improve prompt", type: "bool", default: true },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "1:1",
+        options: [...AR_COMMON, { value: "custom", label: "Custom size" }],
+      },
+      { name: "width", label: "Width (custom size)", type: "int", default: 1024, min: 256, max: 2560, step: 16 },
+      { name: "height", label: "Height (custom size)", type: "int", default: 1024, min: 256, max: 2560, step: 16 },
+      SEED,
+      OUTPUT_FORMAT,
+      OUTPUT_QUALITY,
+    ],
+  },
+
   // ───────────────────────── Image editing ─────────────────────────
   {
     id: "qwen-image-edit-plus",
@@ -351,6 +397,30 @@ export const MODELS = [
     ],
   },
   {
+    id: "p-image-edit-lora",
+    label: "P-Image-Edit-LoRA (Pruna)",
+    group: "Image editing",
+    kind: "image",
+    blurb: "Edit images with a custom LoRA style loaded from Hugging Face.",
+    fields: [
+      { name: "prompt", label: "Edit instruction", type: "textarea", required: true, help: 'Refer to inputs as "image 1", "image 2", etc.' },
+      { name: "images", label: "Reference image(s) (optional)", type: "image", maxItems: 5, asArray: true },
+      { name: "lora_weights", label: "LoRA (Hugging Face URL)", type: "text", default: "" },
+      { name: "lora_scale", label: "LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.1 },
+      { name: "hf_api_token", label: "Hugging Face token (private LoRAs)", type: "text", default: "" },
+      { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: true },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "match_input_image",
+        options: [{ value: "match_input_image", label: "Keep original" }, ...AR_COMMON],
+      },
+      SEED,
+      moderationFilter(),
+    ],
+  },
+  {
     id: "p-image-upscale",
     label: "P-Image-Upscale (Pruna)",
     group: "Image editing",
@@ -364,6 +434,34 @@ export const MODELS = [
       OUTPUT_FORMAT,
       OUTPUT_QUALITY,
       moderationFilter(),
+    ],
+  },
+
+  // ───────────────────────── LoRA training ─────────────────────────
+  // Produces trained LoRA weights (a .zip of .safetensors), not an image or
+  // video, so it uses kind: "file" — the UI shows a plain download instead of
+  // an <img>/<video> preview. Output link expires ~30 min after training
+  // finishes, and a run can take minutes to hours: pass the resulting
+  // lora_weights URL into P-Image-Edit-LoRA above to use it, and consider
+  // uploading the .safetensors to your own Hugging Face repo before it expires.
+  {
+    id: "p-image-edit-trainer",
+    label: "P-Image-Edit-Trainer (Pruna)",
+    group: "LoRA training",
+    kind: "file",
+    blurb: "Train a custom LoRA from before/after image pairs. Slow — minutes to hours.",
+    fields: [
+      {
+        name: "image_data",
+        label: "Training pairs (.zip)",
+        type: "image",
+        required: true,
+        accept: ".zip,application/zip",
+        help: 'ZIP of ROOT_start.EXT / ROOT_end.EXT image pairs (e.g. "cat_start.jpg" + "cat_end.jpg").',
+      },
+      { name: "steps", label: "Training steps", type: "int", default: 1000, min: 100, max: 5000, step: 100 },
+      { name: "learning_rate", label: "Learning rate", type: "number", default: 0.0001, min: 0.00001, max: 0.01, step: 0.00001 },
+      { name: "default_caption", label: "Default caption (pairs without a .txt)", type: "text", default: "" },
     ],
   },
 
@@ -461,7 +559,7 @@ export const MODELS = [
       },
       { name: "draft", label: "Draft mode (faster preview)", type: "bool", default: false },
       { name: "prompt_upsampling", label: "Auto-improve prompt", type: "bool", default: true },
-      { name: "save_audio", label: "Keep audio", type: "bool", default: true },
+      { name: "save_audio", label: "Save With Audio", type: "bool", default: true },
       SEED,
       moderationFilter("disable_safety_filter", true),
     ],
@@ -854,6 +952,7 @@ MODELS.push(...WORKERS_AI_MODELS);
 const PRICING = {
   "p-image": { type: "flat", usd: 0.005 },
   "p-image-edit": { type: "flat", usd: 0.01 },
+  "p-image-edit-lora": { type: "flat", usd: 0.01 },
   "flux-dev": { type: "flat", usd: 0.005 },
   "flux-2-klein-4b": { type: "flat", usd: 0.0001 },
   "wan-image-small": { type: "flat", usd: 0.005 },
@@ -863,13 +962,43 @@ const PRICING = {
   "qwen-image-edit-plus": { type: "flat", usd: 0.03 },
   "p-video-animate": { type: "per_second", usd: { "720p": 0.03, "1080p": 0.06 } },
   "p-video-replace": { type: "per_second", usd: { "720p": 0.03, "1080p": 0.06 } },
-  "p-image-upscale": { type: "variable" },
+  // Priced by resolution x draft mode: draft is roughly a quarter of full price.
+  "p-video": {
+    type: "per_second_draft",
+    usd: {
+      "720p": { normal: 0.02, draft: 0.005 },
+      "1080p": { normal: 0.04, draft: 0.01 },
+    },
+  },
+  // Priced in tiers by target output megapixels, not a flat per-image rate.
+  "p-image-upscale": {
+    type: "mp_tiered",
+    tiers: [
+      { max: 4, usd: 0.005 },
+      { max: 8, usd: 0.01 },
+      { max: 16, usd: 0.02 },
+      { max: 32, usd: 0.04 },
+      { max: 64, usd: 0.06 },
+      { max: 128, usd: 0.12 },
+    ],
+  },
+  // Priced by thinking effort x output resolution budget.
+  "p-image-ideogram": {
+    type: "thinking_size_tiered",
+    usd: {
+      "very low": { "1K": 0.003, "2K": 0.006 },
+      low: { "1K": 0.0075, "2K": 0.015 },
+      medium: { "1K": 0.01, "2K": 0.02 },
+      high: { "1K": 0.015, "2K": 0.03 },
+    },
+  },
   "p-image-try-on": { type: "variable" },
-  "p-video": { type: "variable" },
   "p-video-avatar": { type: "variable" },
   "vace": { type: "variable" },
   "wan-t2v": { type: "variable" },
   "wan-i2v": { type: "variable" },
+  // No published rate found for p-image-edit-trainer; left unpriced rather
+  // than guessed at (falls through to "variable" via the lookup below).
 };
 
 // Workers AI is billed in "neurons" against a 10,000/day free allowance, with
@@ -945,6 +1074,7 @@ export const IMPROVE_MODELS = [
 // Text input is free; billing is per image, so `price` is a flat USD figure.
 
 const XAI_AR = [
+  { value: "auto", label: "Auto (model decides)" },
   { value: "1:1", label: "1:1 square" },
   { value: "16:9", label: "16:9 landscape" },
   { value: "9:16", label: "9:16 portrait" },
@@ -952,6 +1082,12 @@ const XAI_AR = [
   { value: "3:4", label: "3:4" },
   { value: "3:2", label: "3:2" },
   { value: "2:3", label: "2:3" },
+  { value: "2:1", label: "2:1 ultrawide" },
+  { value: "1:2", label: "1:2" },
+  { value: "19.5:9", label: "19.5:9 (wide phone)" },
+  { value: "9:19.5", label: "9:19.5 (tall phone)" },
+  { value: "20:9", label: "20:9 (wide phone)" },
+  { value: "9:20", label: "9:20 (tall phone)" },
 ];
 
 const XAI_MODELS = [
@@ -975,7 +1111,7 @@ const XAI_MODELS = [
           { value: "2k", label: "2K (2048×2048)" },
         ],
       },
-      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "1:1", options: XAI_AR },
+      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "auto", options: XAI_AR },
       { name: "n", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
     ],
   },
@@ -999,7 +1135,7 @@ const XAI_MODELS = [
           { value: "2k", label: "2K (2048×2048)" },
         ],
       },
-      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "1:1", options: XAI_AR },
+      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "auto", options: XAI_AR },
       { name: "n", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
     ],
   },
