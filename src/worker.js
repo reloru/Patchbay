@@ -120,7 +120,9 @@ async function handleGenerate(request, env) {
 
   const spec = MODELS_BY_ID.get(model);
   if (spec.provider === "workers-ai") return await runWorkersAI(spec, input, env);
-  if (spec.provider === "xai") return await runXai(spec, input, env);
+  if (spec.provider === "xai") {
+    return spec.xaiAsync ? await runXaiVideoStart(spec, input, env) : await runXai(spec, input, env);
+  }
 
   const headers = {
     apikey: env.PRUNA_API_KEY,
@@ -327,6 +329,103 @@ async function runXai(spec, input, env) {
   return json({ status: "succeeded", images });
 }
 
+// Extracts an xAI error message regardless of whether it comes back as a
+// plain string (seen on /images/*) or a structured {message} object (the
+// OpenAI-compatible shape used elsewhere in xAI's API).
+function xaiErrorText(data, res) {
+  const e = data && data.error;
+  if (typeof e === "string" && e) return e;
+  if (e && typeof e.message === "string") return e.message;
+  if (typeof data?.message === "string" && data.message) return data.message;
+  return `HTTP ${res.status}`;
+}
+
+// Starts an async Grok Imagine Video job (generation, edit, or extension) and
+// hands back a synthetic job id the browser can poll via /api/status. The
+// "xai_" prefix lets handleStatus route polling to xAI instead of Pruna.
+async function runXaiVideoStart(spec, input, env) {
+  if (!env.XAI_API_KEY) return json({ error: "xAI is not configured (XAI_API_KEY missing)." }, 500);
+
+  const payload = { model: spec.xaiModel, prompt: input.prompt };
+
+  if (spec.xaiEndpoint === "generations") {
+    if (input.image) payload.image = { url: input.image };
+    const refs = [].concat(input.reference_images || []).filter(Boolean).slice(0, 3);
+    if (refs.length) payload.reference_images = refs.map((url) => ({ url }));
+    if (input.duration) payload.duration = Number(input.duration);
+    if (input.resolution) payload.resolution = input.resolution;
+    if (input.aspect_ratio) payload.aspect_ratio = input.aspect_ratio;
+  } else {
+    // edits and extensions both take a single source video.
+    if (!input.video) return json({ error: "Missing video to edit/extend." }, 400);
+    payload.video = { url: input.video };
+    if (spec.xaiEndpoint === "extensions" && input.duration) payload.duration = Number(input.duration);
+  }
+
+  let res, text;
+  try {
+    res = await fetch(`https://api.x.ai/v1/videos/${spec.xaiEndpoint}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.XAI_API_KEY}`, "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    text = await res.text();
+  } catch (err) {
+    return json({ error: "xAI request failed: " + (err && err.message ? err.message : String(err)) }, 502);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return json({ error: "xAI returned a non-JSON response." }, 502);
+  }
+  if (!res.ok || !data.request_id) {
+    return json({ error: "xAI: " + xaiErrorText(data, res) }, res.ok ? 502 : res.status);
+  }
+  return json({ id: "xai_" + data.request_id });
+}
+
+// Polls an xAI video job and translates its shape into the same
+// {status, generation_url, message} shape the Pruna path already produces, so
+// the frontend's polling loop doesn't need to know which provider it's on.
+async function pollXaiVideo(requestId, env) {
+  let res, text;
+  try {
+    res = await fetch(`https://api.x.ai/v1/videos/${encodeURIComponent(requestId)}`, {
+      headers: { authorization: `Bearer ${env.XAI_API_KEY}` },
+    });
+    text = await res.text();
+  } catch (err) {
+    return json({ error: "xAI status check failed: " + (err && err.message ? err.message : String(err)) }, 502);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return json({ error: "xAI returned a non-JSON status response." }, 502);
+  }
+  if (!res.ok) return json({ error: "xAI: " + xaiErrorText(data, res) }, res.status);
+
+  if (data.status === "failed") {
+    return json({ status: "failed", message: data.error?.message || "Video generation failed." });
+  }
+  if (data.status !== "done") {
+    return json({ status: "processing" }); // "pending" or anything else — keep polling
+  }
+  // Moderation can block output on an otherwise "done" job: the URL is empty.
+  if (!data.video?.respect_moderation || !data.video?.url) {
+    return json({ status: "failed", message: "Blocked by xAI's moderation — no video was produced." });
+  }
+  const result = { status: "succeeded", generation_url: data.video.url };
+  // 1 USD cent = 100,000,000 ticks, so 1 USD = 10,000,000,000 ticks.
+  if (data.usage?.cost_in_usd_ticks != null) {
+    result.actual_cost_usd = data.usage.cost_in_usd_ticks / 10_000_000_000;
+  }
+  return json(result);
+}
+
 // Workers AI text responses come back in several shapes depending on the
 // model family: a bare {response}, an OpenAI-style {choices[].message.content}
 // (gpt-oss), or nested under {result} (moondream). Pull the text from whichever
@@ -444,6 +543,8 @@ function bytesToBase64(buf) {
 async function handleStatus(request, env, url) {
   const id = url.searchParams.get("id");
   if (!id || !/^[A-Za-z0-9._-]+$/.test(id)) return json({ error: "Invalid id." }, 400);
+
+  if (id.startsWith("xai_")) return await pollXaiVideo(id.slice(4), env);
 
   const res = await fetch(`${PRUNA_BASE}/predictions/status/${encodeURIComponent(id)}`, {
     headers: { apikey: env.PRUNA_API_KEY },
