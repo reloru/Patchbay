@@ -62,7 +62,7 @@ const SEED = {
 
 // Content moderation filter. The API param disables the safety checker, so we
 // present it inverted: filter "On" == param false.
-function moderationFilter(name = "disable_safety_checker", apiDefault = false) {
+function moderationFilter(name = "disable_safety_checker", apiDefault = true) {
   return { name, label: "Content moderation filter", type: "bool", default: apiDefault, invert: true };
 }
 
@@ -366,7 +366,7 @@ export const MODELS = [
     fields: [
       { name: "images", label: "Image(s) to edit", type: "image", required: true, maxItems: 5, asArray: true },
       { name: "prompt", label: "What to change", type: "textarea", required: true },
-      { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: true },
+      { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: false },
       {
         name: "aspect_ratio",
         label: "Aspect ratio",
@@ -520,6 +520,10 @@ export const MODELS = [
       { name: "interpolate_output", label: "Smooth motion", type: "bool", default: false },
       { name: "go_fast", label: "Fast mode", type: "bool", default: true },
       { name: "sample_shift", label: "Motion strength", type: "number", default: 12, min: 1, max: 20, step: 0.5 },
+      { name: "lora_weights_transformer", label: "LoRA (Hugging Face / .safetensors URL)", type: "text", default: "" },
+      { name: "lora_scale_transformer", label: "LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.1 },
+      { name: "lora_weights_transformer_2", label: "Second LoRA URL (optional)", type: "text", default: "" },
+      { name: "lora_scale_transformer_2", label: "Second LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.1 },
       SEED,
       moderationFilter(),
     ],
@@ -996,7 +1000,8 @@ const PRICING = {
   "p-video-avatar": { type: "variable" },
   "vace": { type: "variable" },
   "wan-t2v": { type: "variable" },
-  "wan-i2v": { type: "variable" },
+  // Flat per video, not per second: $0.05 at 480p, $0.11 at 720p.
+  "wan-i2v": { type: "flat_by_resolution", usd: { "480p": 0.05, "720p": 0.11 } },
   // No published rate found for p-image-edit-trainer; left unpriced rather
   // than guessed at (falls through to "variable" via the lookup below).
 };

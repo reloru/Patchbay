@@ -210,6 +210,10 @@ function priceBlurb(model) {
       `depending on resolution and draft mode.`
     );
   }
+  if (p.type === "flat_by_resolution") {
+    const parts = Object.entries(p.usd).map(([res, usd]) => `${fmtUsd(usd)} at ${res}`);
+    return `List price: ${parts.join(", ")} per video.`;
+  }
   if (p.type === "mp_tiered") {
     const lo = p.tiers[0].usd, hi = p.tiers[p.tiers.length - 1].usd;
     return `List price: ${fmtUsd(lo)}–${fmtUsd(hi)} per image, by target size (1–128 MP).`;
@@ -1070,6 +1074,10 @@ function estimateCost(model, input, outputCount) {
     const secs = Number(input.duration);
     if (!secs) return null;
     return rate * secs;
+  }
+  if (p.type === "flat_by_resolution") {
+    const rate = p.usd[input.resolution];
+    return rate == null ? null : rate;
   }
   if (p.type === "mp_tiered") {
     const mp = Number(input.target) || 4;
