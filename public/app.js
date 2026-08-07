@@ -170,6 +170,33 @@ function fileToBase64(file) {
   });
 }
 
+// Reads a video file's duration and resolution client-side (nothing is
+// uploaded to do this) so per-second video costs can be estimated before the
+// user hits Generate. Resolves to null on anything that isn't decodable
+// metadata-only (huge files, unsupported codecs, etc.) rather than guessing.
+function probeVideoMeta(file) {
+  return new Promise((resolve) => {
+    if (!file.type.startsWith("video/")) return resolve(null);
+    const url = URL.createObjectURL(file);
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.muted = true;
+    const done = (result) => {
+      URL.revokeObjectURL(url);
+      resolve(result);
+    };
+    v.onloadedmetadata = () => {
+      const durationSec = Number.isFinite(v.duration) ? v.duration : null;
+      const h = v.videoHeight || 0;
+      // Bucket into the resolution tiers xAI actually publishes rates for.
+      const resBucket = h && h <= 480 ? "480p" : h && h <= 720 ? "720p" : null;
+      done(durationSec ? { durationSec, resBucket } : null);
+    };
+    v.onerror = () => done(null);
+    v.src = url;
+  });
+}
+
 // Full data: URI (xAI reference images).
 function fileToDataUri(file) {
   return new Promise((resolve, reject) => {
@@ -225,6 +252,13 @@ function priceBlurb(model) {
     return (
       `List price: ${fmtUsd(p.outUsdPerSec["480p"])}/s at 480p, ${fmtUsd(p.outUsdPerSec["720p"])}/s at 720p ` +
       `(1080p has no published rate), plus ${fmtUsd(p.inputImageUsd)} per input image.`
+    );
+  }
+  if (p.type === "xai_video_source") {
+    return (
+      `List price: ${fmtUsd(p.inputUsdPerSec)}/s to read your source video, plus ` +
+      `${fmtUsd(p.outUsdPerSec["480p"])}/s or ${fmtUsd(p.outUsdPerSec["720p"])}/s output depending on its resolution ` +
+      `— estimate appears once a video is chosen.`
     );
   }
   return "List price: varies with your settings.";
@@ -394,6 +428,9 @@ function imageControl(f) {
       if (placeholder.isImage) placeholder.preview = URL.createObjectURL(file);
       uploads[f.name].push(placeholder);
       redraw();
+      probeVideoMeta(file).then((meta) => {
+        if (meta) Object.assign(placeholder, meta);
+      });
       try {
         placeholder.url = await encodeForField(f, file);
         placeholder.uploading = false;
@@ -413,6 +450,9 @@ function imageControl(f) {
       const placeholder = { file, url: null, name: file.name, isImage: file.type.startsWith("image/"), preview: null, uploading: true };
       if (placeholder.isImage) placeholder.preview = URL.createObjectURL(file);
       uploads[f.name].push(placeholder);
+      probeVideoMeta(file).then((meta) => {
+        if (meta) Object.assign(placeholder, meta);
+      });
       encodeForField(f, file)
         .then((url) => { placeholder.url = url; placeholder.uploading = false; })
         .catch((e) => {
@@ -1064,6 +1104,15 @@ function estimateNeurons(model, input) {
   return null;
 }
 
+// Optional fields only appear in `input` when their override toggle is on, so
+// reading input.foo alone tells you nothing about what will actually be sent
+// — it's just as often "the user left this at Pruna's default". This looks up
+// that default so the estimate reflects what Generate will actually do.
+function fieldDefault(model, name) {
+  const f = model.fields.find((x) => x.name === name);
+  return f ? f.default : undefined;
+}
+
 function estimateCost(model, input, outputCount) {
   const p = model.price;
   if (!p || p.type === "variable" || p.type === "cf_neurons" || p.type === "cf_unpriced") return null;
@@ -1082,15 +1131,18 @@ function estimateCost(model, input, outputCount) {
     return rate * secs;
   }
   if (p.type === "per_second_draft") {
-    const tier = p.usd[input.resolution || "720p"];
+    const resolution = input.resolution ?? fieldDefault(model, "resolution") ?? "720p";
+    const tier = p.usd[resolution];
     if (!tier) return null;
-    const rate = input.draft ? tier.draft : tier.normal;
-    const secs = Number(input.duration);
+    const draft = input.draft ?? fieldDefault(model, "draft") ?? false;
+    const rate = draft ? tier.draft : tier.normal;
+    const secs = Number(input.duration ?? fieldDefault(model, "duration"));
     if (!secs) return null;
     return rate * secs;
   }
   if (p.type === "flat_by_resolution") {
-    const rate = p.usd[input.resolution];
+    const resolution = input.resolution ?? fieldDefault(model, "resolution");
+    const rate = p.usd[resolution];
     return rate == null ? null : rate;
   }
   if (p.type === "mp_tiered") {
@@ -1113,6 +1165,18 @@ function estimateCost(model, input, outputCount) {
     const secs = Number(input.duration) || 8;
     const refs = (input.image ? 1 : 0) + (Array.isArray(input.reference_images) ? input.reference_images.length : 0);
     return rate * secs + refs * p.inputImageUsd;
+  }
+  if (p.type === "xai_video_source") {
+    // Priced from the source video's own duration/resolution, probed
+    // client-side when it was picked — nothing here comes from the server.
+    const src = (uploads.video || [])[0];
+    if (!src || !src.durationSec || !src.resBucket) return null;
+    const outRate = p.outUsdPerSec[src.resBucket];
+    if (outRate == null) return null;
+    // Extend generates a new segment of its own length; edit's output runs
+    // the same length as the source.
+    const outSecs = input.duration ? Number(input.duration) : src.durationSec;
+    return src.durationSec * p.inputUsdPerSec + outSecs * outRate;
   }
   return null;
 }

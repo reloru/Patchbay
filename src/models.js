@@ -1046,11 +1046,15 @@ const XAI_PRICING = {
   // (start image + reference images). 1080p has no published rate, so it's
   // left out and priced as "varies" rather than guessed at.
   "xai-imagine-video": { type: "xai_video", outUsdPerSec: { "480p": 0.05, "720p": 0.07 }, inputImageUsd: 0.002 },
-  // xai-video-edit and xai-video-extend are intentionally absent here: their
-  // cost depends on the input video's own duration, which the browser can't
-  // know before upload, and neither endpoint documents its own rate
-  // separately from generation. They fall through to "variable" below rather
-  // than showing a guessed figure.
+  // Edit/extend don't document a resolution or (for edit) a duration in the
+  // request — output length/resolution follows the input video, which the
+  // Worker never sees before upload. The frontend probes the chosen video
+  // file client-side (duration + height, nothing uploaded) and prices these
+  // from that: $0.01/s for the source video read, output at the generation
+  // model's per-second rate for whichever resolution bucket the source falls
+  // into. No estimate is shown until a video is actually picked.
+  "xai-video-edit": { type: "xai_video_source", inputUsdPerSec: 0.01, outUsdPerSec: { "480p": 0.05, "720p": 0.07 } },
+  "xai-video-extend": { type: "xai_video_source", inputUsdPerSec: 0.01, outUsdPerSec: { "480p": 0.05, "720p": 0.07 } },
 };
 
 for (const m of MODELS) {
