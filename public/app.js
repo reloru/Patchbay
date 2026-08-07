@@ -204,6 +204,19 @@ function priceBlurb(model) {
   if (p.type === "cf_unpriced") return "Runs on Cloudflare Workers AI (no published rate).";
   if (p.type === "flat") return `List price: ${fmtUsd(p.usd)} per image.`;
   if (p.type === "per_second") return `List price: ${fmtUsd(p.usd["720p"])}/s at 720p, ${fmtUsd(p.usd["1080p"])}/s at 1080p.`;
+  if (p.type === "per_second_draft") {
+    return (
+      `List price: ${fmtUsd(p.usd["720p"].draft)}–${fmtUsd(p.usd["1080p"].normal)}/s ` +
+      `depending on resolution and draft mode.`
+    );
+  }
+  if (p.type === "mp_tiered") {
+    const lo = p.tiers[0].usd, hi = p.tiers[p.tiers.length - 1].usd;
+    return `List price: ${fmtUsd(lo)}–${fmtUsd(hi)} per image, by target size (1–128 MP).`;
+  }
+  if (p.type === "thinking_size_tiered") {
+    return `List price: ${fmtUsd(p.usd["very low"]["1K"])}–${fmtUsd(p.usd.high["2K"])} per image, by thinking effort and resolution.`;
+  }
   return "List price: varies with your settings.";
 }
 
@@ -613,14 +626,19 @@ async function runGeneration(model, input, kind, onProgress) {
   if (!id) throw new Error("No job id returned. Response: " + JSON.stringify(data).slice(0, 240));
 
   const started = Date.now();
-  // Heavy video jobs (VACE especially) can run well past 10 minutes.
-  const maxMs = (kind === "video" ? 30 : 10) * 60 * 1000;
+  // Heavy video jobs (VACE especially) can run well past 10 minutes. LoRA
+  // training is documented as "minutes to hours", so it gets the longest
+  // budget this tab is willing to wait on.
+  const maxMs = (kind === "file" ? 45 : kind === "video" ? 30 : 10) * 60 * 1000;
   while (true) {
     await sleep(2500);
     if (Date.now() - started > maxMs) {
       throw new Error(
-        `Timed out after ${Math.round(maxMs / 60000)} min. Try a lower resolution, ` +
-          "fewer frames/steps, or a faster speed mode."
+        kind === "file"
+          ? `Still training after ${Math.round(maxMs / 60000)} min — this can take hours. ` +
+            "Check back later; the job keeps running on Pruna even after this tab gives up."
+          : `Timed out after ${Math.round(maxMs / 60000)} min. Try a lower resolution, ` +
+            "fewer frames/steps, or a faster speed mode."
       );
     }
     const sRes = await api("/api/status?id=" + encodeURIComponent(id));
@@ -667,6 +685,12 @@ function showResult(prunaUrls, kind) {
       v.muted = true;
       v.playsInline = true;
       item.appendChild(v);
+    } else if (kind === "file") {
+      // Not previewable media (e.g. a trained LoRA .zip) — just a plain link.
+      const box2 = document.createElement("div");
+      box2.className = "file-result";
+      box2.textContent = "📦 File ready";
+      item.appendChild(box2);
     } else {
       const img = document.createElement("img");
       img.src = proxied;
@@ -685,8 +709,10 @@ function extFromType(type, kind) {
     "image/webp": "webp",
     "video/mp4": "mp4",
     "video/webm": "webm",
+    "application/zip": "zip",
+    "application/x-zip-compressed": "zip",
   };
-  return map[(type || "").toLowerCase()] || (kind === "video" ? "mp4" : "jpg");
+  return map[(type || "").toLowerCase()] || (kind === "video" ? "mp4" : kind === "file" ? "zip" : "jpg");
 }
 
 // Saving must never navigate the page. A plain <a download> sends iOS Safari to
@@ -1036,6 +1062,28 @@ function estimateCost(model, input, outputCount) {
     const secs = Number(input.duration);
     if (!secs) return null; // length comes from the source video — unknown here
     return rate * secs;
+  }
+  if (p.type === "per_second_draft") {
+    const tier = p.usd[input.resolution || "720p"];
+    if (!tier) return null;
+    const rate = input.draft ? tier.draft : tier.normal;
+    const secs = Number(input.duration);
+    if (!secs) return null;
+    return rate * secs;
+  }
+  if (p.type === "mp_tiered") {
+    const mp = Number(input.target) || 4;
+    const tier = p.tiers.find((t) => mp <= t.max) || p.tiers[p.tiers.length - 1];
+    return tier.usd;
+  }
+  if (p.type === "thinking_size_tiered") {
+    // image_size is documented as ignored for a custom aspect ratio, so the
+    // rate can't be pinned down in that case.
+    if (input.aspect_ratio === "custom") return null;
+    const thinking = p.usd[input.thinking || "medium"];
+    if (!thinking) return null;
+    const rate = thinking[input.image_size || "2K"];
+    return rate == null ? null : rate;
   }
   return null;
 }
