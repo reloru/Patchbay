@@ -14,6 +14,8 @@
 //   min/max/step  numeric bounds (int/number)
 //   options       [{value,label}] for enum
 //   maxItems      for image arrays (default 1)
+//   wrapArray     text/number only: send the single entered value as a
+//                 one-element array (for API params that are typed as arrays)
 //
 // Optional fields render with an override toggle so you only send the
 // parameters you actually change; everything else uses Pruna's default.
@@ -76,6 +78,51 @@ export const MODELS = [
     blurb: "High-quality text-to-image (FLUX.1-dev) with speed presets.",
     fields: [
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "1:1",
+        options: [
+          ...AR_COMMON,
+          { value: "21:9", label: "21:9 ultrawide" },
+          { value: "9:21", label: "9:21" },
+          { value: "4:5", label: "4:5" },
+          { value: "5:4", label: "5:4" },
+        ],
+      },
+      {
+        name: "speed_mode",
+        label: "Speed vs. quality",
+        type: "enum",
+        default: "Extra Juiced 🔥 (more speed)",
+        options: [
+          { value: "Lightly Juiced 🍊 (more consistent)", label: "Most consistent" },
+          { value: "Juiced 🔥 (default)", label: "Balanced" },
+          { value: "Extra Juiced 🔥 (more speed)", label: "Faster" },
+          { value: "Blink of an eye 👁️", label: "Fastest" },
+        ],
+      },
+      { name: "num_inference_steps", label: "Detail (steps)", type: "int", default: 28, min: 1, max: 50 },
+      { name: "guidance", label: "Prompt adherence", type: "number", default: 3.5, min: 0, max: 20, step: 0.1 },
+      { name: "image_size", label: "Resolution (longest side)", type: "int", default: 1024, min: 256, max: 2048, step: 16 },
+      OUTPUT_FORMAT,
+      OUTPUT_QUALITY,
+      SEED,
+    ],
+  },
+  {
+    id: "flux-dev-lora",
+    label: "FLUX.1 dev (LoRA)",
+    group: "Image generation",
+    kind: "image",
+    blurb: "FLUX.1 dev with up to two HuggingFace LoRAs applied.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "lora", label: "LoRA (HuggingFace)", type: "text", required: true, help: 'HuggingFace repo in "owner/model-name" format.' },
+      { name: "lora_scale", label: "LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.05 },
+      { name: "extra_lora", label: "2nd LoRA (HuggingFace, optional)", type: "text" },
+      { name: "extra_lora_scale", label: "2nd LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.05 },
       {
         name: "aspect_ratio",
         label: "Aspect ratio",
@@ -182,6 +229,33 @@ export const MODELS = [
     ],
   },
   {
+    id: "z-image-turbo-lora",
+    label: "Z-Image Turbo (LoRA)",
+    group: "Image generation",
+    kind: "image",
+    blurb: "Z-Image Turbo with a custom LoRA (.safetensors/.tar/.zip URL, any host).",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      {
+        name: "lora_weights",
+        label: "LoRA weights (URL)",
+        type: "text",
+        required: true,
+        wrapArray: true,
+        help: "URL to a .safetensors, .tar, or .zip LoRA file — HuggingFace or any other host.",
+      },
+      { name: "lora_scales", label: "LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.05, wrapArray: true },
+      { name: "width", label: "Width", type: "int", default: 1024, min: 64, max: 2048, step: 8 },
+      { name: "height", label: "Height", type: "int", default: 1024, min: 64, max: 2048, step: 8 },
+      { name: "num_inference_steps", label: "Detail (steps)", type: "int", default: 8, min: 1, max: 50 },
+      { name: "guidance_scale", label: "Prompt adherence", type: "number", default: 0, min: 0, max: 20, step: 0.1 },
+      { name: "go_fast", label: "Fast mode", type: "bool", default: false },
+      OUTPUT_FORMAT,
+      OUTPUT_QUALITY,
+      SEED,
+    ],
+  },
+  {
     id: "p-image",
     label: "P-Image (Pruna)",
     group: "Image generation",
@@ -189,6 +263,37 @@ export const MODELS = [
     blurb: "Pruna's proprietary image model with prompt enhancement + refinement.",
     fields: [
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "16:9",
+        options: [...AR_COMMON, { value: "custom", label: "Custom size" }],
+      },
+      { name: "width", label: "Width (custom size)", type: "int", default: 1024, min: 256, max: 1440, step: 16 },
+      { name: "height", label: "Height (custom size)", type: "int", default: 1024, min: 256, max: 1440, step: 16 },
+      { name: "prompt_upsampling", label: "Auto-improve prompt", type: "bool", default: false },
+      SEED,
+      moderationFilter(),
+    ],
+  },
+  {
+    id: "p-image-lora",
+    label: "P-Image-LoRA (Pruna)",
+    group: "Image generation",
+    kind: "image",
+    blurb: "P-Image with a custom LoRA (must be trained via p-image-trainer).",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      {
+        name: "lora_weights",
+        label: "LoRA weights (HuggingFace URL)",
+        type: "text",
+        required: true,
+        help: "huggingface.co/<owner>/<model>[/<file>.safetensors] — must be trained with p-image-trainer.",
+      },
+      { name: "lora_scale", label: "LoRA strength", type: "number", default: 0.5, min: -1, max: 3, step: 0.05 },
+      { name: "hf_api_token", label: "HuggingFace token (private repo)", type: "text" },
       {
         name: "aspect_ratio",
         label: "Aspect ratio",
@@ -320,6 +425,36 @@ export const MODELS = [
     fields: [
       { name: "images", label: "Image(s) to edit", type: "image", required: true, maxItems: 5, asArray: true },
       { name: "prompt", label: "What to change", type: "textarea", required: true },
+      { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: true },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "match_input_image",
+        options: [{ value: "match_input_image", label: "Keep original" }, ...AR_COMMON],
+      },
+      SEED,
+      moderationFilter(),
+    ],
+  },
+  {
+    id: "p-image-edit-lora",
+    label: "P-Image-Edit-LoRA (Pruna)",
+    group: "Image editing",
+    kind: "image",
+    blurb: "P-Image-Edit with a custom LoRA (must be trained via p-image-edit-trainer).",
+    fields: [
+      { name: "images", label: "Image(s) to edit", type: "image", required: true, maxItems: 5, asArray: true },
+      { name: "prompt", label: "What to change", type: "textarea", required: true },
+      {
+        name: "lora_weights",
+        label: "LoRA weights (HuggingFace URL)",
+        type: "text",
+        required: true,
+        help: "huggingface.co/<owner>/<model>[/<file>.safetensors] — must be trained with p-image-edit-trainer.",
+      },
+      { name: "lora_scale", label: "LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.05 },
+      { name: "hf_api_token", label: "HuggingFace token (private repo)", type: "text" },
       { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: true },
       {
         name: "aspect_ratio",
