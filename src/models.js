@@ -167,6 +167,15 @@ export const MODELS = [
     blurb: "Text-to-image with strong text rendering; optional img2img.",
     fields: [
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      {
+        name: "lora_weights",
+        label: "LoRA (HuggingFace/URL, optional)",
+        type: "text",
+        help: "URL to LoRA weights (.safetensors, .tar, or .zip) — e.g. huggingface.co/<owner>/<model>/<file>.safetensors. Include the exact filename; Pruna's default filename guess often 404s otherwise.",
+      },
+      { name: "lora_scale", label: "LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.05 },
+      { name: "extra_lora_weights", label: "2nd LoRA (optional)", type: "text", wrapArray: true },
+      { name: "extra_lora_scale", label: "2nd LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.05, wrapArray: true },
       { name: "negative_prompt", label: "Things to avoid", type: "text", default: "" },
       { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "16:9", options: AR_COMMON },
       { name: "num_inference_steps", label: "Detail (steps)", type: "int", default: 30, min: 1, max: 50 },
