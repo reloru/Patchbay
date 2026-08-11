@@ -3,7 +3,7 @@
 A single-user web app for **image & video generation and editing** using the
 [Pruna AI API](https://docs.api.pruna.ai/), deployed on **Cloudflare Workers**.
 
-- **Model picker** with 12 image / video models grouped by task.
+- **Model picker** with 16 image / video models grouped by task, including LoRA variants.
 - **Per-model, per-parameter toggles** — every optional parameter (quality,
   duration/frames, aspect ratio, resolution, guidance, steps, seed, *disable
   safety checker*, etc.) has an "override" switch. Only the parameters you
@@ -41,9 +41,15 @@ to polling; video jobs always poll `/api/status` until `succeeded`.
 
 | Group | Models |
 |-------|--------|
-| Image generation | `flux-dev`, `qwen-image`, `qwen-image-fast`, `z-image-turbo`, `p-image` |
-| Image editing | `qwen-image-edit-plus`, `p-image-edit`, `p-image-upscale` |
+| Image generation | `flux-dev`, `flux-dev-lora`, `qwen-image`, `qwen-image-fast`, `z-image-turbo`, `z-image-turbo-lora`, `p-image`, `p-image-lora` |
+| Image editing | `qwen-image-edit-plus`, `p-image-edit`, `p-image-edit-lora`, `p-image-upscale` |
 | Video | `wan-t2v`, `wan-i2v`, `p-video`, `vace` |
+
+LoRA variants (`*-lora`) accept a LoRA weights URL (HuggingFace for the `p-image*`
+and `flux-dev-lora` models, any host for `z-image-turbo-lora`) plus a strength
+scale. The `p-image-lora` / `p-image-edit-lora` LoRAs must have been trained via
+Pruna's `p-image-trainer` / `p-image-edit-trainer` — LoRAs from other sources
+aren't compatible with those two endpoints.
 
 ## Setup / deploy
 

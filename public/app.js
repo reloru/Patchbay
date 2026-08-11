@@ -575,13 +575,15 @@ function readControlValue(f, scope) {
   }
   if (f.type === "number") {
     if (el.value === "") return undefined;
-    return parseFloat(el.value);
+    const v = parseFloat(el.value);
+    return f.wrapArray ? [v] : v;
   }
   if (f.type === "enum") {
     const match = f.options.find((o) => String(o.value) === el.value);
     return match ? match.value : el.value;
   }
   // text / textarea
+  if (f.wrapArray) return el.value === "" ? undefined : [el.value];
   return el.value;
 }
 
