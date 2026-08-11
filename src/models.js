@@ -171,7 +171,24 @@ export const MODELS = [
         name: "lora_weights",
         label: "LoRA (HuggingFace/URL, optional)",
         type: "text",
-        help: "URL to LoRA weights (.safetensors, .tar, or .zip) — e.g. huggingface.co/<owner>/<model>/<file>.safetensors. Include the exact filename; Pruna's default filename guess often 404s otherwise.",
+        help: "URL to LoRA weights (.safetensors, .tar, or .zip) — e.g. huggingface.co/<owner>/<model>/<file>.safetensors. Include the exact filename; Pruna's default filename guess often 404s otherwise. Presets are community LoRAs (not Pruna-trained) — verified working, but not officially supported.",
+        presets: [
+          {
+            label: "Photorealism (flymy-ai)",
+            value: "huggingface.co/flymy-ai/qwen-image-realism-lora/flymy_realism.safetensors",
+            hint: "realism",
+          },
+          {
+            label: "Realistic headshots (HeadshotX)",
+            value: "huggingface.co/prithivMLmods/Qwen-Image-HeadshotX/Qwen-Image-HeadshotX.safetensors",
+            hint: "face headshot",
+          },
+          {
+            label: "Studio realism",
+            value: "huggingface.co/prithivMLmods/Qwen-Image-Studio-Realism/qwen-studio-realism.safetensors",
+            hint: "Studio Realism",
+          },
+        ],
       },
       { name: "lora_scale", label: "LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.05 },
       { name: "extra_lora_weights", label: "2nd LoRA (optional)", type: "text", wrapArray: true },
@@ -302,7 +319,53 @@ export const MODELS = [
         label: "LoRA weights (HuggingFace URL)",
         type: "text",
         required: true,
-        help: "huggingface.co/<owner>/<model>[/<file>.safetensors] — must be trained with p-image-trainer.",
+        help: 'huggingface.co/<owner>/<model>/<file>.safetensors — must be trained with p-image-trainer. Include the exact filename (usually "weights.safetensors"); Pruna\'s default filename guess often 404s otherwise. Presets below include their trigger word — add it to your prompt.',
+        presets: [
+          {
+            label: "Photorealism",
+            value: "huggingface.co/PrunaAI/p-image-photos-realism-lora/weights.safetensors",
+            hint: "Realism",
+          },
+          {
+            label: "Pixel art",
+            value: "huggingface.co/PrunaAI/p-image-pixel-art-lora/weights.safetensors",
+            hint: "pixel art style",
+          },
+          {
+            label: "Modernism art",
+            value: "huggingface.co/PrunaAI/p-image-photos-modernism-art-lora/weights.safetensors",
+            hint: "DADADOLL style",
+          },
+          {
+            label: "Pencil sketch",
+            value: "huggingface.co/PrunaAI/p-image-pencil-sketch-art-lora/weights.safetensors",
+          },
+          {
+            label: "Classic film photo",
+            value: "huggingface.co/PrunaAI/p-image-photos-classic-film-lora/weights.safetensors",
+            hint: "t3chnic4lly",
+          },
+          {
+            label: "Comic noir",
+            value: "huggingface.co/PrunaAI/p-image-comic-noir-art-lora/weights.safetensors",
+            hint: "tok_comic_noir",
+          },
+          {
+            label: "Classic painting",
+            value: "huggingface.co/PrunaAI/p-image-classic-painting-lora/weights.safetensors",
+            hint: "class1cpa1nt",
+          },
+          {
+            label: "Sun-bleached photo",
+            value: "huggingface.co/PrunaAI/p-image-photos-sunbleached-lora/weights.safetensors",
+            hint: "Act1vate!",
+          },
+          {
+            label: "Three-color composite photo",
+            value: "huggingface.co/PrunaAI/p-image-photos-three-color-composite/weights.safetensors",
+            hint: "HST",
+          },
+        ],
       },
       { name: "lora_scale", label: "LoRA strength", type: "number", default: 0.5, min: -1, max: 3, step: 0.05 },
       { name: "hf_api_token", label: "HuggingFace token (private repo)", type: "text" },
