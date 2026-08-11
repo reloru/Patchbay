@@ -288,7 +288,39 @@ function inputControl(f) {
     i.type = "text";
     i.dataset.field = f.name;
     if (f.default != null) i.value = f.default;
-    return i;
+    if (!f.presets || !f.presets.length) return i;
+
+    // Quick-pick dropdown that fills the text input; the input stays editable
+    // so a custom URL can always be pasted/typed instead.
+    const wrap = document.createElement("div");
+    wrap.className = "preset-field";
+    const sel = document.createElement("select");
+    sel.className = "preset-picker";
+    const first = document.createElement("option");
+    first.value = "";
+    first.textContent = "Quick pick, or paste your own below…";
+    sel.appendChild(first);
+    for (const p of f.presets) {
+      const opt = document.createElement("option");
+      opt.value = p.value;
+      opt.textContent = p.label;
+      sel.appendChild(opt);
+    }
+    const hint = document.createElement("p");
+    hint.className = "help preset-hint";
+    sel.addEventListener("change", () => {
+      const preset = f.presets.find((p) => p.value === sel.value);
+      if (preset) {
+        i.value = preset.value;
+        hint.textContent = preset.hint ? "Suggested prompt: " + preset.hint : "";
+      } else {
+        hint.textContent = "";
+      }
+    });
+    wrap.appendChild(sel);
+    wrap.appendChild(hint);
+    wrap.appendChild(i);
+    return wrap;
   }
   if (f.type === "int" || f.type === "number") {
     const i = document.createElement("input");

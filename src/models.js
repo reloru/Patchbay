@@ -16,6 +16,9 @@
 //   maxItems      for image arrays (default 1)
 //   wrapArray     text/number only: send the single entered value as a
 //                 one-element array (for API params that are typed as arrays)
+//   presets       text only: [{label,value,hint}] quick-pick dropdown shown
+//                 above the input; picking one fills the text value, the
+//                 field stays freely editable (e.g. known-good LoRA URLs)
 //
 // Optional fields render with an override toggle so you only send the
 // parameters you actually change; everything else uses Pruna's default.
@@ -497,7 +500,42 @@ export const MODELS = [
         label: "LoRA weights (HuggingFace URL)",
         type: "text",
         required: true,
-        help: "huggingface.co/<owner>/<model>[/<file>.safetensors] — must be trained with p-image-edit-trainer.",
+        // Pruna's API guesses `pytorch_lora_weights.safetensors` when no filename is
+        // given, but p-image-edit-trainer (and these official presets) output
+        // `weights.safetensors` — always spell out the filename or it 404s.
+        help: 'huggingface.co/<owner>/<model>/<file>.safetensors — must be trained with p-image-edit-trainer. Include the exact filename (usually "weights.safetensors"); Pruna\'s default filename guess often 404s otherwise.',
+        presets: [
+          {
+            label: "Photo → anime",
+            value: "huggingface.co/PrunaAI/p-image-edit-photo-to-anime-lora/weights.safetensors",
+            hint: "transform into anime",
+          },
+          {
+            label: "Dotted illustration",
+            value: "huggingface.co/PrunaAI/p-image-edit-dotted-illustration-lora/weights.safetensors",
+            hint: "dotted illustration",
+          },
+          {
+            label: "Photo enhancement",
+            value: "huggingface.co/PrunaAI/p-image-edit-photo-enhancement-lora/weights.safetensors",
+            hint: "tok_enhance",
+          },
+          {
+            label: "Skin retouching",
+            value: "huggingface.co/PrunaAI/p-image-edit-skin-retouching-lora/weights.safetensors",
+            hint: "make the subjects skin details more prominent and natural",
+          },
+          {
+            label: "Next scene",
+            value: "huggingface.co/PrunaAI/p-image-edit-next-scene-lora/weights.safetensors",
+            hint: "Next Scene: <describe what happens next>",
+          },
+          {
+            label: "Photo upscaler",
+            value: "huggingface.co/PrunaAI/p-image-edit-photo-upscaler-lora/weights.safetensors",
+            hint: "Upscale this picture to 4K resolution.",
+          },
+        ],
       },
       { name: "lora_scale", label: "LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.05 },
       { name: "hf_api_token", label: "HuggingFace token (private repo)", type: "text" },
