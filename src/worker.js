@@ -201,12 +201,32 @@ async function handleImprovePrompt(request, env) {
   if (prompt.length > 2000) return json({ error: "Prompt is too long to improve." }, 400);
 
   const forVideo = body.kind === "video";
-  const system =
-    `You expand short prompts into vivid ${forVideo ? "video" : "image"} generation prompts. ` +
-    `Add concrete visual detail: subject, setting, lighting, composition, style` +
-    (forVideo ? ", camera movement" : "") +
-    `. Keep the user's original intent and subject. ` +
-    `Reply with the rewritten prompt only — no preamble, no quotes, no explanation, under 80 words.`;
+  // An editing/i2v prompt describes a source image the improve model can
+  // never see. Left to "make it vivid", these small chat models default to
+  // whatever's statistically typical — golden-hour light indoors, a standing
+  // pose for someone described as sitting, foliage around a car interior —
+  // and those invented details then fight the real image at generation time.
+  // From-scratch generation has no source to contradict, so vivid expansion
+  // is still fine there.
+  const system = body.hasImage
+    ? `You rewrite prompts for ${forVideo ? "image-to-video generation" : "image editing"} from an existing source image. ` +
+      `Follow these rules strictly: ` +
+      `(1) Never use a pronoun ("she", "her", "he", "him") for the subject. If the prompt names them with a phrase like ` +
+      `"the blonde woman" or "the dark-haired man", repeat that exact phrase every single time, including mid-sentence. ` +
+      `(2) You cannot see the source image. Never invent lighting, weather, background, camera angle, or setting details that ` +
+      `aren't already in the prompt — if it doesn't mention lighting, don't add any. ` +
+      `(3) Preserve every stated pose, action, and proportion exactly as given — don't turn "sitting" into "standing" or add ` +
+      `motion that wasn't described. ` +
+      `(4) Never swap "photorealistic" for "hyper-realistic", "hyperrealistic", or other intensifiers. ` +
+      `(5) Do not add, remove, or reinterpret any fact — only improve clarity and specificity. You may reorder clauses, tighten ` +
+      `wording, and split run-ons. ` +
+      `Reply with the rewritten prompt only — no preamble, no quotes, no explanation, under 120 words.`
+    : `You expand short prompts into vivid ${forVideo ? "video" : "image"} generation prompts. ` +
+      `Add concrete visual detail: subject, setting, lighting, composition, style` +
+      (forVideo ? ", camera movement" : "") +
+      `. Keep the user's original intent and subject — don't contradict anything already stated. ` +
+      `Never swap "photorealistic" for "hyper-realistic", "hyperrealistic", or other intensifiers. ` +
+      `Reply with the rewritten prompt only — no preamble, no quotes, no explanation, under 120 words.`;
 
   // Only models from the offered list may be run here.
   const improveModel = IMPROVE_MODEL_IDS.has(body.model) ? body.model : DEFAULT_IMPROVE_MODEL;
@@ -221,7 +241,9 @@ async function handleImprovePrompt(request, env) {
         { role: "system", content: system },
         { role: "user", content: prompt },
       ],
-      max_tokens: isReasoning ? 1500 : 220,
+      // 120 words runs ~170-200 tokens; 320 leaves headroom so the raised
+      // word cap doesn't just get truncated at the token level instead.
+      max_tokens: isReasoning ? 1500 : 320,
     });
   } catch (err) {
     return json({ error: "Improve failed: " + (err && err.message ? err.message : String(err)) }, 502);

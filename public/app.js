@@ -1136,10 +1136,16 @@ function initPromptLibrary() {
     improveBtn.disabled = true;
     improveBtn.textContent = "Improving…";
     try {
+      // Whether an image field actually has something in it — a text-only
+      // model can't see the source image, so editing/i2v prompts need a much
+      // more conservative rewrite than from-scratch generation prompts do.
+      const hasImage = currentModel.fields.some(
+        (f) => f.type === "image" && (uploads[f.name] || []).length > 0
+      );
       const res = await api("/api/improve-prompt", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt: text, kind: currentModel.kind, model: $("improve-model").value }),
+        body: JSON.stringify({ prompt: text, kind: currentModel.kind, hasImage, model: $("improve-model").value }),
       });
       const data = await res.json();
       if (!res.ok || !data.prompt) throw new Error(data.error || `HTTP ${res.status}`);
