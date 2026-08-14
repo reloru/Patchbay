@@ -10,6 +10,8 @@ let describeModels = [];
 let defaultDescribeModel = "";
 let authRequired = false;
 let currentModel = null;
+let optionsPanel = null;
+let optionsBadge = null;
 const uploads = {}; // fieldName -> [{url, name, isImage}]
 
 const PW_KEY = "pruna_app_password";
@@ -147,13 +149,10 @@ function selectModel(id) {
     const el = form.querySelector(`[data-field="${f.name}"]`);
     if (!el || priorText[f.name] === undefined) continue;
     el.value = priorText[f.name];
-    // An optional field only gets sent when its override toggle is on.
-    const enable = form.querySelector(`[data-enable="${f.name}"]`);
-    if (enable && !enable.checked) {
-      enable.checked = true;
-      enable.dispatchEvent(new Event("change", { bubbles: true }));
-    }
   }
+  // Carried-over text can leave an option non-default, so recount and reveal.
+  refreshOptionState();
+  if (optionsPanel && optionsBadge && optionsBadge.textContent) optionsPanel.open = true;
   const primaryNow = primaryPromptEl();
   if (primaryNow && !primaryNow.value.trim() && priorText.__primary) {
     primaryNow.value = priorText.__primary;
@@ -270,9 +269,21 @@ function priceBlurb(model) {
 function renderFields() {
   const wrap = $("fields");
   wrap.innerHTML = "";
+  optionRows = [];
+  optionsPanel = null;
+  optionsBadge = null;
+
+  const optional = [];
   for (const f of currentModel.fields) {
-    wrap.appendChild(f.required ? renderRequired(f) : renderOptional(f));
+    if (f.required) wrap.appendChild(renderRequired(f));
+    else optional.push(f);
   }
+  if (optional.length) wrap.appendChild(renderOptionsPanel(optional));
+
+  refreshOptionState();
+  // Open the panel when something is already non-default — otherwise a value
+  // carried over from the previous model would be invisible.
+  if (optionsPanel && optionsBadge && optionsBadge.textContent) optionsPanel.open = true;
 }
 
 function inputControl(f) {
@@ -517,43 +528,110 @@ function defaultText(f) {
   return null;
 }
 
-function renderOptional(f) {
-  const opt = document.createElement("div");
-  opt.className = "opt disabled";
+// Optional parameters used to hide behind a per-field "override" checkbox,
+// which meant two interactions to change anything and a default label that
+// didn't necessarily match what was sent. They now sit in one collapsible
+// panel, each control visible and pre-filled with its default; anything you
+// actually change is highlighted and counted in the header.
+let optionRows = [];
 
-  const head = document.createElement("label");
-  head.className = "opt-head";
-  const cb = document.createElement("input");
-  cb.type = "checkbox";
-  cb.dataset.enable = f.name;
+function renderOptionsPanel(fields) {
+  const det = document.createElement("details");
+  det.className = "options";
+
+  const sum = document.createElement("summary");
+  const title = document.createElement("span");
+  title.className = "opt-title";
+  title.textContent = "Options";
+  const badge = document.createElement("span");
+  badge.className = "opt-badge";
+  sum.appendChild(title);
+  sum.appendChild(badge);
+  det.appendChild(sum);
+
+  const list = document.createElement("div");
+  list.className = "opt-list";
+  for (const f of fields) list.appendChild(buildOptionRow(f));
+  det.appendChild(list);
+
+  det.dataset.badge = "";
+  optionsPanel = det;
+  optionsBadge = badge;
+  return det;
+}
+
+function buildOptionRow(f) {
+  const row = document.createElement("div");
+  row.className = "opt-row";
+
+  const head = document.createElement("div");
+  head.className = "opt-row-head";
   const name = document.createElement("span");
-  name.className = "name";
+  name.className = "opt-name";
   name.textContent = f.label;
-  const tag = document.createElement("span");
-  tag.className = "tag";
-  const dflt = defaultText(f);
-  tag.textContent = dflt != null ? "Default: " + dflt : "customize";
-  head.appendChild(cb);
+  const note = document.createElement("span");
+  note.className = "opt-note";
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "opt-reset";
+  reset.textContent = "↺ Reset";
+  reset.title = "Back to the default";
+  reset.hidden = true;
   head.appendChild(name);
-  head.appendChild(tag);
+  head.appendChild(note);
+  head.appendChild(reset);
+  row.appendChild(head);
 
-  const body = document.createElement("div");
-  body.className = "opt-body";
-  body.appendChild(inputControl(f));
+  row.appendChild(inputControl(f));
   if (f.help) {
     const h = document.createElement("p");
     h.className = "help";
     h.textContent = f.help;
-    body.appendChild(h);
+    row.appendChild(h);
   }
 
-  cb.addEventListener("change", () => {
-    opt.classList.toggle("disabled", !cb.checked);
-  });
+  reset.addEventListener("click", () => resetField(f, row));
+  row.addEventListener("input", refreshOptionState);
+  row.addEventListener("change", refreshOptionState);
 
-  opt.appendChild(head);
-  opt.appendChild(body);
-  return opt;
+  optionRows.push({ f, row, note, reset });
+  return row;
+}
+
+function optionChanged(f, row) {
+  if (f.type === "image") return (uploads[f.name] || []).some((u) => u.url);
+  const v = readControlValue(f, row);
+  if (v === undefined) return false;
+  return v !== f.default;
+}
+
+function refreshOptionState() {
+  let changed = 0;
+  for (const r of optionRows) {
+    const isChanged = optionChanged(r.f, r.row);
+    if (isChanged) changed++;
+    r.row.classList.toggle("changed", isChanged);
+    // Uploads are cleared with the thumbnail's own ×, so no reset button there.
+    const resettable = isChanged && r.f.type !== "image";
+    r.reset.hidden = !resettable;
+    const dflt = defaultText(r.f);
+    r.note.textContent = resettable && dflt != null ? `default: ${dflt}` : "";
+  }
+  if (optionsBadge) optionsBadge.textContent = changed ? `${changed} changed` : "";
+}
+
+function resetField(f, row) {
+  const el = row.querySelector(`[data-field="${f.name}"]`);
+  if (!el) return;
+  if (f.type === "bool") {
+    const base = Boolean(f.default);
+    el.checked = f.invert ? !base : base;
+  } else {
+    el.value = f.default == null ? "" : String(f.default);
+  }
+  // Keeps the bool row's On/Off text and the changed state in sync.
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  refreshOptionState();
 }
 
 // ---------------------------------------------------------------------------
@@ -585,27 +663,42 @@ function readControlValue(f, scope) {
   return el.value;
 }
 
+// What the provider does when a field is omitted. Usually the same as the
+// value we show, but not always — see moderationFilter in models.js.
+function apiDefaultOf(f) {
+  return "apiDefault" in f ? f.apiDefault : f.default;
+}
+
 function buildInput() {
   const form = $("gen-form");
   const input = {};
   const missing = [];
 
   for (const f of currentModel.fields) {
+    const v = readControlValue(f, form);
+
     if (f.required) {
-      const v = readControlValue(f, form);
       if (v === undefined || v === "" || (Array.isArray(v) && v.length === 0)) {
         missing.push(f.label);
         continue;
       }
       input[f.name] = v;
-    } else {
-      // Include only if the override toggle is on.
-      const enable = form.querySelector(`[data-enable="${f.name}"]`);
-      const on = f.type === "image" ? (uploads[f.name] || []).some((u) => u.url) && enable && enable.checked : enable && enable.checked;
-      if (!on) continue;
-      const v = readControlValue(f, form);
-      if (v !== undefined && v !== "") input[f.name] = v;
+      continue;
     }
+
+    // Optional fields are always visible now, so there is no toggle to read.
+    // Send a value when it differs from what the provider would do on its own;
+    // sending a value identical to the provider's default only adds noise.
+    if (v === undefined || v === "") continue;
+    if (Array.isArray(v)) {
+      if (v.length) input[f.name] = v;
+      continue;
+    }
+    if (f.type === "image") {
+      input[f.name] = v; // an upload is only ever present because it was chosen
+      continue;
+    }
+    if (v !== apiDefaultOf(f)) input[f.name] = v;
   }
   return { input, missing };
 }
