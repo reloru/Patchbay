@@ -172,9 +172,12 @@ async function runWorkersAI(spec, input, env) {
     return json({ error: "Workers AI: " + (err && err.message ? err.message : String(err)) }, 502);
   }
 
-  // Shape 1: JSON { image: "<base64>" } (FLUX, Leonardo).
+  // Shape 1: JSON { image: "<base64>" } (FLUX, Leonardo). Sniff the real type
+  // rather than assuming JPEG — a mislabelled data: URI can fail to render in
+  // stricter browsers.
   if (out && typeof out === "object" && typeof out.image === "string") {
-    return json({ status: "succeeded", images: ["data:image/jpeg;base64," + out.image] });
+    const mime = sniffImageMime(out.image) || "image/jpeg";
+    return json({ status: "succeeded", images: [`data:${mime};base64,` + out.image] });
   }
   // Shape 2: raw PNG stream (Stable Diffusion family).
   if (out instanceof ReadableStream || out instanceof ArrayBuffer || ArrayBuffer.isView(out)) {
@@ -280,9 +283,25 @@ async function handleNeurons(env) {
   });
 }
 
+// Base64 magic-number prefixes, so a data: URI never has to guess at its own
+// content type. Grok returns PNG even though the old code hardcoded JPEG.
+function sniffImageMime(b64) {
+  if (b64.startsWith("iVBORw0KGgo")) return "image/png";
+  if (b64.startsWith("/9j/")) return "image/jpeg";
+  if (b64.startsWith("UklGR")) return "image/webp";
+  if (b64.startsWith("R0lGOD")) return "image/gif";
+  return null;
+}
+
 // Runs a Grok Imagine model directly against api.x.ai. Reference images switch
 // the call from /images/generations to /images/edits; xAI takes them as JSON
 // (data URIs), not multipart. Synchronous — no job to poll.
+//
+// Results are requested as URLs rather than inline base64. A 2048x2048 Grok
+// image is ~0.9MB, which base64 inflates to ~1.2MB of JSON that then becomes a
+// single enormous data: URI in the DOM — enough to kill a mobile Safari tab.
+// A URL lets /api/result stream the bytes and pass the real content-type
+// through, so nothing large is ever held as a string.
 async function runXai(spec, input, env) {
   if (!env.XAI_API_KEY) return json({ error: "xAI is not configured (XAI_API_KEY missing)." }, 500);
 
@@ -292,7 +311,7 @@ async function runXai(spec, input, env) {
     .slice(0, 3)
     .map((url) => ({ type: "image_url", url }));
 
-  const payload = { model: spec.xaiModel, prompt: input.prompt, response_format: "b64_json" };
+  const payload = { model: spec.xaiModel, prompt: input.prompt, response_format: "url" };
   if (input.aspect_ratio) payload.aspect_ratio = input.aspect_ratio;
   if (input.resolution) payload.resolution = input.resolution;
   if (input.n) payload.n = Number(input.n);
@@ -323,7 +342,14 @@ async function runXai(spec, input, env) {
   }
 
   const images = (data.data || [])
-    .map((d) => (d.b64_json ? "data:image/jpeg;base64," + d.b64_json : d.url))
+    .map((d) => {
+      if (d.url) return d.url; // preferred: streamed via /api/result
+      if (!d.b64_json) return null;
+      // Fallback if xAI ever ignores response_format. Use its declared
+      // mime_type, then magic-number sniffing, rather than assuming JPEG.
+      const mime = d.mime_type || sniffImageMime(d.b64_json) || "image/png";
+      return `data:${mime};base64,` + d.b64_json;
+    })
     .filter(Boolean);
   if (!images.length) return json({ error: "xAI returned no images." }, 502);
   return json({ status: "succeeded", images });
