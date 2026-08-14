@@ -87,36 +87,79 @@ input, select, textarea, button {
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 textarea { resize: vertical; min-height: 74px; }
 
-.opt {
+/* Optional parameters: one collapsible panel, every control visible and
+   pre-filled with its default. Anything changed is highlighted and counted. */
+.options {
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 10px 12px;
-  margin-bottom: 10px;
   background: var(--panel-2);
+  margin-bottom: 12px;
+  overflow: hidden;
 }
-.opt-head {
+.options > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 14px;
+  list-style: none;
+}
+.options > summary::-webkit-details-marker { display: none; }
+/* Disclosure caret, drawn rather than relying on the native marker so it
+   looks the same across browsers. */
+.options > summary::before {
+  content: "";
+  width: 0; height: 0;
+  border-left: 5px solid var(--muted);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform .15s ease;
+  flex: none;
+}
+.options[open] > summary::before { transform: rotate(90deg); }
+.opt-title { font-weight: 600; }
+.opt-badge:not(:empty) {
+  margin-left: auto;
+  font-size: 11px;
+  color: #1a1206;
+  background: var(--accent);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.opt-list { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 14px; }
+.opt-row {
+  border-left: 2px solid transparent;
+  padding-left: 10px;
+  margin-left: -12px;
+  transition: border-color .15s ease;
+}
+.opt-row.changed { border-left-color: var(--accent); }
+.opt-row-head {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px 10px;
-  cursor: pointer;
-  user-select: none;
+  gap: 4px 10px;
+  margin-bottom: 6px;
 }
-.opt-head input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); flex: none; }
-.opt-head .name { font-size: 13px; }
-.opt-head .tag {
+.opt-name { font-size: 13px; color: var(--muted); }
+.opt-row.changed .opt-name { color: var(--text); font-weight: 600; }
+.opt-note { font-size: 11px; color: var(--muted); }
+.opt-reset {
   margin-left: auto;
-  font-size: 11px;
-  color: var(--muted);
-  background: var(--bg);
+  background: transparent;
+  color: var(--accent);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 1px 8px;
-  white-space: nowrap;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 500;
 }
-.opt-body { margin-top: 10px; }
-.opt.disabled .opt-body { display: none; }
-.opt.disabled .name { color: var(--muted); }
+.opt-reset:hover { background: var(--panel); border-color: var(--accent); }
 
 .help { font-size: 11px; color: var(--muted); margin: 5px 2px 0; }
 
@@ -204,7 +247,7 @@ footer { margin-top: 28px; color: var(--muted); font-size: 12px; }
    model pickers were added, which pushed the whole page sideways. */
 html, body { max-width: 100%; overflow-x: hidden; }
 .panel { min-width: 0; }
-.blurb, .field-label, .opt-head .name { overflow-wrap: anywhere; }
+.blurb, .field-label, .opt-name { overflow-wrap: anywhere; }
 select, input, textarea, button { max-width: 100%; }
 
 .prompt-lib { flex-wrap: wrap; }

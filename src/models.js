@@ -67,8 +67,14 @@ const SEED = {
 
 // Content moderation filter. The API param disables the safety checker, so we
 // present it inverted: filter "On" == param false.
-function moderationFilter(name = "disable_safety_checker", apiDefault = true) {
-  return { name, label: "Content moderation filter", type: "bool", default: apiDefault, invert: true };
+// `default` is what the app shows and will send; `apiDefault` is what the
+// provider does when the field is omitted. They are not always the same: we
+// want the filter off, but most models only disable it when explicitly told
+// to. buildInput() sends any value that differs from apiDefault, so a
+// mismatch here is what makes the shown default actually take effect rather
+// than just being a label.
+function moderationFilter(name = "disable_safety_checker", apiDefault = false) {
+  return { name, label: "Content moderation filter", type: "bool", default: true, apiDefault, invert: true };
 }
 
 export const MODELS = [
@@ -546,7 +552,8 @@ export const MODELS = [
     fields: [
       { name: "images", label: "Image(s) to edit", type: "image", required: true, maxItems: 5, asArray: true },
       { name: "prompt", label: "What to change", type: "textarea", required: true },
-      { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: false },
+      // Pruna turns turbo on unless told otherwise, so this has to be sent.
+      { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: false, apiDefault: true },
       {
         name: "aspect_ratio",
         label: "Aspect ratio",
@@ -769,10 +776,12 @@ export const MODELS = [
         options: [{ value: "720p", label: "720p" }, { value: "1080p", label: "1080p" }],
       },
       {
+        // Number, not "24": the option values are numbers, and the
+        // default-comparison that decides what gets sent is type-strict.
         name: "fps",
         label: "Frames per second",
         type: "enum",
-        default: "24",
+        default: 24,
         options: [{ value: 24, label: "24" }, { value: 48, label: "48" }],
       },
       {
