@@ -139,7 +139,9 @@ function selectModel(id) {
   currentModel = MODELS.find((m) => m.id === id);
   $("model-select").value = id;
   $("model-blurb").textContent = (currentModel.blurb || "") + " " + priceBlurb(currentModel);
-  for (const k of Object.keys(uploads)) delete uploads[k];
+  // carryFiles already holds the File objects; revoking the old previews here
+  // is safe, and the carried files get fresh preview URLs when re-adopted.
+  clearUploads();
   resetImproveState();
   renderFields();
   carryFiles = [];
@@ -194,6 +196,24 @@ function probeVideoMeta(file) {
     v.onerror = () => done(null);
     v.src = url;
   });
+}
+
+// A preview object URL keeps the entire file alive in memory until it is
+// revoked, so every path that drops an upload has to release its preview
+// first — removing a thumb, swapping a single-image field, a failed upload,
+// switching models, and Reset.
+function releasePreview(u) {
+  if (u && u.preview) {
+    URL.revokeObjectURL(u.preview);
+    u.preview = null;
+  }
+}
+
+function clearUploads() {
+  for (const k of Object.keys(uploads)) {
+    for (const u of uploads[k]) releasePreview(u);
+    delete uploads[k];
+  }
 }
 
 // Full data: URI (xAI reference images).
@@ -452,6 +472,7 @@ function imageControl(f) {
       rm.textContent = "×";
       rm.title = "Remove";
       rm.addEventListener("click", () => {
+        releasePreview(uploads[f.name][idx]);
         uploads[f.name].splice(idx, 1);
         redraw();
       });
@@ -464,7 +485,10 @@ function imageControl(f) {
     const files = Array.from(input.files || []);
     input.value = "";
     // A single-image field swaps the picture rather than refusing the new one.
-    if (maxItems === 1 && files.length) uploads[f.name].length = 0;
+    if (maxItems === 1 && files.length) {
+      for (const u of uploads[f.name]) releasePreview(u);
+      uploads[f.name].length = 0;
+    }
     for (const file of files) {
       if (uploads[f.name].length >= maxItems) break;
       const placeholder = { file, url: null, name: file.name, isImage: file.type.startsWith("image/"), preview: null, uploading: true };
@@ -478,6 +502,7 @@ function imageControl(f) {
         placeholder.url = await encodeForField(f, file);
         placeholder.uploading = false;
       } catch (e) {
+        releasePreview(placeholder);
         const i = uploads[f.name].indexOf(placeholder);
         if (i >= 0) uploads[f.name].splice(i, 1);
         redraw();
@@ -499,6 +524,7 @@ function imageControl(f) {
       encodeForField(f, file)
         .then((url) => { placeholder.url = url; placeholder.uploading = false; })
         .catch((e) => {
+          releasePreview(placeholder);
           const i = uploads[f.name].indexOf(placeholder);
           if (i >= 0) uploads[f.name].splice(i, 1);
           redraw();
@@ -774,7 +800,7 @@ $("gen-form").addEventListener("submit", async (e) => {
 });
 
 $("reset-btn").addEventListener("click", () => {
-  for (const k of Object.keys(uploads)) delete uploads[k];
+  clearUploads();
   renderFields();
   setStatus("", "hide");
 });
