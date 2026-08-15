@@ -365,15 +365,24 @@ function inputControl(f) {
     return i;
   }
   if (f.type === "bool") {
+    // A real checkbox drives it (so keyboard/screen-reader semantics are
+    // native and readControlValue/resetField don't need to change at all),
+    // but it's visually replaced by a track + knob so the control reads as
+    // "here's the current state" rather than "check this box to enable X" —
+    // which is genuinely ambiguous once the state being shown is Off.
     const label = document.createElement("label");
-    label.className = "checkline";
+    label.className = "toggle";
     const c = document.createElement("input");
     c.type = "checkbox";
     c.dataset.field = f.name;
     const base = Boolean(f.default);
     c.checked = f.invert ? !base : base; // show the user-facing (possibly inverted) value
     label.appendChild(c);
+    const track = document.createElement("span");
+    track.className = "toggle-track";
+    label.appendChild(track);
     const span = document.createElement("span");
+    span.className = "toggle-text";
     span.textContent = c.checked ? "On" : "Off";
     label.appendChild(span);
     c.addEventListener("change", () => {

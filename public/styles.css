@@ -169,8 +169,53 @@ textarea { resize: vertical; min-height: 74px; }
 .preset-field { display: flex; flex-direction: column; gap: 6px; }
 .preset-hint:empty { display: none; margin: 0; }
 
-.checkline { display: flex; align-items: center; gap: 8px; }
-.checkline input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+/* Bool fields: a real checkbox for native semantics/keyboard support, styled
+   as an On/Off switch. Plain "☐ Off" reads as "check this to turn it off",
+   which is backwards once the box is unchecked — a switch just shows state. */
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  position: relative; /* contains the absolutely-positioned checkbox below */
+  cursor: pointer;
+  min-height: 44px; /* comfortable tap target even though the switch itself is small */
+  padding: 4px 0;
+}
+.toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  cursor: pointer;
+}
+.toggle-track {
+  width: 36px;
+  height: 20px;
+  flex: 0 0 36px;
+  border-radius: 10px;
+  background: var(--border);
+  position: relative;
+  transition: background 0.15s ease;
+}
+.toggle-track::after {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  top: 2px;
+  left: 2px;
+  border-radius: 50%;
+  background: var(--text);
+  transition: transform 0.15s ease;
+}
+.toggle input:checked + .toggle-track { background: var(--accent); }
+.toggle input:checked + .toggle-track::after { transform: translateX(16px); background: #1a1206; }
+/* Hiding the native checkbox appearance means its default focus ring goes
+   with it — this puts one back on the track so keyboard users still see it. */
+.toggle input:focus-visible + .toggle-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.toggle-text { font-size: 13px; color: var(--muted); min-width: 26px; }
+.toggle input:checked ~ .toggle-text { color: var(--text); }
 
 .thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .thumbs .thumb {
