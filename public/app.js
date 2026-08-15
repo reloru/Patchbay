@@ -374,7 +374,7 @@ function inputControl(f) {
     c.checked = f.invert ? !base : base; // show the user-facing (possibly inverted) value
     label.appendChild(c);
     const span = document.createElement("span");
-    span.textContent = "On";
+    span.textContent = c.checked ? "On" : "Off";
     label.appendChild(span);
     c.addEventListener("change", () => {
       span.textContent = c.checked ? "On" : "Off";
@@ -491,6 +491,9 @@ function imageControl(f) {
       t.appendChild(rm);
       thumbs.appendChild(t);
     }
+    // A sibling field may be conditionally disabled based on this field's
+    // uploads (e.g. aspect ratio once a start image sets it instead).
+    refreshOptionState();
   };
 
   input.addEventListener("change", async () => {
@@ -660,11 +663,20 @@ function buildOptionRow(f) {
     row.appendChild(h);
   }
 
-  reset.addEventListener("click", () => resetField(f, row));
-  row.addEventListener("input", refreshOptionState);
-  row.addEventListener("change", refreshOptionState);
+  // "touched" tracks a deliberate edit, separate from "differs from default":
+  // a field like seed defaults to -1 (its own "randomize" sentinel), so it can
+  // never differ from itself — without this, there'd be no way to force -1
+  // into the request rather than omitting it, unlike every other value.
+  const entry = { f, row, note, reset, touched: false };
+  reset.addEventListener("click", () => {
+    resetField(f, row); // dispatches "change" (re-touching it), so untouch after
+    entry.touched = false;
+    refreshOptionState(); // resetField's own refresh ran while still touched=true
+  });
+  row.addEventListener("input", () => { entry.touched = true; refreshOptionState(); });
+  row.addEventListener("change", () => { entry.touched = true; refreshOptionState(); });
 
-  optionRows.push({ f, row, note, reset });
+  optionRows.push(entry);
   return row;
 }
 
@@ -678,7 +690,24 @@ function optionChanged(f, row) {
 function refreshOptionState() {
   let changed = 0;
   for (const r of optionRows) {
-    const isChanged = optionChanged(r.f, r.row);
+    // e.g. p-video's aspect ratio: the provider derives it from the start
+    // image and ignores the dropdown once one is attached, so gray it out
+    // and say why instead of leaving a control that quietly does nothing.
+    const blockedBy = r.f.disabledWhen && (uploads[r.f.disabledWhen] || []).length > 0;
+    const el = r.row.querySelector(`[data-field="${r.f.name}"]`);
+    if (el) el.disabled = Boolean(blockedBy);
+    r.row.classList.toggle("blocked", Boolean(blockedBy));
+    if (blockedBy) {
+      r.row.classList.remove("changed");
+      r.reset.hidden = true;
+      r.note.textContent = r.f.disabledNote || "not used with an image attached";
+      continue;
+    }
+
+    // "touched" counts too: a value can be deliberately re-entered without
+    // differing from the default (seed=-1 is itself "randomize"), and that
+    // still needs a highlight + Reset so it isn't stuck forcibly sent forever.
+    const isChanged = r.touched || optionChanged(r.f, r.row);
     if (isChanged) changed++;
     r.row.classList.toggle("changed", isChanged);
     // Uploads are cleared with the thumbnail's own ×, so no reset button there.
@@ -745,6 +774,7 @@ function buildInput() {
   const form = $("gen-form");
   const input = {};
   const missing = [];
+  const touchedNames = new Set(optionRows.filter((r) => r.touched).map((r) => r.f.name));
 
   for (const f of currentModel.fields) {
     const v = readControlValue(f, form);
@@ -759,8 +789,8 @@ function buildInput() {
     }
 
     // Optional fields are always visible now, so there is no toggle to read.
-    // Send a value when it differs from what the provider would do on its own;
-    // sending a value identical to the provider's default only adds noise.
+    // Send a value when the user deliberately set it, or when it differs from
+    // what the provider would do on its own; otherwise sending it is just noise.
     if (v === undefined || v === "") continue;
     if (Array.isArray(v)) {
       if (v.length) input[f.name] = v;
@@ -770,7 +800,7 @@ function buildInput() {
       input[f.name] = v; // an upload is only ever present because it was chosen
       continue;
     }
-    if (v !== apiDefaultOf(f)) input[f.name] = v;
+    if (touchedNames.has(f.name) || v !== apiDefaultOf(f)) input[f.name] = v;
   }
   return { input, missing };
 }

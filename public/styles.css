@@ -160,6 +160,9 @@ textarea { resize: vertical; min-height: 74px; }
   font-weight: 500;
 }
 .opt-reset:hover { background: var(--panel); border-color: var(--accent); }
+.opt-row.blocked { opacity: .5; }
+.opt-row.blocked select,
+.opt-row.blocked input { cursor: not-allowed; }
 
 .help { font-size: 11px; color: var(--muted); margin: 5px 2px 0; }
 
