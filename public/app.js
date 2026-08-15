@@ -418,9 +418,21 @@ async function encodeForField(f, file) {
 // Files carried across a model switch, consumed by the new model's image fields.
 let carryFiles = [];
 
+// The "image" field type is reused for audio, video, and .zip uploads (via
+// `accept`), so the picker's wording has to follow suit rather than always
+// saying "image".
+function fileNoun(f) {
+  const accept = f.accept || "";
+  if (accept.startsWith("audio/")) return "audio";
+  if (accept.startsWith("video/")) return "video";
+  if (accept === "image/*" || !accept) return "image";
+  return "file";
+}
+
 function imageControl(f) {
   const box = document.createElement("div");
   const maxItems = f.maxItems || 1;
+  const noun = fileNoun(f);
   const input = document.createElement("input");
   input.type = "file";
   input.accept = f.accept || "image/*";
@@ -438,11 +450,11 @@ function imageControl(f) {
   const updateLabel = () => {
     const n = (uploads[f.name] || []).length;
     if (maxItems === 1) {
-      pick.textContent = n ? "Replace image" : "Choose image";
-      status.textContent = n ? (uploads[f.name][0].name || "1 file") : "No image chosen";
+      pick.textContent = n ? `Replace ${noun}` : `Choose ${noun}`;
+      status.textContent = n ? (uploads[f.name][0].name || "1 file") : `No ${noun} chosen`;
     } else {
-      pick.textContent = n ? "Add image" : "Choose image(s)";
-      status.textContent = n ? `${n} of ${maxItems} chosen` : "No images chosen";
+      pick.textContent = n ? `Add ${noun}` : `Choose ${noun}(s)`;
+      status.textContent = n ? `${n} of ${maxItems} chosen` : `No ${noun}s chosen`;
       pick.disabled = n >= maxItems;
     }
   };
