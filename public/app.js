@@ -713,10 +713,16 @@ function refreshOptionState() {
       continue;
     }
 
-    // "touched" counts too: a value can be deliberately re-entered without
-    // differing from the default (seed=-1 is itself "randomize"), and that
-    // still needs a highlight + Reset so it isn't stuck forcibly sent forever.
-    const isChanged = r.touched || optionChanged(r.f, r.row);
+    // "touched" only matters for the visual "changed" state when it's the
+    // *only* way to affect what gets sent -- i.e. the field's own default
+    // already equals apiDefault (seed=-1 is itself "randomize", so entering
+    // -1 has to be tracked separately from "value differs"). For a field
+    // whose default is already forced to diverge from apiDefault (turbo,
+    // content moderation), the value is sent on every request regardless of
+    // touch, so touching-then-reverting it sends an identical payload either
+    // way -- highlighting it as "changed" there would be pure theater.
+    const touchMatters = apiDefaultOf(r.f) === r.f.default;
+    const isChanged = (r.touched && touchMatters) || optionChanged(r.f, r.row);
     if (isChanged) changed++;
     r.row.classList.toggle("changed", isChanged);
     // Uploads are cleared with the thumbnail's own ×, so no reset button there.
