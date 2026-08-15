@@ -786,10 +786,12 @@ export const MODELS = [
       },
       {
         name: "aspect_ratio",
-        label: "Aspect ratio (ignored with a start image)",
+        label: "Aspect ratio",
         type: "enum",
         default: "16:9",
         options: AR_COMMON,
+        disabledWhen: "image",
+        disabledNote: "using the start image's aspect ratio",
       },
       { name: "draft", label: "Draft mode (faster preview)", type: "bool", default: false },
       { name: "prompt_upsampling", label: "Auto-improve prompt", type: "bool", default: true },
