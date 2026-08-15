@@ -210,16 +210,27 @@ async function handleImprovePrompt(request, env) {
   // is still fine there.
   const system = body.hasImage
     ? `You rewrite prompts for ${forVideo ? "image-to-video generation" : "image editing"} from an existing source image. ` +
-      `Follow these rules strictly: ` +
-      `(1) Never use a pronoun ("she", "her", "he", "him") for the subject. If the prompt names them with a phrase like ` +
+      `You cannot see that image. Follow these rules strictly: ` +
+      `(1) Add ZERO new visual facts. Do not invent anyone's hair color, age, build, clothing, expression, pose, or ` +
+      `action, and do not invent the room, lighting, weather, camera angle, or background — for anything the prompt ` +
+      `doesn't already specify, leave it unspecified in your rewrite too. A plausible-sounding guess is still an invention. ` +
+      `(2) If the prompt is short, vague, or a sentence fragment, your rewrite must stay just as short and vague. Do not ` +
+      `complete it or add a setting, action, or detail it doesn't already have — a barely-changed rewrite is the correct ` +
+      `answer for a sparse prompt. Example: the input "The man and the woman are" should become something like ` +
+      `"The man and the woman are together." — NOT a description of a room, furniture, clothing, or what they're doing, ` +
+      `none of which the input mentions. ` +
+      `(3) Never use a pronoun ("she", "her", "he", "him") for a subject. If the prompt names them with a phrase like ` +
       `"the blonde woman" or "the dark-haired man", repeat that exact phrase every single time, including mid-sentence. ` +
-      `(2) You cannot see the source image. Never invent lighting, weather, background, camera angle, or setting details that ` +
-      `aren't already in the prompt — if it doesn't mention lighting, don't add any. ` +
-      `(3) Preserve every stated pose, action, and proportion exactly as given — don't turn "sitting" into "standing" or add ` +
-      `motion that wasn't described. ` +
-      `(4) Never swap "photorealistic" for "hyper-realistic", "hyperrealistic", or other intensifiers. ` +
-      `(5) Do not add, remove, or reinterpret any fact — only improve clarity and specificity. You may reorder clauses, tighten ` +
-      `wording, and split run-ons. ` +
+      `Never introduce a NEW such phrase yourself (that would be inventing an appearance detail) — only reuse ones ` +
+      `already in the prompt, or plain words like "the man"/"the woman" if none were given. ` +
+      `(4) Preserve every stated pose, action, and proportion exactly as given — don't turn "sitting" into "standing". ` +
+      `(5) If the prompt already contains the word "photorealistic", your rewrite must keep that exact word — do not ` +
+      `drop it and do not change it to "hyper-realistic" or "hyperrealistic". Don't introduce those words yourself either. ` +
+      `(6) Your only job is clarity and specificity of what's already stated — reordering clauses and tightening wording ` +
+      `is fine, adding content is not. When the prompt already says everything it needs to, your rewrite may be nearly ` +
+      `identical to the original. ` +
+      `Before replying, check every word of the original prompt is represented in your rewrite — do not silently drop ` +
+      `words or instructions, "photorealistic" included. ` +
       `Reply with the rewritten prompt only — no preamble, no quotes, no explanation, under 120 words.`
     : `You expand short prompts into vivid ${forVideo ? "video" : "image"} generation prompts. ` +
       `Add concrete visual detail: subject, setting, lighting, composition, style` +
