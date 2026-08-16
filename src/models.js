@@ -1274,6 +1274,9 @@ const XAI_PRICING = {
   // input charge. Text input is free.
   "xai-imagine-image": { type: "flat", usd: 0.02, inputUsd: 0.002 },
   "xai-imagine-image-quality": { type: "flat", usd: 0.05, usd2k: 0.07, inputUsd: 0.01 },
+  // No published per-image rate found for the 2.0 model yet; left "variable"
+  // rather than guessed at.
+  "xai-imagine-image-2": { type: "variable" },
   // Output per second of video, by resolution, plus a per-input-image charge
   // (start image + reference images). 1080p has no published rate, so it's
   // left out and priced as "varies" rather than guessed at.
@@ -1405,6 +1408,40 @@ const XAI_MODELS = [
       },
       { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "auto", options: XAI_AR },
       { name: "n", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
+    ],
+  },
+  {
+    id: "xai-imagine-image-2",
+    xaiModel: "grok-imagine-image-2.0",
+    label: "Grok Imagine Image 2.0",
+    group: "xAI (Grok)",
+    kind: "image",
+    blurb: "Newer Grok image model with a quality dial. Generates, or edits up to 3 references.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "images", label: "Reference image(s) to edit (optional)", type: "image", maxItems: 3, asArray: true, asDataUri: true },
+      {
+        name: "resolution",
+        label: "Resolution",
+        type: "enum",
+        default: "1k",
+        options: [
+          { value: "1k", label: "1K (1024×1024)" },
+          { value: "2k", label: "2K (2048×2048)" },
+        ],
+      },
+      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "auto", options: XAI_AR },
+      { name: "n", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
+      {
+        name: "quality",
+        label: "Quality",
+        type: "enum",
+        default: "medium",
+        options: [
+          { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+        ],
+      },
     ],
   },
   {

@@ -348,6 +348,7 @@ async function runXai(spec, input, env) {
   if (input.aspect_ratio) payload.aspect_ratio = input.aspect_ratio;
   if (input.resolution) payload.resolution = input.resolution;
   if (input.n) payload.n = Number(input.n);
+  if (input.quality) payload.quality = input.quality;
   if (refs.length) payload.images = refs;
 
   const path = refs.length ? "edits" : "generations";
