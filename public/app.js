@@ -267,6 +267,12 @@ function priceBlurb(model) {
   if (p.type === "thinking_size_tiered") {
     return `List price: ${fmtUsd(p.usd["very low"]["1K"])}–${fmtUsd(p.usd.high["2K"])} per image, by thinking effort and resolution.`;
   }
+  if (p.type === "res_quality_tiered") {
+    return (
+      `List price: ${fmtUsd(p.usd["1k"].low)}–${fmtUsd(p.usd["2k"].medium)} per image, ` +
+      `by resolution and quality, plus ${fmtUsd(p.inputUsd)} per reference image.`
+    );
+  }
   if (p.type === "xai_video") {
     return (
       `List price: ${fmtUsd(p.outUsdPerSec["480p"])}/s at 480p, ${fmtUsd(p.outUsdPerSec["720p"])}/s at 720p ` +
@@ -1374,6 +1380,16 @@ function estimateCost(model, input, outputCount) {
     if (!thinking) return null;
     const rate = thinking[input.image_size || "2K"];
     return rate == null ? null : rate;
+  }
+  if (p.type === "res_quality_tiered") {
+    const resolution = input.resolution ?? fieldDefault(model, "resolution") ?? "1k";
+    const quality = input.quality ?? fieldDefault(model, "quality") ?? "medium";
+    const tier = p.usd[resolution];
+    const per = tier ? tier[quality] : null;
+    if (per == null) return null;
+    const n = Number(input.num_outputs) || Number(input.n) || outputCount || 1;
+    const refs = Array.isArray(input.images) ? input.images.length : 0;
+    return per * n + refs * (p.inputUsd || 0);
   }
   if (p.type === "xai_video") {
     const rate = p.outUsdPerSec[input.resolution || "480p"];
