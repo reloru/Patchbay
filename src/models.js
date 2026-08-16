@@ -1274,9 +1274,13 @@ const XAI_PRICING = {
   // input charge. Text input is free.
   "xai-imagine-image": { type: "flat", usd: 0.02, inputUsd: 0.002 },
   "xai-imagine-image-quality": { type: "flat", usd: 0.05, usd2k: 0.07, inputUsd: 0.01 },
-  // No published per-image rate found for the 2.0 model yet; left "variable"
-  // rather than guessed at.
-  "xai-imagine-image-2": { type: "variable" },
+  // Published xAI list prices: output per image, tiered by resolution and
+  // quality, plus a per-reference-image input charge.
+  "xai-imagine-image-2": {
+    type: "res_quality_tiered",
+    usd: { "1k": { low: 0.04, medium: 0.06 }, "2k": { low: 0.06, medium: 0.08 } },
+    inputUsd: 0.01,
+  },
   // Output per second of video, by resolution, plus a per-input-image charge
   // (start image + reference images). 1080p has no published rate, so it's
   // left out and priced as "varies" rather than guessed at.
