@@ -10,8 +10,12 @@
   },
   // Cloudflare Workers AI. Runs on Cloudflare's own GPUs and is billed to this
   // account, so it needs no API key of its own — unlike the Pruna path.
+  // `remote: true` because Workers AI has no local emulation: without it a
+  // plain `wrangler dev` fails every AI call with "Binding AI needs to be run
+  // remotely". Production is unaffected — the binding is remote there anyway.
   "ai": {
-    "binding": "AI"
+    "binding": "AI",
+    "remote": true
   },
   "observability": {
     "enabled": true
