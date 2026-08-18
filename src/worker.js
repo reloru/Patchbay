@@ -187,6 +187,109 @@ async function runWorkersAI(spec, input, env) {
   return json({ error: "Unexpected Workers AI response shape." }, 502);
 }
 
+// An editing/i2v prompt describes a source image the improve model can never
+// see. Left to "make it vivid", small chat models default to whatever's
+// statistically typical — golden-hour light indoors, a standing pose for
+// someone described as sitting — and those invented details then fight the real
+// image at generation time.
+//
+// These are taught by example rather than by rule. Spelling the constraints out
+// as prose does not survive contact with the 3B default model: an eight-rule
+// version came back with the rule text itself as the "rewritten prompt", and a
+// terser bulleted version came back as bullets with the section labels still
+// attached. Worked input/output pairs pattern-match instead of having to be
+// parsed, and are the only formulation that held up across every model offered.
+// Example CONTENT leaks too, so these deliberately share no subject or wording
+// with a prompt anyone would realistically type.
+const IMAGE_RULES =
+  `Never invent detail the user did not write — no hair color, age, clothing, pose, room, weather, or lighting, ` +
+  `and no extra people or objects. Replace every pronoun, possessives ("his", "her", "their") included, with the ` +
+  `user's own words for the subject. Keep every ` +
+  `instruction they gave, and keep the word "photorealistic" if present. If they asked for no change at all, ` +
+  `return their words tidied and nothing more.`;
+
+// Pruna's own image-editing guide recommends the order
+// [modification] [change target] [preservation requirements], and attributes
+// most real-world editing failures (subject drifts, identity changes, unrelated
+// elements mutate) to a missing preservation clause. Those clauses assert
+// nothing about the image's actual contents, so unlike descriptive detail they
+// are safe for a model that cannot see it — which is what gives this rewrite
+// something substantive to do without inventing anything.
+const EDIT_SYSTEM =
+  `You rewrite image-editing instructions for an image-editing model, which cannot be told anything about the ` +
+  `image beyond what the user wrote. State the change, what it applies to, then what to preserve. ` +
+  IMAGE_RULES +
+  ` Never ask to preserve the very thing the change alters, and never state what the image currently shows — only ` +
+  `what to change it to. Output only the rewritten instruction, under 120 words.`;
+
+const EDIT_SHOTS = [
+  [
+    "remove the hat",
+    "Remove the hat from the subject's head. Preserve the subject's facial features and identity, and keep the " +
+      "same position, scale, pose, camera angle, and framing.",
+  ],
+  [
+    "turn the background into a beach",
+    "Replace the background with a sunlit beach. Keep the subject in the same position, scale, and pose, and " +
+      "maintain the same camera angle, framing, and perspective.",
+  ],
+  [
+    "make it look like a watercolour",
+    "Convert the image to a watercolour painting with soft bleeding washes, visible paper texture, and pooled " +
+      "pigment at the edges. Preserve the subject's facial features and identity, and keep the same composition " +
+      "and framing.",
+  ],
+  [
+    "make it daytime",
+    "Change the scene to daytime with bright natural light. Preserve the subject's facial features and identity, " +
+      "and keep the same position, scale, pose, and framing.",
+  ],
+  // Teaches the describe-don't-instruct case: input that requests no edit comes
+  // back as itself. Kept last deliberately — without it the model invented an
+  // edit in 4 runs out of 5, and moved mid-list it stopped carrying.
+  // Worded around "the subject" on purpose: earlier versions ("a photo of a
+  // dog", "the two of them") had their subject noun borrowed into unrelated
+  // rewrites, so the only phrase this one can leak is the generic already used
+  // everywhere else.
+  ["the subject is in the frame", "The subject is in the frame."],
+];
+
+// Same anti-invention core, but the editing guide's preservation advice is
+// actively wrong here: telling an i2v model to hold position, pose, and camera
+// fixed suppresses the motion that is the entire point of the output. So
+// preservation is narrowed to identity and appearance consistency.
+const I2V_SYSTEM =
+  `You rewrite instructions for an image-to-video model animating the user's photo, which cannot be told anything ` +
+  `about that photo beyond what the user wrote. State the motion, who performs it, then what stays consistent. ` +
+  IMAGE_RULES +
+  ` Describe only the motion they asked for — never add a second action, a camera move, or a shot length. Never ` +
+  `freeze the subject's position or pose: motion is the point of a video. Output only the rewritten instruction, ` +
+  `under 120 words.`;
+
+const I2V_SHOTS = [
+  [
+    "she turns her head",
+    "The woman slowly turns the woman's head to one side. Preserve the woman's facial features and identity " +
+      "throughout, and keep the woman's clothing and the setting consistent across the shot.",
+  ],
+  [
+    "the car drives away",
+    "The car drives away into the distance. Keep the car's colour, shape, and markings consistent throughout the " +
+      "shot, along with the surrounding setting.",
+  ],
+];
+
+// "photorealistic" is load-bearing: swapping it for "hyper-realistic" pushes
+// image models toward an oversaturated, synthetic look, and dropping it loses
+// the constraint entirely. Every model offered here gets this wrong sometimes —
+// Mistral Small dropped it outright mid-test — so it is enforced after the
+// fact rather than left to instruction-following.
+function keepPhotorealistic(original, rewritten) {
+  const out = rewritten.replace(/\bhyper-?realistic\b/gi, "photorealistic");
+  if (!/\bphotorealistic\b/i.test(original) || /\bphotorealistic\b/i.test(out)) return out;
+  return out.replace(/\s*[.!]?\s*$/, "") + ". Keep the image photorealistic.";
+}
+
 // Rewrites a short prompt into a richer one using a chat model on Workers AI.
 // Used by the "Improve" button and works for any provider's models. The model
 // is chosen in the UI from IMPROVE_MODELS.
@@ -201,37 +304,12 @@ async function handleImprovePrompt(request, env) {
   if (prompt.length > 2000) return json({ error: "Prompt is too long to improve." }, 400);
 
   const forVideo = body.kind === "video";
-  // An editing/i2v prompt describes a source image the improve model can
-  // never see. Left to "make it vivid", these small chat models default to
-  // whatever's statistically typical — golden-hour light indoors, a standing
-  // pose for someone described as sitting, foliage around a car interior —
-  // and those invented details then fight the real image at generation time.
-  // From-scratch generation has no source to contradict, so vivid expansion
-  // is still fine there.
+  // Worked examples, replayed as prior turns. Only the source-image modes get
+  // them: from-scratch generation was never the failing case, and pinning it to
+  // a handful of examples would only narrow the variety it produces.
+  const shots = body.hasImage ? (forVideo ? I2V_SHOTS : EDIT_SHOTS) : [];
   const system = body.hasImage
-    ? `You rewrite prompts for ${forVideo ? "image-to-video generation" : "image editing"} from an existing source image. ` +
-      `You cannot see that image. Follow these rules strictly: ` +
-      `(1) Add ZERO new visual facts. Do not invent anyone's hair color, age, build, clothing, expression, pose, or ` +
-      `action, and do not invent the room, lighting, weather, camera angle, or background — for anything the prompt ` +
-      `doesn't already specify, leave it unspecified in your rewrite too. A plausible-sounding guess is still an invention. ` +
-      `(2) If the prompt is short, vague, or a sentence fragment, your rewrite must stay just as short and vague. Do not ` +
-      `complete it or add a setting, action, or detail it doesn't already have — a barely-changed rewrite is the correct ` +
-      `answer for a sparse prompt. Example: the input "The man and the woman are" should become something like ` +
-      `"The man and the woman are together." — NOT a description of a room, furniture, clothing, or what they're doing, ` +
-      `none of which the input mentions. ` +
-      `(3) Never use a pronoun ("she", "her", "he", "him") for a subject. If the prompt names them with a phrase like ` +
-      `"the blonde woman" or "the dark-haired man", repeat that exact phrase every single time, including mid-sentence. ` +
-      `Never introduce a NEW such phrase yourself (that would be inventing an appearance detail) — only reuse ones ` +
-      `already in the prompt, or plain words like "the man"/"the woman" if none were given. ` +
-      `(4) Preserve every stated pose, action, and proportion exactly as given — don't turn "sitting" into "standing". ` +
-      `(5) If the prompt already contains the word "photorealistic", your rewrite must keep that exact word — do not ` +
-      `drop it and do not change it to "hyper-realistic" or "hyperrealistic". Don't introduce those words yourself either. ` +
-      `(6) Your only job is clarity and specificity of what's already stated — reordering clauses and tightening wording ` +
-      `is fine, adding content is not. When the prompt already says everything it needs to, your rewrite may be nearly ` +
-      `identical to the original. ` +
-      `Before replying, check every word of the original prompt is represented in your rewrite — do not silently drop ` +
-      `words or instructions, "photorealistic" included. ` +
-      `Reply with the rewritten prompt only — no preamble, no quotes, no explanation, under 120 words.`
+    ? (forVideo ? I2V_SYSTEM : EDIT_SYSTEM)
     : `You expand short prompts into vivid ${forVideo ? "video" : "image"} generation prompts. ` +
       `Add concrete visual detail: subject, setting, lighting, composition, style` +
       (forVideo ? ", camera movement" : "") +
@@ -250,6 +328,10 @@ async function handleImprovePrompt(request, env) {
     out = await env.AI.run(improveModel, {
       messages: [
         { role: "system", content: system },
+        ...shots.flatMap(([u, a]) => [
+          { role: "user", content: u },
+          { role: "assistant", content: a },
+        ]),
         { role: "user", content: prompt },
       ],
       // 120 words runs ~170-200 tokens; 320 leaves headroom so the raised
@@ -262,7 +344,7 @@ async function handleImprovePrompt(request, env) {
 
   const text = stripReasoning(pickText(out)).replace(/^["'\s]+|["'\s]+$/g, "");
   if (!text) return json({ error: "The model returned nothing usable." }, 502);
-  return json({ prompt: text });
+  return json({ prompt: keepPhotorealistic(prompt, text) });
 }
 
 // Actual Workers AI neuron usage for the current UTC day, from Cloudflare's
