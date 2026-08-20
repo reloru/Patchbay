@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "pruna-studio",
+  "name": "patchbay",
   "main": "src/worker.js",
   "compatibility_date": "2025-05-05",
   "assets": {

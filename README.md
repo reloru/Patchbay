@@ -1,4 +1,4 @@
-# 🍊 Pruna Studio
+# 🎛️ Patchbay
 
 A single-user web app for **image & video generation and editing** using the
 [Pruna AI API](https://docs.api.pruna.ai/), deployed on **Cloudflare Workers**.
