@@ -224,8 +224,10 @@ const EDIT_SYSTEM =
   `You clarify image-editing instructions for an image-editing model, which cannot be told anything about the ` +
   `image beyond what the user wrote. Rewrite the instruction to be clearer and more direct: plain imperative ` +
   `phrasing, one sentence per change, no conversational filler. ` +
-  `Add nothing. No preservation clause, no "leave everything else unchanged", no extra detail about how the ` +
-  `change should look. ` +
+  `Add nothing of your own: no preservation clause, no "leave everything else unchanged", no extra detail ` +
+  `about how the change should look. That is a ban on inventing one, never on keeping one — if the user wrote ` +
+  `their own instruction to preserve, keep, or not change something, it stays in the rewrite word for word. ` +
+  `Dropping something the user asked for is the worst thing you can do here. ` +
   `Avoid commas: image models read a comma as a separator between tags rather than as punctuation, so a ` +
   `comma-spliced sentence is parsed as unrelated fragments. Use short separate sentences instead, and write ` +
   `"and" where you would otherwise write a comma. ` +
@@ -248,6 +250,14 @@ const EDIT_SHOTS = [
   // Pronoun resolved, and the "not black" half dropped: it describes what the
   // image already shows, which this model cannot verify and must not assert.
   ["her jacket should be red not black", "Change the jacket to red."],
+  // The user's OWN preservation instruction survives. Without this example the
+  // "add no preservation clause" rule above reads as licence to delete theirs,
+  // which is what it did: "preserve her face and hair" was silently dropped
+  // from every rewrite that contained it.
+  [
+    "change the jacket to red but preserve her face and hair",
+    "Change the jacket to red. Preserve the face and hair.",
+  ],
   // Teaches the describe-don't-instruct case: input that requests no edit comes
   // back as itself. Kept last deliberately — without it the model invented an
   // edit in 4 runs out of 5, and moved mid-list it stopped carrying.
@@ -265,7 +275,9 @@ const I2V_SYSTEM =
   `You clarify instructions for an image-to-video model animating the user's photo, which cannot be told ` +
   `anything about that photo beyond what the user wrote. Rewrite the instruction to be clearer and more direct: ` +
   `plain phrasing with no conversational filler. ` +
-  `Add nothing. No second action. No camera move. No shot length. No consistency or preservation clause. ` +
+  `Add nothing of your own: no second action, no camera move, no shot length, no consistency or preservation ` +
+  `clause. That is a ban on inventing one, never on keeping one — if the user asked for something to stay ` +
+  `consistent or unchanged, it stays in the rewrite. ` +
   `Avoid commas: these models read a comma as a separator between tags rather than as punctuation. Use short ` +
   `separate sentences instead, and write "and" where you would otherwise write a comma. ` +
   IMAGE_RULES +
@@ -284,6 +296,40 @@ const I2V_SHOTS = [
 // the constraint entirely. Every model offered here gets this wrong sometimes —
 // Mistral Small dropped it outright mid-test — so it is enforced after the
 // fact rather than left to instruction-following.
+// The instruction above bans inventing a preservation clause, and small models
+// read that as licence to delete the user's own: "preserve her face and hair"
+// was dropped from roughly half of all rewrites containing it, even with a
+// worked example teaching the opposite. Enforced here for the same reason as
+// keepPhotorealistic() below.
+//
+// This can only ever restore text the user themselves wrote — it lifts their
+// clause verbatim rather than composing one — so it cannot reintroduce the
+// invented, boilerplate clause this file previously appended to everything.
+const PRESERVE_VERB =
+  /\b(?:preserve|maintain|retain|keep|leave|don'?t\s+(?:change|alter|touch|modify)|do\s+not\s+(?:change|alter|touch|modify))\b/i;
+
+function keepUserPreservation(original, rewritten) {
+  // Their clause runs from the verb to the end of that sentence.
+  const m = original.match(new RegExp(PRESERVE_VERB.source + "[^.;!?]*", "i"));
+  if (!m) return rewritten;
+  // Already carried through, however they worded it — leave the rewrite alone.
+  if (PRESERVE_VERB.test(rewritten) || /\bunchanged\b/i.test(rewritten)) return rewritten;
+  // Their clause has to stop where the next instruction starts, or it swallows
+  // it and the rewrite says the same thing twice ("maintain the original
+  // colours but crop it square" -> "Crop the image to a square shape. Maintain
+  // the original colours but crop it square."). "but" always starts a new
+  // instruction; "and" only does when an imperative verb follows, since it can
+  // legitimately join a list of things to preserve ("her face and hair").
+  const clause = m[0]
+    .split(/\s+but\s+/i)[0]
+    .split(/\s+and\s+(?=(?:also\s+)?(?:add|remove|delete|erase|change|replace|swap|make|turn|convert|apply|increase|decrease|adjust|brighten|darken|lighten|blur|sharpen|crop|rotate|flip|resize|move|place|put|fill|extend|recolou?r|colou?r|paint|restore)\b)/i)[0]
+    .trim()
+    .replace(/\s+/g, " ");
+  if (!clause) return rewritten;
+  const sentence = clause[0].toUpperCase() + clause.slice(1);
+  return rewritten.replace(/\s*[.!]?\s*$/, "") + ". " + sentence + ".";
+}
+
 function keepPhotorealistic(original, rewritten) {
   const out = rewritten.replace(/\bhyper-?realistic\b/gi, "photorealistic");
   if (!/\bphotorealistic\b/i.test(original) || /\bphotorealistic\b/i.test(out)) return out;
@@ -347,7 +393,9 @@ async function handleImprovePrompt(request, env) {
   // Video keeps its own preservation semantics — holding position and pose
   // fixed would suppress the motion that is the point of the output.
   const kept = keepPhotorealistic(prompt, text);
-  return json({ prompt: kept });
+  // Only for the image/video modes — a from-scratch generation prompt has no
+  // existing image for a preservation instruction to refer to.
+  return json({ prompt: body.hasImage ? keepUserPreservation(prompt, kept) : kept });
 }
 
 // Actual Workers AI neuron usage for the current UTC day, from Cloudflare's
