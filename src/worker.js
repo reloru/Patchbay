@@ -291,51 +291,6 @@ const I2V_SHOTS = [
   ["the car drives away", "The car drives away into the distance."],
 ];
 
-// "photorealistic" is load-bearing: swapping it for "hyper-realistic" pushes
-// image models toward an oversaturated, synthetic look, and dropping it loses
-// the constraint entirely. Every model offered here gets this wrong sometimes —
-// Mistral Small dropped it outright mid-test — so it is enforced after the
-// fact rather than left to instruction-following.
-// The instruction above bans inventing a preservation clause, and small models
-// read that as licence to delete the user's own: "preserve her face and hair"
-// was dropped from roughly half of all rewrites containing it, even with a
-// worked example teaching the opposite. Enforced here for the same reason as
-// keepPhotorealistic() below.
-//
-// This can only ever restore text the user themselves wrote — it lifts their
-// clause verbatim rather than composing one — so it cannot reintroduce the
-// invented, boilerplate clause this file previously appended to everything.
-const PRESERVE_VERB =
-  /\b(?:preserve|maintain|retain|keep|leave|don'?t\s+(?:change|alter|touch|modify)|do\s+not\s+(?:change|alter|touch|modify))\b/i;
-
-function keepUserPreservation(original, rewritten) {
-  // Their clause runs from the verb to the end of that sentence.
-  const m = original.match(new RegExp(PRESERVE_VERB.source + "[^.;!?]*", "i"));
-  if (!m) return rewritten;
-  // Already carried through, however they worded it — leave the rewrite alone.
-  if (PRESERVE_VERB.test(rewritten) || /\bunchanged\b/i.test(rewritten)) return rewritten;
-  // Their clause has to stop where the next instruction starts, or it swallows
-  // it and the rewrite says the same thing twice ("maintain the original
-  // colours but crop it square" -> "Crop the image to a square shape. Maintain
-  // the original colours but crop it square."). "but" always starts a new
-  // instruction; "and" only does when an imperative verb follows, since it can
-  // legitimately join a list of things to preserve ("her face and hair").
-  const clause = m[0]
-    .split(/\s+but\s+/i)[0]
-    .split(/\s+and\s+(?=(?:also\s+)?(?:add|remove|delete|erase|change|replace|swap|make|turn|convert|apply|increase|decrease|adjust|brighten|darken|lighten|blur|sharpen|crop|rotate|flip|resize|move|place|put|fill|extend|recolou?r|colou?r|paint|restore)\b)/i)[0]
-    .trim()
-    .replace(/\s+/g, " ");
-  if (!clause) return rewritten;
-  const sentence = clause[0].toUpperCase() + clause.slice(1);
-  return rewritten.replace(/\s*[.!]?\s*$/, "") + ". " + sentence + ".";
-}
-
-function keepPhotorealistic(original, rewritten) {
-  const out = rewritten.replace(/\bhyper-?realistic\b/gi, "photorealistic");
-  if (!/\bphotorealistic\b/i.test(original) || /\bphotorealistic\b/i.test(out)) return out;
-  return out.replace(/\s*[.!]?\s*$/, "") + ". Keep the image photorealistic.";
-}
-
 // Rewrites a short prompt into a richer one using a chat model on Workers AI.
 // Used by the "Improve" button and works for any provider's models. The model
 // is chosen in the UI from IMPROVE_MODELS.
@@ -390,12 +345,7 @@ async function handleImprovePrompt(request, env) {
 
   const text = stripReasoning(pickText(out)).replace(/^["'\s]+|["'\s]+$/g, "");
   if (!text) return json({ error: "The model returned nothing usable." }, 502);
-  // Video keeps its own preservation semantics — holding position and pose
-  // fixed would suppress the motion that is the point of the output.
-  const kept = keepPhotorealistic(prompt, text);
-  // Only for the image/video modes — a from-scratch generation prompt has no
-  // existing image for a preservation instruction to refer to.
-  return json({ prompt: body.hasImage ? keepUserPreservation(prompt, kept) : kept });
+  return json({ prompt: text });
 }
 
 // Actual Workers AI neuron usage for the current UTC day, from Cloudflare's
