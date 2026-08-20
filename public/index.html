@@ -5,7 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex, nofollow" />
     <title>Patchbay</title>
+
+    <!-- Desktop tab icon. iOS ignores SVG favicons for the home screen, which is
+         why it needs the PNG below or it invents a black single-letter tile. -->
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎛️</text></svg>" />
+    <link rel="apple-touch-icon" href="/icon-180.png" />
+
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0f1115" />
+
+    <!-- Add to Home Screen on iOS: launches without Safari chrome. No
+         viewport-fit=cover on purpose - without it iOS keeps content inside the
+         safe areas by itself, so the notch and home indicator need no CSS. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-title" content="Patchbay" />
+
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
