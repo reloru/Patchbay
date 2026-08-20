@@ -95,17 +95,44 @@ function startApp() {
 // ---------------------------------------------------------------------------
 // Model select (grouped)
 // ---------------------------------------------------------------------------
+// Sections read "<task> \u00b7 <provider>". Task comes first because that is
+// what you pick by; provider second because it decides what an option costs
+// and which key it needs, and because two providers ship models under the
+// same name (FLUX.2 Klein 4B is on both Pruna and Workers AI).
+const GROUP_ORDER = ["Image generation", "Image editing", "Video", "LoRA training"];
+const PROVIDER_ORDER = ["pruna", "xai", "workers-ai"];
+const PROVIDER_LABEL = { pruna: "Pruna", xai: "xAI", "workers-ai": "Workers AI" };
+
 function buildModelSelect() {
   const sel = $("model-select");
   sel.innerHTML = "";
-  const groups = {};
+
+  const sections = new Map(); // "group\u0000provider" -> models
   for (const m of MODELS) {
-    (groups[m.group] = groups[m.group] || []).push(m);
+    const key = `${m.group}\u0000${m.provider}`;
+    if (!sections.has(key)) sections.set(key, []);
+    sections.get(key).push(m);
   }
-  for (const [group, list] of Object.entries(groups)) {
+
+  // Anything carrying an unlisted group or provider still has to appear, so
+  // sort unknowns to the end rather than dropping them.
+  const rank = (list, v) => (list.indexOf(v) === -1 ? list.length : list.indexOf(v));
+  const keys = [...sections.keys()].sort((a, b) => {
+    const [ga, pa] = a.split("\u0000");
+    const [gb, pb] = b.split("\u0000");
+    return (
+      rank(GROUP_ORDER, ga) - rank(GROUP_ORDER, gb) ||
+      ga.localeCompare(gb) ||
+      rank(PROVIDER_ORDER, pa) - rank(PROVIDER_ORDER, pb) ||
+      pa.localeCompare(pb)
+    );
+  });
+
+  for (const key of keys) {
+    const [group, provider] = key.split("\u0000");
     const og = document.createElement("optgroup");
-    og.label = group;
-    for (const m of list) {
+    og.label = `${group} \u00b7 ${PROVIDER_LABEL[provider] || provider}`;
+    for (const m of sections.get(key)) {
       const opt = document.createElement("option");
       opt.value = m.id;
       opt.textContent = m.label;
@@ -711,6 +738,8 @@ function optionChanged(f, row) {
 }
 
 function refreshOptionState() {
+  // Attaching or removing an image changes what Describe would read.
+  updateDescribeNote();
   let changed = 0;
   for (const r of optionRows) {
     // e.g. p-video's aspect ratio: the provider derives it from the start
@@ -1103,52 +1132,121 @@ function resetImproveState() {
   if (b) b.textContent = "✨ Improve";
 }
 
-function initImproveModelPicker() {
-  const sel = $("improve-model");
+// Groups a list of {family, label} into <optgroup>s, families in first-seen
+// order. Anything without a family is appended ungrouped rather than dropped.
+function fillGroupedSelect(sel, list, optionLabel) {
   sel.innerHTML = "";
-  for (const m of improveModels) {
+  const byFamily = new Map();
+  for (const m of list) {
+    if (!m.family) continue;
+    if (!byFamily.has(m.family)) byFamily.set(m.family, []);
+    byFamily.get(m.family).push(m);
+  }
+  const mkOption = (m) => {
     const o = document.createElement("option");
     o.value = m.id;
-    o.textContent = `${m.label} · ~${m.neurons} neurons`;
-    sel.appendChild(o);
+    o.textContent = optionLabel ? optionLabel(m) : m.label;
+    return o;
+  };
+  for (const [family, members] of byFamily) {
+    const og = document.createElement("optgroup");
+    og.label = family;
+    for (const m of members) og.appendChild(mkOption(m));
+    sel.appendChild(og);
   }
+  for (const m of list) if (!m.family) sel.appendChild(mkOption(m));
+}
+
+function improveNoteFor(m) {
+  if (!m) return "";
+  const cost = `~${m.neurons} neurons per rewrite`;
+  // Reasoning models spend tokens thinking before they answer, which shows up
+  // as latency rather than as a different result, so it is worth flagging.
+  return `✨ ${m.label} · ${cost}${m.reasoning ? " · reasoning, so slower" : ""}`;
+}
+
+function updateImproveNote() {
+  const sel = $("improve-model");
+  $("improve-note").textContent = improveNoteFor(improveModels.find((m) => m.id === sel.value));
+}
+
+function initImproveModelPicker() {
+  const sel = $("improve-model");
+  // Grouped by family and sized within it, so the list reads as a catalogue.
+  // Cost used to be baked into every option name; it now appears in the note
+  // below once a model is chosen.
+  fillGroupedSelect(sel, improveModels);
   const saved = localStorage.getItem(IMPROVE_MODEL_KEY);
   sel.value = improveModels.some((m) => m.id === saved) ? saved : defaultImproveModel;
   sel.addEventListener("change", () => {
     localStorage.setItem(IMPROVE_MODEL_KEY, sel.value);
-    const m = improveModels.find((x) => x.id === sel.value);
-    setStatus(`Improve will use ${m ? m.label : sel.value}.`, "ok");
+    updateImproveNote();
   });
+  updateImproveNote();
 }
 
 // "Describe" captions an uploaded image straight into the prompt box, so a
 // reference picture can seed a prompt.
+// The picture already attached to one of the model's image fields, if any.
+// Describing that is almost always what is wanted -- being made to pick the
+// same file a second time was the old behaviour and it was pure friction.
+// Field order follows the model definition, so the first hit is the primary
+// input rather than a mask or an end frame.
+function attachedImageFile() {
+  if (!currentModel) return null;
+  for (const f of currentModel.fields) {
+    if (f.type !== "image") continue;
+    for (const u of uploads[f.name] || []) {
+      if (u.file && u.isImage) return u.file;
+    }
+  }
+  return null;
+}
+
+function updateDescribeNote() {
+  const noteEl = $("describe-note");
+  if (!noteEl) return; // called from refreshOptionState before the toolbar exists
+  const m = describeModels.find((x) => x.id === $("describe-model").value);
+  if (!m) return void (noteEl.textContent = "");
+  const attached = attachedImageFile();
+  const source = attached
+    ? `reads ${attached.name || "the attached image"}`
+    : "attach an image below and it reads that";
+  noteEl.textContent = `🔍 ${m.label} · ${m.note} · ${source}`;
+}
+
 function initDescribe() {
   const sel = $("describe-model");
-  sel.innerHTML = "";
-  for (const m of describeModels) {
-    const o = document.createElement("option");
-    o.value = m.id;
-    o.textContent = m.label;
-    sel.appendChild(o);
-  }
+  // Bare names here too; the per-model caveat lives in the note below.
+  fillGroupedSelect(sel, describeModels);
   sel.value = defaultDescribeModel;
+  sel.addEventListener("change", updateDescribeNote);
 
   const btn = $("prompt-describe");
   const file = $("describe-file");
-  btn.addEventListener("click", () => file.click());
 
-  file.addEventListener("change", async () => {
+  // Prefer whatever is already attached; only fall back to the file picker
+  // when nothing is.
+  btn.addEventListener("click", () => {
+    const attached = attachedImageFile();
+    if (attached) describeFile(attached);
+    else file.click();
+  });
+
+  file.addEventListener("change", () => {
     const f = file.files && file.files[0];
     file.value = "";
-    if (!f) return;
+    if (f) describeFile(f);
+  });
+
+  async function describeFile(f) {
     const el = primaryPromptEl();
     if (!el) return;
 
     btn.disabled = true;
     const idle = btn.textContent;
     btn.textContent = "Reading…";
-    setStatus("Describing image…", "load");
+    setStatus(`Describing ${f.name || "image"}…`, "load");
     try {
       const b64 = await fileToBase64(f);
       const res = await api("/api/describe", {
@@ -1167,7 +1265,9 @@ function initDescribe() {
       btn.disabled = false;
       btn.textContent = idle;
     }
-  });
+  }
+
+  updateDescribeNote();
 }
 
 function initPromptLibrary() {

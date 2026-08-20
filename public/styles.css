@@ -298,10 +298,18 @@ html, body { max-width: 100%; overflow-x: hidden; }
 .blurb, .field-label, .opt-name { overflow-wrap: anywhere; }
 select, input, textarea, button { max-width: 100%; }
 
+.tool-notes { margin: -6px 2px 14px; font-size: 12px; color: var(--muted); }
+.tool-notes span { display: block; overflow-wrap: anywhere; }
+.tool-notes span:empty { display: none; }
+
 .prompt-lib { flex-wrap: wrap; }
 .prompt-lib > * { flex: 1 1 auto; min-width: 0; }
 .prompt-lib select { flex: 1 1 160px; }
 .prompt-lib button { flex: 0 0 auto; }
+
+/* A tool and its model picker wrap as one unit. */
+.tool { display: flex; gap: 8px; flex: 1 1 260px; min-width: 0; }
+.tool select { flex: 1 1 auto; min-width: 0; }
 
 /* Reset sits with the parameter heading, well away from Generate, so it is
    no longer a mis-tap target. */
