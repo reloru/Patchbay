@@ -208,119 +208,75 @@ const IMAGE_RULES =
   `instruction they gave, and keep the word "photorealistic" if present. If they asked for no change at all, ` +
   `return their words tidied and nothing more.`;
 
-// Pruna's own image-editing guide recommends the order
-// [modification] [change target] [preservation requirements], and attributes
-// most real-world editing failures (subject drifts, identity changes, unrelated
-// elements mutate) to a missing preservation clause.
+// Pruna's editing guide recommends [modification] [change target]
+// [preservation requirements], and blames most editing failures on a missing
+// preservation clause. That was tried here and removed: a blind rewriter has no
+// idea what is in the image, so every named preservation clause either invented
+// something ("preserve the subject's facial features" on a photo of a room) or
+// collapsed into one generic sentence appended verbatim to every single
+// rewrite. Boilerplate on every output is worse than no clause at all.
 //
-// The catch, learned the hard way: a preservation clause is only safe for a
-// model that cannot see the image if it names nothing specific. "Preserve the
-// subject's facial features and identity" reads like a neutral constraint but
-// asserts the image contains a person with a face. Every worked example here
-// used to end that way, so the model copied it onto every edit — asking to
-// preserve a face in a photo of a room, or to place an added object "beside the
-// subject" when there was no subject. Editing models given a nonexistent thing
-// to preserve either ignore the instruction or hallucinate the thing.
-//
-// So preservation is restricted to properties every image has regardless of
-// content: the other elements, the composition, the framing, the camera angle.
-// "Leave everything else unchanged" is defined relative to the change, so it
-// also cannot contradict the edit the way a named clause can.
+// So this does one job: make the user's wording clearer. Tidy the phrasing,
+// drop conversational filler, resolve pronouns, split a compound request. It
+// adds nothing — not a preservation clause, and not "helpful" visual detail
+// about how the change should look, which is just invention by another name.
 const EDIT_SYSTEM =
-  `You rewrite image-editing instructions for an image-editing model, which cannot be told anything about the ` +
-  `image beyond what the user wrote. State the change, what it applies to, then what to preserve. ` +
+  `You clarify image-editing instructions for an image-editing model, which cannot be told anything about the ` +
+  `image beyond what the user wrote. Rewrite the instruction to be clearer and more direct: plain imperative ` +
+  `phrasing, one sentence per change, no conversational filler. ` +
+  `Add nothing. No preservation clause, no "leave everything else unchanged", no extra detail about how the ` +
+  `change should look. ` +
+  `Avoid commas: image models read a comma as a separator between tags rather than as punctuation, so a ` +
+  `comma-spliced sentence is parsed as unrelated fragments. Use short separate sentences instead, and write ` +
+  `"and" where you would otherwise write a comma. ` +
   IMAGE_RULES +
-  ` Always end with a preservation clause, and let it refer only to what is true of any image — everything else, ` +
-  `the composition, the framing, the camera angle, the perspective. Never name a person, face, body, or object ` +
-  `the user did not mention: the image may not contain one. If the user did not say what the change applies to, ` +
-  `state the change on its own rather than inventing something for it to apply to. Never ask to preserve the very ` +
-  `thing the change alters, and never state what the image currently shows — only what to change it to. Output ` +
-  `only the rewritten instruction, under 120 words.`;
+  ` Never state what the image currently shows — only what to change it to. Never make the rewrite longer than ` +
+  `the user's own instruction, except to split a compound request into separate sentences. If it is already ` +
+  `clear, return it essentially unchanged. Output only the rewritten instruction.`;
 
 const EDIT_SHOTS = [
+  // Already clear: comes back as itself. Without this the model treats every
+  // input as something that must be visibly changed to justify the button.
+  ["remove the hat", "Remove the hat."],
+  // Vague noun and a trailing "instead" tightened into a direct imperative.
+  ["make the thing on the left blue instead", "Change the object on the left to blue."],
+  // Conversational framing dropped; a compound request split in two.
   [
-    "remove the hat",
-    "Remove the hat. Leave everything else in the image unchanged, and keep the original composition, " +
-      "framing, and camera angle.",
+    "can you get rid of the person in the back and also make it brighter",
+    "Remove the person in the background. Increase the overall brightness.",
   ],
-  [
-    "turn the background into a beach",
-    "Replace the background with a sunlit beach. Leave the foreground exactly as it is, at the same position " +
-      "and scale, and keep the original camera angle, framing, and perspective.",
-  ],
-  [
-    "make it look like a watercolour",
-    "Convert the image to a watercolour painting with soft bleeding washes, visible paper texture, and pooled " +
-      "pigment at the edges. Leave everything else in the image unchanged, and keep the original composition " +
-      "and framing.",
-  ],
-  // The additive case, which produced the worst output before it was taught.
-  // A wearable specifically: "add sunglasses" and "add a hat" kept coming back
-  // as "to the subject's face" / "to the subject" because the model knows what
-  // wears them, and an image-editing model handed a wearer that is not in the
-  // picture will invent one. Nothing is added to a named target here, and the
-  // added object is not itself preserved.
-  [
-    "add a scarf",
-    "Add a scarf. Leave everything else in the image unchanged, and keep the original composition, framing, " +
-      "and camera angle.",
-  ],
-  [
-    "make it daytime",
-    "Change the lighting to bright natural daylight. Leave everything else in the image unchanged, and keep " +
-      "the original composition and framing.",
-  ],
+  // Pronoun resolved, and the "not black" half dropped: it describes what the
+  // image already shows, which this model cannot verify and must not assert.
+  ["her jacket should be red not black", "Change the jacket to red."],
   // Teaches the describe-don't-instruct case: input that requests no edit comes
   // back as itself. Kept last deliberately — without it the model invented an
   // edit in 4 runs out of 5, and moved mid-list it stopped carrying.
   // Deliberately contains no noun worth borrowing: earlier versions ("a photo
   // of a dog", "the two of them", "the subject") all had their subject noun
-  // copied into unrelated rewrites, which is the same leak this whole block
-  // exists to prevent.
+  // copied into unrelated rewrites.
   ["the image is slightly blurry", "The image is slightly blurry."],
 ];
 
-// Same anti-invention core, but the editing guide's preservation advice is
-// actively wrong here: telling an i2v model to hold position, pose, and camera
-// fixed suppresses the motion that is the entire point of the output. So
-// preservation is narrowed to appearance consistency.
-//
-// This path had the same hallucination as the editing one, for the same
-// reason: every example preserved "the woman's facial features and identity",
-// so "the waves roll in" came back preserving "the coastal environment where
-// the person is standing", and "slow zoom in" zoomed on a subject that was
-// never mentioned. Named preservation targets are gone here too.
+// Same job as the editing path, same reasoning: clarify the wording, add
+// nothing, avoid commas. The old version appended "Preserve the woman's facial
+// features and identity" to rewrites, which both invented a woman and turned
+// into boilerplate on every output.
 const I2V_SYSTEM =
-  `You rewrite instructions for an image-to-video model animating the user's photo, which cannot be told anything ` +
-  `about that photo beyond what the user wrote. State the motion, who or what performs it, then what stays ` +
-  `consistent. ` +
+  `You clarify instructions for an image-to-video model animating the user's photo, which cannot be told ` +
+  `anything about that photo beyond what the user wrote. Rewrite the instruction to be clearer and more direct: ` +
+  `plain phrasing with no conversational filler. ` +
+  `Add nothing. No second action. No camera move. No shot length. No consistency or preservation clause. ` +
+  `Avoid commas: these models read a comma as a separator between tags rather than as punctuation. Use short ` +
+  `separate sentences instead, and write "and" where you would otherwise write a comma. ` +
   IMAGE_RULES +
-  ` Name only what the user named: never introduce a person, face, or object they did not mention, and never ` +
-  `preserve one — the photo may not contain it. Describe only the motion they asked for — never add a second ` +
-  `action, a camera move, or a shot length. Never freeze the subject's position or pose: motion is the point of a ` +
-  `video. Output only the rewritten instruction, under 120 words.`;
+  ` Describe only the motion they asked for, and never freeze the subject's position or pose: motion is the ` +
+  `point of a video. Never make the rewrite longer than the user's own instruction. If it is already clear, ` +
+  `return it essentially unchanged. Output only the rewritten instruction.`;
 
 const I2V_SHOTS = [
-  [
-    "she turns her head",
-    "The woman slowly turns the woman's head to one side. Keep the woman's appearance consistent throughout " +
-      "the shot, and keep everything else in the frame consistent.",
-  ],
-  // Two subjectless examples, because that is where invention happens: with
-  // nothing to anchor on, the model borrows a noun from whatever example has
-  // one. An earlier "the car drives away" example leaked its car into 5 of 8
-  // subjectless rewrites, preserving a car that was never in the photo. The
-  // editing shots avoid this by ending nearly all of them in the same generic
-  // clause, so there is a stronger pattern to copy than a noun; these match.
-  [
-    "pan across slowly",
-    "The camera pans slowly across the frame. Keep everything in the frame consistent in appearance throughout " +
-      "the shot.",
-  ],
-  [
-    "make it move gently",
-    "Introduce gentle motion. Keep everything in the frame consistent in appearance throughout the shot.",
-  ],
+  // Pronoun resolved to the user's own noun; nothing else added.
+  ["she turns her head", "The woman turns the woman's head to one side."],
+  ["the car drives away", "The car drives away into the distance."],
 ];
 
 // "photorealistic" is load-bearing: swapping it for "hyper-realistic" pushes
@@ -328,36 +284,6 @@ const I2V_SHOTS = [
 // the constraint entirely. Every model offered here gets this wrong sometimes —
 // Mistral Small dropped it outright mid-test — so it is enforced after the
 // fact rather than left to instruction-following.
-// Pruna's editing guide attributes most editing failures to a missing
-// preservation clause, but no model offered here emits one reliably: simple
-// additive edits ("add a hat", "brighten it") come back bare from all of them,
-// and tightening the instruction only traded the clause away for brevity.
-//
-// Enforcing it in code is only possible because the clause names nothing —
-// that is the same property that stopped it hallucinating faces. A clause about
-// "everything else" is true of any image and cannot contradict any edit, so it
-// can be appended blind. Handled here rather than by instruction for the same
-// reason as keepPhotorealistic().
-const PRESERVATION_CLAUSE =
-  "Leave everything else in the image unchanged, and keep the original composition and framing.";
-
-// Imperative openers, used to tell an edit instruction from a description.
-// Comparing the rewrite against the input instead does not work: a short edit
-// often survives the rewrite unchanged ("add a hat" -> "Add a hat."), which is
-// exactly the case that most needs the clause appended.
-const EDIT_VERB =
-  /^(add|remove|delete|erase|change|replace|swap|make|turn|convert|apply|increase|decrease|adjust|brighten|darken|lighten|blur|sharpen|crop|rotate|flip|resize|move|place|put|fill|extend|recolou?r|colou?r|paint|restore)\b/i;
-
-function ensurePreservation(original, rewritten) {
-  // A tidied description ("The image is slightly blurry.") states no change, so
-  // there is nothing for a preservation clause to be relative to.
-  if (!EDIT_VERB.test(rewritten.trim())) return rewritten;
-  if (/\b(leave|keep|preserve|maintain)\b[^.]*\b(unchanged|same|original|intact|consistent|in place|as it is)\b/i.test(rewritten)) {
-    return rewritten;
-  }
-  return rewritten.replace(/\s*[.!]?\s*$/, "") + ". " + PRESERVATION_CLAUSE;
-}
-
 function keepPhotorealistic(original, rewritten) {
   const out = rewritten.replace(/\bhyper-?realistic\b/gi, "photorealistic");
   if (!/\bphotorealistic\b/i.test(original) || /\bphotorealistic\b/i.test(out)) return out;
@@ -421,7 +347,7 @@ async function handleImprovePrompt(request, env) {
   // Video keeps its own preservation semantics — holding position and pose
   // fixed would suppress the motion that is the point of the output.
   const kept = keepPhotorealistic(prompt, text);
-  return json({ prompt: body.hasImage && !forVideo ? ensurePreservation(prompt, kept) : kept });
+  return json({ prompt: kept });
 }
 
 // Actual Workers AI neuron usage for the current UTC day, from Cloudflare's
