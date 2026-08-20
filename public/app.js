@@ -26,16 +26,61 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ---------------------------------------------------------------------------
 // API helper (adds password header, handles 401)
 // ---------------------------------------------------------------------------
+// A dropped connection makes fetch throw a TypeError whose message is the
+// browser's own wording — "Load failed" on Safari, "Failed to fetch" on Chrome.
+// That string used to reach the status line verbatim, which is what a mid-edit
+// blip looked like: a bare "load failed" with no indication it was the network
+// or that retrying would work.
+//
+// Only those throws are retried. An HTTP error status means the Worker was
+// reached and answered, so repeating it just doubles the work.
+//
+// Retrying is opt-in per call, because a repeat is not always free:
+//   - GET is idempotent here, so it retries by default. Status polling is the
+//     big win — a blip mid-poll used to abandon a job that was still running.
+//   - POSTs must opt in. /api/generate deliberately does not: a throw cannot
+//     tell us whether the request reached the provider, and repeating it risks
+//     paying for a second generation.
+const RETRY_DELAYS = [400, 1200];
+
 async function api(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
   if (authRequired && getPw()) headers["x-app-password"] = getPw();
-  const res = await fetch(path, Object.assign({}, opts, { headers }));
-  if (res.status === 401) {
-    clearPw();
-    showGate("Session expired — enter the password again.");
-    throw new Error("Unauthorized");
+  // retry/onRetry are ours, not fetch's — keep them out of the request init.
+  const { retry, onRetry, ...rest } = opts;
+  const init = Object.assign({}, rest, { headers });
+  const method = (opts.method || "GET").toUpperCase();
+  const canRetry = retry === true || (retry !== false && method === "GET");
+
+  let lastErr;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(path, init);
+      if (res.status === 401) {
+        clearPw();
+        showGate("Session expired — enter the password again.");
+        throw new Error("Unauthorized");
+      }
+      return res;
+    } catch (err) {
+      if (err && err.message === "Unauthorized") throw err; // ours, not the network's
+      lastErr = err;
+      if (!canRetry || attempt >= RETRY_DELAYS.length) break;
+      if (onRetry) onRetry(attempt + 1, RETRY_DELAYS.length + 1);
+      await sleep(RETRY_DELAYS[attempt]);
+    }
   }
-  return res;
+  throw new Error(networkErrorText(lastErr, canRetry));
+}
+
+// Browsers word a failed connection differently and none of the wordings say
+// what to do about it. Anything else is passed through untouched.
+function networkErrorText(err, retried) {
+  const raw = err && err.message ? err.message : String(err);
+  if (!/load failed|failed to fetch|networkerror|network request failed/i.test(raw)) return raw;
+  return retried
+    ? `The connection dropped and ${RETRY_DELAYS.length + 1} attempts failed. Check your connection and try again.`
+    : "The connection dropped before the server answered. Check your connection and try again.";
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +89,7 @@ async function api(path, opts = {}) {
 async function boot() {
   let cfg;
   try {
-    const res = await fetch("/api/config");
+    const res = await api("/api/config");
     cfg = await res.json();
   } catch (e) {
     document.body.innerHTML = "<p style='padding:24px'>Failed to load app config.</p>";
@@ -475,7 +520,7 @@ async function encodeForField(f, file) {
   if (f.asBase64) return await fileToBase64(file);     // Workers AI: inline bytes
   const fd = new FormData();                            // Pruna: upload, use the URL
   fd.append("file", file);
-  const res = await api("/api/upload", { method: "POST", body: fd });
+  const res = await api("/api/upload", { method: "POST", body: fd, retry: true });
   const data = await res.json();
   if (!res.ok || !data.url) throw new Error(data.error || data.message || "Upload failed");
   return data.url;
@@ -989,7 +1034,13 @@ async function runGeneration(model, input, kind, onProgress) {
             "fewer frames/steps, or a faster speed mode."
       );
     }
-    const sRes = await api("/api/status?id=" + encodeURIComponent(id));
+    const sRes = await api("/api/status?id=" + encodeURIComponent(id), {
+      // Same (state, seconds) shape the caller already formats, so a dropped
+      // poll reads as "Reconnecting (1/3)… 12s elapsed" rather than stalling
+      // on the last status with no sign anything went wrong.
+      onRetry: (n, of) =>
+        onProgress && onProgress(`reconnecting (${n}/${of})`, Math.round((Date.now() - started) / 1000)),
+    });
     const s = await sRes.json();
     if (!sRes.ok) throw new Error(s.error || `Status HTTP ${sRes.status}`);
     if (s.status === "succeeded") {
@@ -1295,6 +1346,7 @@ function initDescribe() {
       const b64 = await fileToBase64(f);
       const res = await api("/api/describe", {
         method: "POST",
+        retry: true,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ image_b64: b64, mime: f.type || "image/jpeg", model: sel.value }),
       });
@@ -1385,6 +1437,7 @@ function initPromptLibrary() {
       );
       const res = await api("/api/improve-prompt", {
         method: "POST",
+        retry: true,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ prompt: text, kind: currentModel.kind, hasImage, model: $("improve-model").value }),
       });
