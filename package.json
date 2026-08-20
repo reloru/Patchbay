@@ -4,7 +4,7 @@
   "license": "MIT",
   "private": true,
   "type": "module",
-  "description": "Personal web app for image & video generation/editing via the Pruna AI API, deployed on Cloudflare Workers.",
+  "description": "Web front end for image and video generation and editing across Pruna AI, xAI and Cloudflare Workers AI, deployed on Cloudflare Workers.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",

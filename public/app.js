@@ -1453,6 +1453,13 @@ function estimateCost(model, input, outputCount) {
     const refs = Array.isArray(input.images) ? input.images.length : 0;
     return per * n + refs * (p.inputUsd || 0);
   }
+  if (p.type === "per_1k_steps") {
+    // Steps range 100-5000, so the bill swings 50x across the slider -- worth
+    // showing before a run that can take hours.
+    const steps = Number(input.steps) || fieldDefault(model, "steps") || 0;
+    if (!steps) return null;
+    return (steps / 1000) * p.usd;
+  }
   if (p.type === "per_second") {
     const rate = p.usd[input.resolution || "720p"];
     if (rate == null) return null;
