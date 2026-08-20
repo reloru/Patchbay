@@ -1,6 +1,7 @@
 {
   "name": "patchbay",
   "version": "1.0.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "description": "Personal web app for image & video generation/editing via the Pruna AI API, deployed on Cloudflare Workers.",

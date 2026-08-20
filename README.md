@@ -8,7 +8,7 @@ on Cloudflare Workers — no server to maintain, no build step, no framework.
 |----------|--------|-------------|
 | [Pruna AI](https://docs.api.pruna.ai/) | 24 | `PRUNA_API_KEY` |
 | [xAI (Grok)](https://docs.x.ai/) | 6 | `XAI_API_KEY` |
-| [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 11 | none — billed to the Cloudflare account hosting the Worker |
+| [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 11 | none |
 
 ## Features
 
@@ -172,3 +172,7 @@ are scoped separately from the browser.
 - Changing the Worker name in `wrangler.jsonc` provisions a *new* Worker at a
   new URL rather than renaming the existing one. Secrets do not transfer, and
   the previous Worker keeps serving until explicitly deleted.
+
+## License
+
+[MIT](LICENSE)
