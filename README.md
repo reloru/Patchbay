@@ -1,7 +1,7 @@
 # 🎛️ Patchbay
 
 Patchbay is a web front end for image and video generation and editing. It puts
-41 image and video models from three providers behind one interface, adds 17
+39 image and video models from three providers behind one interface, adds 17
 more for rewriting prompts and captioning images, and runs entirely on
 Cloudflare Workers — no server to maintain, no build step, no framework.
 
@@ -84,17 +84,22 @@ URLs, and `z-image-turbo-lora` accepts any host.
 | `grok-imagine-image` | Grok Imagine Image |
 | `grok-imagine-image-quality` | Grok Imagine Image Quality |
 | `grok-imagine-image-2.0` | Grok Imagine Image 2.0 |
-| `grok-imagine-video` | Grok Imagine Video, Grok Video Edit, Grok Video Extend |
+| `grok-imagine-video` | Grok Imagine Video |
 | `grok-imagine-video-1.5` | Grok Imagine Video 1.5 |
 
-Seven picker entries cover five models because `grok-imagine-video` is reachable
-through three separate endpoints — `/v1/videos/generations`, `/edits` and
-`/extensions` — which take different inputs and are priced differently, so each
-gets its own entry. The image models generate from text or edit up to three
-reference images. Every video endpoint is asynchronous and polls to completion.
+The image models generate from text or edit up to three reference images.
 
-Version 1.5 is not a replacement for 1.0: it takes audio rather than video
-input, publishes a 1080p rate that 1.0 does not, and costs more per second.
+Both video models carry a Mode switch — generate, edit an existing video, or
+extend one — because each maps to a different endpoint (`/v1/videos/generations`,
+`/edits`, `/extensions`) taking different inputs and priced differently. The
+panel shows only the fields the selected mode accepts: editing takes no duration,
+resolution or aspect ratio, since the output inherits them from the source video,
+and extension's duration is the length of the added footage rather than the
+total. Generating covers text-, image- and reference-to-video. Every video
+request is asynchronous and polls to completion.
+
+Version 1.5 is not a replacement for 1.0: it publishes a 1080p rate that 1.0 does
+not, costs more per second, and can give its subject one of six preset voices.
 
 ### Cloudflare Workers AI — 28 models
 

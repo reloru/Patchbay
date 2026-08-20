@@ -58,14 +58,15 @@
               <!-- Each button is wrapped with its own model picker so the two
                    stay together when the toolbar wraps. Left loose, the row
                    reflows into pairing every button with the next tool's
-                   select. -->
+                   select. Picker first, button second: that is the side the
+                   button visually sat on before the wrapper existed. -->
               <span class="tool">
-                <button id="prompt-improve" type="button" class="secondary" title="Rewrite the prompt with more detail">✨ Improve</button>
                 <select id="improve-model" aria-label="Model used by Improve" title="Which model rewrites the prompt"></select>
+                <button id="prompt-improve" type="button" class="secondary" title="Rewrite the prompt with more detail">✨ Improve</button>
               </span>
               <span class="tool">
-                <button id="prompt-describe" type="button" class="secondary" title="Caption an image into the prompt box">🔍 Describe</button>
                 <select id="describe-model" aria-label="Model used by Describe" title="Which model captions the image"></select>
+                <button id="prompt-describe" type="button" class="secondary" title="Caption an image into the prompt box">🔍 Describe</button>
               </span>
               <input id="describe-file" type="file" accept="image/*" hidden />
               <button id="prompt-save" type="button" class="secondary" title="Save current prompt">Save</button>

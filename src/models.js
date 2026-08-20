@@ -518,36 +518,6 @@ export const MODELS = [
 
   // ───────────────────────── Image editing ─────────────────────────
   {
-    id: "qwen-image-edit-plus",
-    label: "Qwen-Image-Edit Plus",
-    group: "Image editing",
-    kind: "image",
-    blurb: "Edit / transform 1–2 input images from a text instruction.",
-    fields: [
-      { name: "image", label: "Image(s) to edit", type: "image", required: true, maxItems: 2, asArray: true },
-      { name: "prompt", label: "What to change", type: "textarea", required: true },
-      { name: "go_fast", label: "Fast mode", type: "bool", default: true },
-      {
-        name: "aspect_ratio",
-        label: "Aspect ratio",
-        type: "enum",
-        default: "match_input_image",
-        options: [
-          { value: "match_input_image", label: "Keep original" },
-          { value: "1:1", label: "1:1" },
-          { value: "16:9", label: "16:9" },
-          { value: "9:16", label: "9:16" },
-          { value: "4:3", label: "4:3" },
-          { value: "3:4", label: "3:4" },
-        ],
-      },
-      OUTPUT_FORMAT,
-      { ...OUTPUT_QUALITY, default: 95 },
-      SEED,
-      moderationFilter(),
-    ],
-  },
-  {
     id: "p-image-edit",
     label: "P-Image-Edit",
     group: "Image editing",
@@ -676,6 +646,36 @@ export const MODELS = [
   // finishes, and a run can take minutes to hours: pass the resulting
   // lora_weights URL into P-Image-Edit-LoRA above to use it, and consider
   // uploading the .safetensors to your own Hugging Face repo before it expires.
+  {
+    id: "qwen-image-edit-plus",
+    label: "Qwen-Image-Edit Plus",
+    group: "Image editing",
+    kind: "image",
+    blurb: "Edit / transform 1–2 input images from a text instruction.",
+    fields: [
+      { name: "image", label: "Image(s) to edit", type: "image", required: true, maxItems: 2, asArray: true },
+      { name: "prompt", label: "What to change", type: "textarea", required: true },
+      { name: "go_fast", label: "Fast mode", type: "bool", default: true },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "match_input_image",
+        options: [
+          { value: "match_input_image", label: "Keep original" },
+          { value: "1:1", label: "1:1" },
+          { value: "16:9", label: "16:9" },
+          { value: "9:16", label: "9:16" },
+          { value: "4:3", label: "4:3" },
+          { value: "3:4", label: "3:4" },
+        ],
+      },
+      OUTPUT_FORMAT,
+      { ...OUTPUT_QUALITY, default: 95 },
+      SEED,
+      moderationFilter(),
+    ],
+  },
   {
     id: "p-image-trainer",
     label: "P-Image-Trainer",
@@ -1324,26 +1324,29 @@ const XAI_PRICING = {
     usd: { "1k": { low: 0.04, medium: 0.06 }, "2k": { low: 0.06, medium: 0.08 } },
     inputUsd: 0.01,
   },
-  // Output per second of video, by resolution, plus a per-input-image charge
-  // (start image + reference images). 1080p has no published rate, so it's
-  // left out and priced as "varies" rather than guessed at.
-  "xai-imagine-video": { type: "xai_video", outUsdPerSec: { "480p": 0.05, "720p": 0.07 }, inputImageUsd: 0.002 },
+  // Video is priced two ways depending on the mode. Generating: output per
+  // second by resolution, plus a per-input-image charge for the start image and
+  // any reference images. Editing or extending: the source video is charged per
+  // second to read, and the output runs at the generation rate for whichever
+  // resolution bucket the source falls into — neither of which the Worker sees
+  // before upload, so the frontend probes the chosen file client-side (duration
+  // and height only, nothing uploaded) and shows no estimate until one is
+  // picked. 1.0 publishes no 1080p rate, so that tier is left out and priced as
+  // "varies" rather than guessed at.
+  "xai-imagine-video": {
+    type: "xai_video",
+    outUsdPerSec: { "480p": 0.05, "720p": 0.07 },
+    inputImageUsd: 0.002,
+    sourceUsdPerSec: 0.01,
+  },
   // 1.5 publishes a 1080p rate where 1.0 does not, and charges more per second
   // across the board. Input images are $0.01 each rather than $0.002.
   "xai-imagine-video-1-5": {
     type: "xai_video",
     outUsdPerSec: { "480p": 0.08, "720p": 0.14, "1080p": 0.25 },
     inputImageUsd: 0.01,
+    sourceUsdPerSec: 0.01,
   },
-  // Edit/extend don't document a resolution or (for edit) a duration in the
-  // request — output length/resolution follows the input video, which the
-  // Worker never sees before upload. The frontend probes the chosen video
-  // file client-side (duration + height, nothing uploaded) and prices these
-  // from that: $0.01/s for the source video read, output at the generation
-  // model's per-second rate for whichever resolution bucket the source falls
-  // into. No estimate is shown until a video is actually picked.
-  "xai-video-edit": { type: "xai_video_source", inputUsdPerSec: 0.01, outUsdPerSec: { "480p": 0.05, "720p": 0.07 } },
-  "xai-video-extend": { type: "xai_video_source", inputUsdPerSec: 0.01, outUsdPerSec: { "480p": 0.05, "720p": 0.07 } },
 };
 
 for (const m of MODELS) {
@@ -1500,107 +1503,141 @@ const XAI_MODELS = [
       },
     ],
   },
-  {
+];
+
+// Grok Imagine Video is one model reached through three endpoints:
+// /v1/videos/generations, /videos/edits and /videos/extensions. Those were
+// previously three catalogue entries with invented names ("Grok Video Edit"),
+// which read as separate models xAI does not publish. They are now a mode
+// switch on the model itself, and `mode` picks the endpoint at request time.
+//
+// Fields carry showWhen so each mode shows only what its endpoint accepts:
+// editing ignores duration, resolution and aspect ratio entirely (the output
+// inherits them from the source video, capped at 720p), and extension's
+// duration means something different — the length of the *added* footage,
+// 2-10s, not the total.
+const XAI_VIDEO_MODES = [
+  { value: "generations", label: "Generate a new video" },
+  { value: "edits", label: "Edit an existing video" },
+  { value: "extensions", label: "Extend an existing video" },
+];
+
+// Preset voices, shared with the TTS API. Only grok-imagine-video-1.5 accepts
+// them. Caller-supplied audio clips are restricted to trusted partners, so only
+// the presets are offered here.
+const XAI_VOICES = [
+  { value: "", label: "None" },
+  { value: "ara", label: "Ara" },
+  { value: "carina", label: "Carina" },
+  { value: "eve", label: "Eve" },
+  { value: "iris", label: "Iris" },
+  { value: "liora", label: "Liora" },
+  { value: "ursa", label: "Ursa" },
+];
+
+const GEN_ONLY = { field: "mode", is: ["generations"] };
+const SOURCE_ONLY = { field: "mode", is: ["edits", "extensions"] };
+
+function xaiVideoModel({ id, xaiModel, label, blurb, resolutions, voices }) {
+  return {
+    id,
+    xaiModel,
+    xaiEndpoint: "generations", // fallback; `mode` overrides per request
+    xaiAsync: true,
+    xaiModal: true,
+    label,
+    group: "Video",
+    kind: "video",
+    blurb,
+    fields: [
+      { name: "mode", label: "Mode", type: "enum", required: true, default: "generations", options: XAI_VIDEO_MODES },
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      {
+        ...xaiVideoInputField("Source video"),
+        showWhen: SOURCE_ONLY,
+        help: "MP4, encoded with a codec MP4 supports (H.264, H.265, AV1).",
+      },
+      {
+        name: "image",
+        label: "Starting image (optional, for image-to-video)",
+        type: "image",
+        asDataUri: true,
+        showWhen: GEN_ONLY,
+        help: "Locks the first frame. To guide the video without locking it, use reference images instead.",
+      },
+      {
+        name: "reference_images",
+        label: "Reference image(s) (optional, for reference-to-video)",
+        type: "image",
+        maxItems: 3,
+        asArray: true,
+        asDataUri: true,
+        showWhen: GEN_ONLY,
+        help: 'Guides people, objects or clothing without locking the first frame. Refer to them in the prompt as <IMAGE_1>, <IMAGE_2>, <IMAGE_3>.',
+      },
+      ...(voices
+        ? [
+            {
+              name: "reference_voice",
+              label: "Voice (optional)",
+              type: "enum",
+              default: "",
+              options: XAI_VOICES,
+              showWhen: GEN_ONLY,
+              help: "Gives the subject a preset voice. Refer to it in the prompt as <AUDIO_0>.",
+            },
+          ]
+        : []),
+      { name: "duration", label: "Length (seconds)", type: "int", default: 8, min: 1, max: 15, showWhen: GEN_ONLY },
+      {
+        name: "extend_duration",
+        label: "Length of the new footage (seconds)",
+        type: "int",
+        default: 6,
+        min: 2,
+        max: 10,
+        showWhen: { field: "mode", is: ["extensions"] },
+        help: "Added on top of the source video's own length, not the total.",
+      },
+      {
+        name: "resolution",
+        label: "Resolution",
+        type: "enum",
+        default: "480p",
+        options: resolutions,
+        showWhen: GEN_ONLY,
+      },
+      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "16:9", options: XAI_VIDEO_AR, showWhen: GEN_ONLY },
+    ],
+  };
+}
+
+XAI_MODELS.push(
+  xaiVideoModel({
     id: "xai-imagine-video",
     xaiModel: "grok-imagine-video",
-    xaiEndpoint: "generations",
-    xaiAsync: true,
     label: "Grok Imagine Video",
-    group: "Video",
-    kind: "video",
-    blurb: "Text-, image-, or reference-to-video. Async — polls until done.",
-    fields: [
-      { name: "prompt", label: "Prompt", type: "textarea", required: true },
-      { name: "image", label: "Starting image (optional, for image-to-video)", type: "image", asDataUri: true },
-      {
-        name: "reference_images",
-        label: "Reference image(s) (optional, for reference-to-video)",
-        type: "image",
-        maxItems: 3,
-        asArray: true,
-        asDataUri: true,
-      },
-      { name: "duration", label: "Length (seconds)", type: "int", default: 8, min: 1, max: 15 },
-      {
-        name: "resolution",
-        label: "Resolution",
-        type: "enum",
-        default: "480p",
-        options: [
-          { value: "480p", label: "480p" },
-          { value: "720p", label: "720p" },
-          { value: "1080p", label: "1080p (no published price)" },
-        ],
-      },
-      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "16:9", options: XAI_VIDEO_AR },
+    blurb: "Text-, image- or reference-to-video, plus editing and extending existing video. Async — polls until done.",
+    resolutions: [
+      { value: "480p", label: "480p" },
+      { value: "720p", label: "720p" },
+      { value: "1080p", label: "1080p (no published price)" },
     ],
-  },
-  {
-    // Not a version bump of grok-imagine-video: 1.5 takes audio instead of
-    // video input, and unlike 1.0 it publishes a 1080p rate. The audio
-    // (preset voice) input is free but its parameter name is undocumented, so
-    // it is deliberately not exposed rather than guessed at.
+    voices: false,
+  }),
+  xaiVideoModel({
     id: "xai-imagine-video-1-5",
     xaiModel: "grok-imagine-video-1.5",
-    xaiEndpoint: "generations",
-    xaiAsync: true,
     label: "Grok Imagine Video 1.5",
-    group: "Video",
-    kind: "video",
-    blurb: "Newer Grok video model with a published 1080p tier. Async — polls until done.",
-    fields: [
-      { name: "prompt", label: "Prompt", type: "textarea", required: true },
-      { name: "image", label: "Starting image (optional, for image-to-video)", type: "image", asDataUri: true },
-      {
-        name: "reference_images",
-        label: "Reference image(s) (optional, for reference-to-video)",
-        type: "image",
-        maxItems: 3,
-        asArray: true,
-        asDataUri: true,
-      },
-      { name: "duration", label: "Length (seconds)", type: "int", default: 8, min: 1, max: 15 },
-      {
-        name: "resolution",
-        label: "Resolution",
-        type: "enum",
-        default: "480p",
-        options: [
-          { value: "480p", label: "480p" },
-          { value: "720p", label: "720p" },
-          { value: "1080p", label: "1080p" },
-        ],
-      },
-      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "16:9", options: XAI_VIDEO_AR },
+    blurb: "Newer Grok video model, with a published 1080p tier and preset voices. Async — polls until done.",
+    resolutions: [
+      { value: "480p", label: "480p" },
+      { value: "720p", label: "720p" },
+      { value: "1080p", label: "1080p" },
     ],
-  },
-  {
-    id: "xai-video-edit",
-    xaiModel: "grok-imagine-video",
-    xaiEndpoint: "edits",
-    xaiAsync: true,
-    label: "Grok Video Edit",
-    group: "Video",
-    kind: "video",
-    blurb: "Edit an existing video from a text instruction. Async — polls until done.",
-    fields: [xaiVideoInputField("Video to edit"), { name: "prompt", label: "What to change", type: "textarea", required: true }],
-  },
-  {
-    id: "xai-video-extend",
-    xaiModel: "grok-imagine-video",
-    xaiEndpoint: "extensions",
-    xaiAsync: true,
-    label: "Grok Video Extend",
-    group: "Video",
-    kind: "video",
-    blurb: "Continue a video with new generated footage. Async — polls until done.",
-    fields: [
-      xaiVideoInputField("Video to extend"),
-      { name: "prompt", label: "What happens next", type: "textarea", required: true },
-      { name: "duration", label: "Extra length (seconds)", type: "int", default: 6, min: 2, max: 10 },
-    ],
-  },
-];
+    voices: true,
+  }),
+);
 
 for (const m of XAI_MODELS) m.provider = "xai";
 MODELS.push(...XAI_MODELS);
@@ -1622,6 +1659,10 @@ export const DESCRIBE_MODELS = [
 
 export const DESCRIBE_MODEL_IDS = new Set(DESCRIBE_MODELS.map((m) => m.id));
 export const DEFAULT_DESCRIBE_MODEL = "@cf/llava-hf/llava-1.5-7b-hf";
+
+// The model the picker opens on. Editing an image you already have is the
+// common case, so it beats generating one from scratch as a starting point.
+export const DEFAULT_MODEL = "p-image-edit";
 
 export const IMPROVE_MODEL_IDS = new Set(IMPROVE_MODELS.map((m) => m.id));
 export const DEFAULT_IMPROVE_MODEL = "@cf/meta/llama-3.2-3b-instruct";

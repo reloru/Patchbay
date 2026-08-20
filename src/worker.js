@@ -9,6 +9,7 @@
 
 import {
   MODELS,
+  DEFAULT_MODEL,
   MODEL_IDS,
   IMPROVE_MODELS,
   IMPROVE_MODEL_IDS,
@@ -69,6 +70,7 @@ export default {
         return json({
           authRequired: Boolean(env.APP_PASSWORD),
           models: MODELS,
+          defaultModel: DEFAULT_MODEL,
           improveModels: IMPROVE_MODELS,
           defaultImproveModel: DEFAULT_IMPROVE_MODEL,
           describeModels: DESCRIBE_MODELS,
@@ -491,10 +493,18 @@ async function runXaiVideoStart(spec, input, env) {
 
   const payload = { model: spec.xaiModel, prompt: input.prompt };
 
-  if (spec.xaiEndpoint === "generations") {
+  // One model, three endpoints. `mode` is a UI-level field: it selects the
+  // endpoint and is never forwarded in the payload. Allow-listed so a crafted
+  // request cannot point the fetch below at an arbitrary path.
+  const MODES = ["generations", "edits", "extensions"];
+  const endpoint = spec.xaiModal && MODES.includes(input.mode) ? input.mode : spec.xaiEndpoint;
+
+  if (endpoint === "generations") {
     if (input.image) payload.image = { url: input.image };
     const refs = [].concat(input.reference_images || []).filter(Boolean).slice(0, 3);
     if (refs.length) payload.reference_images = refs.map((url) => ({ url }));
+    // Preset voice, offered only on models that accept reference audio.
+    if (input.reference_voice) payload.reference_audios = [{ voice_id: input.reference_voice }];
     if (input.duration) payload.duration = Number(input.duration);
     if (input.resolution) payload.resolution = input.resolution;
     if (input.aspect_ratio) payload.aspect_ratio = input.aspect_ratio;
@@ -502,12 +512,14 @@ async function runXaiVideoStart(spec, input, env) {
     // edits and extensions both take a single source video.
     if (!input.video) return json({ error: "Missing video to edit/extend." }, 400);
     payload.video = { url: input.video };
-    if (spec.xaiEndpoint === "extensions" && input.duration) payload.duration = Number(input.duration);
+    // Extension's duration is the length of the added footage only. Editing
+    // takes no duration at all — the output follows the source.
+    if (endpoint === "extensions" && input.extend_duration) payload.duration = Number(input.extend_duration);
   }
 
   let res, text;
   try {
-    res = await fetch(`https://api.x.ai/v1/videos/${spec.xaiEndpoint}`, {
+    res = await fetch(`https://api.x.ai/v1/videos/${endpoint}`, {
       method: "POST",
       headers: { authorization: `Bearer ${env.XAI_API_KEY}`, "content-type": "application/json" },
       body: JSON.stringify(payload),

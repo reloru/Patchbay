@@ -5,6 +5,7 @@
 // ---------------------------------------------------------------------------
 let MODELS = [];
 let improveModels = [];
+let defaultModel = "";
 let defaultImproveModel = "";
 let describeModels = [];
 let defaultDescribeModel = "";
@@ -51,6 +52,7 @@ async function boot() {
   }
   MODELS = cfg.models || [];
   improveModels = cfg.improveModels || [];
+  defaultModel = cfg.defaultModel || "";
   defaultImproveModel = cfg.defaultImproveModel || "";
   describeModels = cfg.describeModels || [];
   defaultDescribeModel = cfg.defaultDescribeModel || "";
@@ -85,7 +87,11 @@ $("gate-form").addEventListener("submit", (e) => {
 function startApp() {
   $("app").classList.remove("hidden");
   buildModelSelect();
-  selectModel(MODELS[0].id);
+  // Fall back to whatever the picker lists first if the named default ever
+  // leaves the catalogue, so startup cannot break on a stale id.
+  const first = $("model-select").querySelector("option");
+  const wanted = MODELS.some((m) => m.id === defaultModel) ? defaultModel : first && first.value;
+  selectModel(wanted || MODELS[0].id);
   initPromptLibrary();
   refreshNeurons();
   $("footer-note").textContent =
@@ -99,7 +105,8 @@ function startApp() {
 // what you pick by; provider second because it decides what an option costs
 // and which key it needs, and because two providers ship models under the
 // same name (FLUX.2 Klein 4B is on both Pruna and Workers AI).
-const GROUP_ORDER = ["Image generation", "Image editing", "Video", "LoRA training"];
+// Editing leads: it is the common case, and the picker opens on a model in it.
+const GROUP_ORDER = ["Image editing", "Image generation", "Video", "LoRA training"];
 const PROVIDER_ORDER = ["pruna", "xai", "workers-ai"];
 const PROVIDER_LABEL = { pruna: "Pruna", xai: "xAI", "workers-ai": "Workers AI" };
 
@@ -312,13 +319,10 @@ function priceBlurb(model) {
     const unpriced = tiers.filter((r) => p.outUsdPerSec[r] == null);
     const rates = priced.map((r) => `${fmtUsd(p.outUsdPerSec[r])}/s at ${r}`).join(", ");
     const caveat = unpriced.length ? ` (${unpriced.join(" and ")} ${unpriced.length > 1 ? "have" : "has"} no published rate)` : "";
-    return `List price: ${rates}${caveat}, plus ${fmtUsd(p.inputImageUsd)} per input image.`;
-  }
-  if (p.type === "xai_video_source") {
     return (
-      `List price: ${fmtUsd(p.inputUsdPerSec)}/s to read your source video, plus ` +
-      `${fmtUsd(p.outUsdPerSec["480p"])}/s or ${fmtUsd(p.outUsdPerSec["720p"])}/s output depending on its resolution ` +
-      `— estimate appears once a video is chosen.`
+      `List price, generating: ${rates}${caveat}, plus ${fmtUsd(p.inputImageUsd)} per input image. ` +
+      `Editing or extending: ${fmtUsd(p.sourceUsdPerSec)}/s to read your source video plus the output rate for ` +
+      `its resolution — estimate appears once a video is chosen.`
     );
   }
   return "List price: varies with your settings.";
@@ -335,12 +339,24 @@ function renderFields() {
   optionsBadge = null;
 
   const optional = [];
+  visibilityRows = [];
   for (const f of currentModel.fields) {
-    if (f.required) wrap.appendChild(renderRequired(f));
-    else optional.push(f);
+    if (f.required) {
+      const row = renderRequired(f);
+      wrap.appendChild(row);
+      if (f.showWhen) visibilityRows.push({ f, row });
+    } else {
+      optional.push(f);
+    }
   }
   if (optional.length) wrap.appendChild(renderOptionsPanel(optional));
 
+  // Re-evaluate conditional fields whenever the field they depend on changes.
+  for (const name of new Set(currentModel.fields.filter((f) => f.showWhen).map((f) => f.showWhen.field))) {
+    const el = wrap.querySelector(`[data-field="${name}"]`);
+    if (el) el.addEventListener("change", () => { applyVisibility(); refreshOptionState(); });
+  }
+  applyVisibility();
   refreshOptionState();
   // Open the panel when something is already non-default — otherwise a value
   // carried over from the previous model would be invisible.
@@ -737,11 +753,36 @@ function optionChanged(f, row) {
   return v !== f.default;
 }
 
+// A field with `showWhen: { field, is: [...] }` only applies to some of the
+// model's modes — e.g. the source video belongs to Edit and Extend but not to
+// Generate. Hidden rows are also skipped by buildInput, so a value left behind
+// from another mode is never sent.
+let visibilityRows = [];
+
+function fieldVisible(f) {
+  if (!f.showWhen) return true;
+  const el = $("gen-form").querySelector(`[data-field="${f.showWhen.field}"]`);
+  const v = el ? el.value : undefined;
+  return f.showWhen.is.includes(v);
+}
+
+function applyVisibility() {
+  for (const r of visibilityRows.concat(optionRows.filter((r) => r.f.showWhen))) {
+    r.row.hidden = !fieldVisible(r.f);
+  }
+}
+
 function refreshOptionState() {
   // Attaching or removing an image changes what Describe would read.
   updateDescribeNote();
   let changed = 0;
   for (const r of optionRows) {
+    if (r.f.showWhen && !fieldVisible(r.f)) {
+      r.row.classList.remove("changed");
+      r.reset.hidden = true;
+      r.note.textContent = "";
+      continue;
+    }
     // e.g. p-video's aspect ratio: the provider derives it from the start
     // image and ignores the dropdown once one is attached, so gray it out
     // and say why instead of leaving a control that quietly does nothing.
@@ -835,6 +876,9 @@ function buildInput() {
   const touchedNames = new Set(optionRows.filter((r) => r.touched).map((r) => r.f.name));
 
   for (const f of currentModel.fields) {
+    // Belongs to a mode other than the one selected — not asked for, not sent,
+    // and not counted as missing even when it is required in its own mode.
+    if (!fieldVisible(f)) continue;
     const v = readControlValue(f, form);
 
     if (f.required) {
@@ -1507,23 +1551,22 @@ function estimateCost(model, input, outputCount) {
     return per * n + refs * (p.inputUsd || 0);
   }
   if (p.type === "xai_video") {
+    // Editing and extending are priced from the source video's own duration and
+    // resolution, probed client-side when it was picked. Editing reruns the
+    // whole clip; extending generates only the new footage on top of it.
+    if (input.mode === "edits" || input.mode === "extensions") {
+      const src = (uploads.video || [])[0];
+      if (!src || !src.durationSec || !src.resBucket) return null;
+      const outRate = p.outUsdPerSec[src.resBucket];
+      if (outRate == null) return null;
+      const outSecs = input.mode === "extensions" ? Number(input.extend_duration) || 6 : src.durationSec;
+      return src.durationSec * p.sourceUsdPerSec + outSecs * outRate;
+    }
     const rate = p.outUsdPerSec[input.resolution || "480p"];
-    if (rate == null) return null; // 1080p has no published rate
+    if (rate == null) return null; // a tier the model publishes no rate for
     const secs = Number(input.duration) || 8;
     const refs = (input.image ? 1 : 0) + (Array.isArray(input.reference_images) ? input.reference_images.length : 0);
     return rate * secs + refs * p.inputImageUsd;
-  }
-  if (p.type === "xai_video_source") {
-    // Priced from the source video's own duration/resolution, probed
-    // client-side when it was picked — nothing here comes from the server.
-    const src = (uploads.video || [])[0];
-    if (!src || !src.durationSec || !src.resBucket) return null;
-    const outRate = p.outUsdPerSec[src.resBucket];
-    if (outRate == null) return null;
-    // Extend generates a new segment of its own length; edit's output runs
-    // the same length as the source.
-    const outSecs = input.duration ? Number(input.duration) : src.durationSec;
-    return src.durationSec * p.inputUsdPerSec + outSecs * outRate;
   }
   return null;
 }
