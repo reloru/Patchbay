@@ -21,6 +21,8 @@
     "enabled": true
   }
   // Secrets are NOT stored here. They are set with `wrangler secret put`:
-  //   PRUNA_API_KEY  (required) — your Pruna API key
-  //   APP_PASSWORD   (optional) — shared password gate for the UI
+  //   PRUNA_API_KEY     (required) — your Pruna API key
+  //   APP_PASSWORD      (optional) — shared password gate for the UI
+  //   DO_INFERENCE_KEY  (optional) — DigitalOcean Gradient model access key,
+  //                     needed only for the DigitalOcean models
 }

@@ -1516,6 +1516,103 @@ MODELS.push(...XAI_MODELS);
 // Priced here rather than in the loop above, which runs before this push.
 for (const m of XAI_MODELS) m.price = XAI_PRICING[m.id] || { type: "variable" };
 
+// DigitalOcean Gradient serverless inference. An OpenAI-compatible gateway in
+// front of other people's models, so the value here is reach rather than
+// anything DigitalOcean trained: it is the cheapest route to OpenAI's GPT Image
+// family, which is otherwise awkward to get at.
+//
+// Unlike the other providers, these are billed per TOKEN rather than per image
+// (an output image is ~1,100-1,600 tokens at 1024x1024), and serverless
+// inference is prepaid — DigitalOcean suspends the endpoint at a $0 balance
+// rather than invoicing later.
+const DO_IMAGE_SIZES = [
+  { value: "auto", label: "Auto" },
+  { value: "1024x1024", label: "Square (1024×1024)" },
+  { value: "1536x1024", label: "Landscape (1536×1024)" },
+  { value: "1024x1536", label: "Portrait (1024×1536)" },
+];
+
+const DO_QUALITY = [
+  { value: "auto", label: "Auto" },
+  { value: "low", label: "Low — cheapest" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High — most tokens" },
+];
+
+// GPT Image 2 and 1.5 both accept image input, so one field set covers both.
+const doImageFields = () => [
+  { name: "prompt", label: "Prompt", type: "textarea", required: true },
+  {
+    name: "images",
+    label: "Image(s) to edit (optional)",
+    type: "image",
+    maxItems: 4,
+    asArray: true,
+    asDataUri: true,
+    help: "Attach an image to edit it instead of generating from scratch.",
+  },
+  { name: "size", label: "Size", type: "enum", default: "auto", options: DO_IMAGE_SIZES },
+  { name: "quality", label: "Quality", type: "enum", default: "auto", options: DO_QUALITY },
+  {
+    name: "background",
+    label: "Background",
+    type: "enum",
+    default: "auto",
+    options: [
+      { value: "auto", label: "Auto" },
+      { value: "opaque", label: "Opaque" },
+      { value: "transparent", label: "Transparent" },
+    ],
+  },
+  { name: "n", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
+];
+
+const DO_MODELS = [
+  {
+    id: "do-gpt-image-2",
+    doModel: "openai-gpt-image-2",
+    label: "GPT Image 2",
+    group: "DigitalOcean (Gradient)",
+    kind: "image",
+    blurb: "OpenAI's current image model. Generates, or edits attached images from an instruction.",
+    fields: doImageFields(),
+  },
+  {
+    id: "do-gpt-image-1-5",
+    doModel: "openai-gpt-image-1.5",
+    label: "GPT Image 1.5",
+    group: "DigitalOcean (Gradient)",
+    kind: "image",
+    blurb: "The previous GPT Image model. Much cheaper output tokens than GPT Image 2.",
+    fields: doImageFields(),
+  },
+  {
+    id: "do-sd-3-5-large",
+    doModel: "stable-diffusion-3.5-large",
+    label: "Stable Diffusion 3.5 Large",
+    group: "DigitalOcean (Gradient)",
+    kind: "image",
+    blurb: "Stability's 8B model, billed at a flat per-image rate. Text-to-image only.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "size", label: "Size", type: "enum", default: "auto", options: DO_IMAGE_SIZES },
+      { name: "n", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
+    ],
+  },
+];
+
+const DO_PRICING = {
+  // Token rates from DigitalOcean's inference pricing page. Per-image cost is
+  // derived rather than published, so it is shown as a range.
+  "do-gpt-image-2": { type: "do_tokens", inPerM: 8, outPerM: 30, approxUsd: [0.033, 0.048] },
+  "do-gpt-image-1-5": { type: "do_tokens", inPerM: 5, outPerM: 10, approxUsd: [0.011, 0.016] },
+  "do-sd-3-5-large": { type: "flat", usd: 0.08 },
+};
+
+for (const m of DO_MODELS) m.provider = "digitalocean";
+MODELS.push(...DO_MODELS);
+for (const m of DO_MODELS) m.price = DO_PRICING[m.id] || { type: "variable" };
+
 // Vision models for the "Describe" button (image -> text). Their inputs differ
 // enough that the Worker builds each payload separately:
 //   llava     takes `image` as a byte array, returns {description}

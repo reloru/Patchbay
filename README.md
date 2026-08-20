@@ -44,6 +44,7 @@ to polling; video jobs always poll `/api/status` until `succeeded`.
 | Image generation | `flux-dev`, `flux-dev-lora`, `qwen-image`, `qwen-image-fast`, `z-image-turbo`, `z-image-turbo-lora`, `p-image`, `p-image-lora` |
 | Image editing | `qwen-image-edit-plus`, `p-image-edit`, `p-image-edit-lora`, `p-image-upscale` |
 | Video | `wan-t2v`, `wan-i2v`, `p-video`, `vace` |
+| DigitalOcean (Gradient) | `do-gpt-image-2`, `do-gpt-image-1-5`, `do-sd-3-5-large` |
 
 LoRA variants (`*-lora`) accept a LoRA weights URL (HuggingFace for the `p-image*`
 and `flux-dev-lora` models, any host for `z-image-turbo-lora`) plus a strength
@@ -61,6 +62,7 @@ npm install
 # Secrets (never committed):
 npx wrangler secret put PRUNA_API_KEY   # required — your Pruna API key
 npx wrangler secret put APP_PASSWORD    # optional — shared UI password gate
+npx wrangler secret put DO_INFERENCE_KEY # optional — DigitalOcean Gradient model access key
 
 npm run deploy
 ```

@@ -248,6 +248,14 @@ function priceBlurb(model) {
     );
   }
   if (p.type === "cf_unpriced") return "Runs on Cloudflare Workers AI (no published rate).";
+  if (p.type === "do_tokens") {
+    // Token-priced rather than per-image, so the per-image figure is derived
+    // from a 1024x1024 output (~1,100-1,600 tokens) and shown as a range.
+    return (
+      `DigitalOcean: ${fmtUsd(p.inPerM)}/1M input tokens, ${fmtUsd(p.outPerM)}/1M output — ` +
+      `about ${fmtUsd(p.approxUsd[0])}–${fmtUsd(p.approxUsd[1])} per 1024×1024 image.`
+    );
+  }
   if (p.type === "flat") return `List price: ${fmtUsd(p.usd)} per image.`;
   if (p.type === "per_second") return `List price: ${fmtUsd(p.usd["720p"])}/s at 720p, ${fmtUsd(p.usd["1080p"])}/s at 1080p.`;
   if (p.type === "per_second_draft") {

@@ -123,6 +123,7 @@ async function handleGenerate(request, env) {
   if (spec.provider === "xai") {
     return spec.xaiAsync ? await runXaiVideoStart(spec, input, env) : await runXai(spec, input, env);
   }
+  if (spec.provider === "digitalocean") return await runDigitalOcean(spec, input, env);
 
   const headers = {
     apikey: env.PRUNA_API_KEY,
@@ -417,6 +418,96 @@ function sniffImageMime(b64) {
 // single enormous data: URI in the DOM — enough to kill a mobile Safari tab.
 // A URL lets /api/result stream the bytes and pass the real content-type
 // through, so nothing large is ever held as a string.
+// DigitalOcean Gradient serverless inference (https://inference.do-ai.run).
+// OpenAI-compatible, so this mirrors the xAI provider closely: attached images
+// mean an edit, otherwise a generation.
+//
+// Two things differ from xAI and are worth knowing before debugging this:
+//   - DigitalOcean returns base64 only; there is no URL response_format, and it
+//     explicitly does not store results. Output is capped at 1 megapixel, so the
+//     data URIs stay in the same size class as the Workers AI path rather than
+//     the 2048x2048 payloads that broke mobile Safari in #29.
+//   - Serverless inference is PREPAID. A $0 balance returns an error rather
+//     than running up an invoice, so surface DigitalOcean's own wording.
+const DO_INFERENCE_BASE = "https://inference.do-ai.run";
+
+async function runDigitalOcean(spec, input, env) {
+  if (!env.DO_INFERENCE_KEY) {
+    return json({ error: "DigitalOcean is not configured (DO_INFERENCE_KEY missing)." }, 500);
+  }
+
+  const refs = [].concat(input.images || []).filter(Boolean).slice(0, 4);
+  const editing = refs.length > 0;
+
+  let res, text;
+  try {
+    if (editing) {
+      // OpenAI's edits endpoint is multipart. DigitalOcean advertises OpenAI
+      // compatibility but does not document this endpoint, so if the shape is
+      // wrong their error text is passed straight through to say so.
+      const form = new FormData();
+      form.append("model", spec.doModel);
+      form.append("prompt", input.prompt);
+      if (input.size && input.size !== "auto") form.append("size", input.size);
+      if (input.quality && input.quality !== "auto") form.append("quality", input.quality);
+      if (input.n) form.append("n", String(Number(input.n)));
+      refs.forEach((uri, i) => {
+        const [meta, b64] = String(uri).split(",", 2);
+        if (!b64) return;
+        const mime = (meta.match(/data:([^;]+)/) || [])[1] || "image/png";
+        const ext = mime.split("/")[1] || "png";
+        form.append("image[]", new Blob([base64ToBytes(b64)], { type: mime }), `image-${i}.${ext}`);
+      });
+
+      res = await fetch(`${DO_INFERENCE_BASE}/v1/images/edits`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${env.DO_INFERENCE_KEY}` },
+        body: form,
+      });
+    } else {
+      const payload = { model: spec.doModel, prompt: input.prompt };
+      if (input.size && input.size !== "auto") payload.size = input.size;
+      if (input.quality && input.quality !== "auto") payload.quality = input.quality;
+      if (input.background && input.background !== "auto") payload.background = input.background;
+      if (input.n) payload.n = Number(input.n);
+
+      res = await fetch(`${DO_INFERENCE_BASE}/v1/images/generations`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${env.DO_INFERENCE_KEY}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+    }
+    text = await res.text();
+  } catch (err) {
+    return json({ error: "DigitalOcean request failed: " + (err && err.message ? err.message : String(err)) }, 502);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return json({ error: "DigitalOcean returned a non-JSON response." }, 502);
+  }
+  if (!res.ok) {
+    const msg =
+      (data.error && (data.error.message || data.error)) || data.message || data.id || `HTTP ${res.status}`;
+    return json({ error: "DigitalOcean: " + msg }, res.status);
+  }
+
+  const images = (data.data || [])
+    .map((d) => {
+      if (!d.b64_json) return d.url || null;
+      const mime = sniffImageMime(d.b64_json) || "image/png";
+      return `data:${mime};base64,` + d.b64_json;
+    })
+    .filter(Boolean);
+  if (!images.length) return json({ error: "DigitalOcean returned no images." }, 502);
+  return json({ status: "succeeded", images });
+}
+
 async function runXai(spec, input, env) {
   if (!env.XAI_API_KEY) return json({ error: "xAI is not configured (XAI_API_KEY missing)." }, 500);
 
