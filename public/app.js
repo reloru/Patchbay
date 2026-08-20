@@ -248,6 +248,9 @@ function priceBlurb(model) {
     );
   }
   if (p.type === "cf_unpriced") return "Runs on Cloudflare Workers AI (no published rate).";
+  if (p.type === "per_1k_steps") {
+    return `List price: ${fmtUsd(p.usd)} per 1,000 training steps.`;
+  }
   if (p.type === "flat") return `List price: ${fmtUsd(p.usd)} per image.`;
   if (p.type === "per_second") return `List price: ${fmtUsd(p.usd["720p"])}/s at 720p, ${fmtUsd(p.usd["1080p"])}/s at 1080p.`;
   if (p.type === "per_second_draft") {
@@ -274,10 +277,15 @@ function priceBlurb(model) {
     );
   }
   if (p.type === "xai_video") {
-    return (
-      `List price: ${fmtUsd(p.outUsdPerSec["480p"])}/s at 480p, ${fmtUsd(p.outUsdPerSec["720p"])}/s at 720p ` +
-      `(1080p has no published rate), plus ${fmtUsd(p.inputImageUsd)} per input image.`
-    );
+    // Which tiers are priced differs by model — 1.5 publishes a 1080p rate,
+    // 1.0 does not — so build the list from the table instead of hardcoding
+    // it, and only add the caveat for tiers the model offers but can't price.
+    const tiers = ["480p", "720p", "1080p"];
+    const priced = tiers.filter((r) => p.outUsdPerSec[r] != null);
+    const unpriced = tiers.filter((r) => p.outUsdPerSec[r] == null);
+    const rates = priced.map((r) => `${fmtUsd(p.outUsdPerSec[r])}/s at ${r}`).join(", ");
+    const caveat = unpriced.length ? ` (${unpriced.join(" and ")} ${unpriced.length > 1 ? "have" : "has"} no published rate)` : "";
+    return `List price: ${rates}${caveat}, plus ${fmtUsd(p.inputImageUsd)} per input image.`;
   }
   if (p.type === "xai_video_source") {
     return (
@@ -1414,7 +1422,11 @@ function estimateCost(model, input, outputCount) {
 }
 
 function fmtUsd(v) {
-  return "$" + (v < 0.01 ? v.toFixed(4) : v.toFixed(3)).replace(/0+$/, "").replace(/\.$/, "");
+  const n = (v < 0.01 ? v.toFixed(4) : v.toFixed(3)).replace(/0+$/, "").replace(/\.$/, "");
+  // Trailing zeros are stripped so $0.050 reads as $0.05, but that also turns
+  // $1.80 into $1.8. Pad one-decimal results back to cents; leave whole
+  // dollars bare ($4) and keep sub-cent precision ($0.025) intact.
+  return "$" + n.replace(/\.(\d)$/, ".$10");
 }
 
 function addSpend(model, input, outputCount) {

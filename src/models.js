@@ -185,6 +185,10 @@ export const MODELS = [
             hint: "realism",
           },
           {
+            label: "General purpose (flymy-ai)",
+            value: "huggingface.co/flymy-ai/qwen-image-lora/pytorch_lora_weights.safetensors",
+          },
+          {
             label: "Realistic headshots (HeadshotX)",
             value: "huggingface.co/prithivMLmods/Qwen-Image-HeadshotX/Qwen-Image-HeadshotX.safetensors",
             hint: "face headshot",
@@ -672,6 +676,42 @@ export const MODELS = [
   // finishes, and a run can take minutes to hours: pass the resulting
   // lora_weights URL into P-Image-Edit-LoRA above to use it, and consider
   // uploading the .safetensors to your own Hugging Face repo before it expires.
+  {
+    id: "p-image-trainer",
+    label: "P-Image-Trainer",
+    group: "LoRA training",
+    kind: "file",
+    blurb: "Train a LoRA for P-Image-LoRA from a folder of images. Async only; output expires ~30 min after it finishes.",
+    fields: [
+      {
+        name: "image_data",
+        label: "Training images (.zip)",
+        type: "image",
+        required: true,
+        accept: ".zip,application/zip",
+        help: "ZIP of at least 10 images. Add a matching .txt beside any image to caption it (photo.jpg + photo.txt).",
+      },
+      {
+        name: "training_type",
+        label: "What to learn",
+        type: "enum",
+        default: "balanced",
+        options: [
+          { value: "balanced", label: "Balanced — mixed content and style" },
+          { value: "content", label: "Content — subjects, characters, objects" },
+          { value: "style", label: "Style — palettes and aesthetic treatments" },
+        ],
+      },
+      { name: "steps", label: "Training steps", type: "int", default: 1000, min: 100, max: 5000, step: 100 },
+      {
+        name: "default_caption",
+        label: "Default caption (images without a .txt)",
+        type: "text",
+        default: "",
+        help: "Required if any image lacks a caption file — training fails without one.",
+      },
+    ],
+  },
   {
     id: "p-image-edit-trainer",
     label: "P-Image-Edit-Trainer (Pruna)",
@@ -1234,8 +1274,11 @@ const PRICING = {
   "wan-t2v": { type: "variable" },
   // Flat per video, not per second: $0.05 at 480p, $0.11 at 720p.
   "wan-i2v": { type: "flat_by_resolution", usd: { "480p": 0.05, "720p": 0.11 } },
-  // No published rate found for p-image-edit-trainer; left unpriced rather
-  // than guessed at (falls through to "variable" via the lookup below).
+  // Trainers are billed by training step, not per output. Rates from Pruna's
+  // models page; both are async-only and their output expires ~30 min after
+  // the job finishes.
+  "p-image-trainer": { type: "per_1k_steps", usd: 1.8 },
+  "p-image-edit-trainer": { type: "per_1k_steps", usd: 4.0 },
 };
 
 // Workers AI is billed in "neurons" against a 10,000/day free allowance, with
@@ -1285,6 +1328,13 @@ const XAI_PRICING = {
   // (start image + reference images). 1080p has no published rate, so it's
   // left out and priced as "varies" rather than guessed at.
   "xai-imagine-video": { type: "xai_video", outUsdPerSec: { "480p": 0.05, "720p": 0.07 }, inputImageUsd: 0.002 },
+  // 1.5 publishes a 1080p rate where 1.0 does not, and charges more per second
+  // across the board. Input images are $0.01 each rather than $0.002.
+  "xai-imagine-video-1-5": {
+    type: "xai_video",
+    outUsdPerSec: { "480p": 0.08, "720p": 0.14, "1080p": 0.25 },
+    inputImageUsd: 0.01,
+  },
   // Edit/extend don't document a resolution or (for edit) a duration in the
   // request — output length/resolution follows the input video, which the
   // Worker never sees before upload. The frontend probes the chosen video
@@ -1446,6 +1496,45 @@ const XAI_MODELS = [
           { value: "medium", label: "Medium" },
         ],
       },
+    ],
+  },
+  {
+    // Not a version bump of grok-imagine-video: 1.5 takes audio instead of
+    // video input, and unlike 1.0 it publishes a 1080p rate. The audio
+    // (preset voice) input is free but its parameter name is undocumented, so
+    // it is deliberately not exposed rather than guessed at.
+    id: "xai-imagine-video-1-5",
+    xaiModel: "grok-imagine-video-1.5",
+    xaiEndpoint: "generations",
+    xaiAsync: true,
+    label: "Grok Imagine Video 1.5",
+    group: "xAI (Grok)",
+    kind: "video",
+    blurb: "Newer Grok video model with a published 1080p tier. Async — polls until done.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "image", label: "Starting image (optional, for image-to-video)", type: "image", asDataUri: true },
+      {
+        name: "reference_images",
+        label: "Reference image(s) (optional, for reference-to-video)",
+        type: "image",
+        maxItems: 3,
+        asArray: true,
+        asDataUri: true,
+      },
+      { name: "duration", label: "Length (seconds)", type: "int", default: 8, min: 1, max: 15 },
+      {
+        name: "resolution",
+        label: "Resolution",
+        type: "enum",
+        default: "480p",
+        options: [
+          { value: "480p", label: "480p" },
+          { value: "720p", label: "720p" },
+          { value: "1080p", label: "1080p" },
+        ],
+      },
+      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "16:9", options: XAI_VIDEO_AR },
     ],
   },
   {
