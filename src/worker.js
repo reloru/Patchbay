@@ -195,103 +195,62 @@ async function runWorkersAI(spec, input, env) {
 // someone described as sitting — and those invented details then fight the real
 // image at generation time.
 //
-// These are taught by example rather than by rule. Spelling the constraints out
-// as prose does not survive contact with the 3B default model: an eight-rule
-// version came back with the rule text itself as the "rewritten prompt", and a
-// terser bulleted version came back as bullets with the section labels still
-// attached. Worked input/output pairs pattern-match instead of having to be
-// parsed, and are the only formulation that held up across every model offered.
-// Example CONTENT leaks too, so these deliberately share no subject or wording
-// with a prompt anyone would realistically type.
-const IMAGE_RULES =
-  `Never invent detail the user did not write — no hair color, age, clothing, pose, room, weather, or lighting, ` +
-  `and no extra people or objects. Replace every pronoun, possessives ("his", "her", "their") included, with the ` +
-  `user's own words for the subject. Keep every ` +
-  `instruction they gave, and keep the word "photorealistic" if present. If they asked for no change at all, ` +
-  `return their words tidied and nothing more.`;
-
-// Pruna's editing guide recommends [modification] [change target]
-// [preservation requirements], and blames most editing failures on a missing
-// preservation clause. That was tried here and removed: a blind rewriter has no
-// idea what is in the image, so every named preservation clause either invented
-// something ("preserve the subject's facial features" on a photo of a room) or
-// collapsed into one generic sentence appended verbatim to every single
-// rewrite. Boilerplate on every output is worse than no clause at all.
+// One job: copy-editing. Earlier versions of this taught the model about
+// image editing, Pruna's prompt structure, preservation clauses, and tag
+// parsing. Every one of those made it worse, because a model that cannot see
+// the image has no basis for any of it and fills the gap by inventing. It does
+// not need to know what the text is for.
 //
-// So this does one job: make the user's wording clearer. Tidy the phrasing,
-// drop conversational filler, resolve pronouns, split a compound request. It
-// adds nothing — not a preservation clause, and not "helpful" visual detail
-// about how the change should look, which is just invention by another name.
-const EDIT_SYSTEM =
-  `You clarify image-editing instructions for an image-editing model, which cannot be told anything about the ` +
-  `image beyond what the user wrote. Rewrite the instruction to be clearer and more direct: plain imperative ` +
-  `phrasing, one sentence per change, no conversational filler. ` +
-  `Add nothing of your own: no preservation clause, no "leave everything else unchanged", no extra detail ` +
-  `about how the change should look. That is a ban on inventing one, never on keeping one — if the user wrote ` +
-  `their own instruction to preserve, keep, or not change something, it stays in the rewrite word for word. ` +
-  `Dropping something the user asked for is the worst thing you can do here. ` +
-  `Avoid commas: image models read a comma as a separator between tags rather than as punctuation, so a ` +
-  `comma-spliced sentence is parsed as unrelated fragments. Use short separate sentences instead, and write ` +
-  `"and" where you would otherwise write a comma. ` +
-  IMAGE_RULES +
-  ` Never state what the image currently shows — only what to change it to. Never make the rewrite longer than ` +
-  `the user's own instruction, except to split a compound request into separate sentences. If it is already ` +
-  `clear, return it essentially unchanged. Output only the rewritten instruction.`;
+// Written comma-free on purpose. Image models read a comma as a tag separator
+// rather than punctuation, and small models copy the register of their own
+// instructions, so a comma-heavy system prompt produces comma-heavy output.
+const IMPROVE_SYSTEM =
+  `You are a copy editor. Rewrite the user's text so it is correct and clearly phrased English. ` +
+  `That is the whole job. You are not told what the text is for and you do not need to know. ` +
+  `Fix grammar spelling punctuation and awkward or ambiguous phrasing. ` +
+  `If the text is already correct and clear return it exactly as it is. ` +
+  `Never add anything the user did not write. No new objects people places colours lighting styles or details of any kind. ` +
+  `Never drop anything the user did write. Every instruction object and qualifier in the input must survive into the output. ` +
+  `Never soften weaken or hedge their wording and never make it more polite than they wrote it. ` +
+  `Never invent a relationship between two things the user did not connect. ` +
+  `If they listed things separately keep them separate. ` +
+  `If a clause is ambiguous keep the ambiguity rather than picking a reading for them. ` +
+  `Do not use commas or em dashes anywhere in your output. Write short separate sentences instead. ` +
+  `Keep the user's own words and their pronouns wherever they already read naturally. ` +
+  `Repeating a noun where a pronoun is already clear is wrong. ` +
+  `Keep the grammatical mood. An instruction stays an instruction. A description stays a description. ` +
+  `Never turn "make the sky blue" into "the sky is blue". ` +
+  `Never explain never comment and never ask a question. Output only the rewritten text.`;
 
-const EDIT_SHOTS = [
-  // Already clear: comes back as itself. Without this the model treats every
-  // input as something that must be visibly changed to justify the button.
+// Worked examples rather than more rules: prose constraints do not survive
+// contact with the 3B default model, which has returned the rule text itself as
+// its answer.
+//
+// Replayed as prior turns rather than listed inside the system text. Inline
+// they were treated as prose to continue: the model copied the first example's
+// output and then invented past the user's words ("add a cat, a dog, and a
+// bird" produced "Put the bird in its cage"). As turns it can still occasionally
+// prefix the last answer, which is visible and harmless next to inventing.
+const IMPROVE_SHOTS = [
+  // One subject keeps its pronouns instead of having the noun stamped over
+  // every one of them. Imperative in and imperative out.
+  ["make the womans jacket red and put her hat on the table", "Make the woman's jacket red. Put her hat on the table."],
+  // Both halves survive. Nothing the user asked to preserve is dropped.
+  ["change the jacket to red but preserve her face and hair", "Change the jacket to red. Preserve her face and hair."],
+  // The same lesson worded as "keep", which was being dropped where "preserve"
+  // survived.
+  ["make it snow and keep the building exactly as it is", "Make it snow. Keep the building exactly as it is."],
+  // And the negative form, which was dropped where "preserve" and "keep" both
+  // survived. All three phrasings mean the same thing to the user.
+  ["remove the fence and dont touch anything else", "Remove the fence. Do not touch anything else."],
+  // Two independent items stay independent. No comma and no invented link.
+  ["make the sky purple and the car red", "Make the sky purple. Make the car red."],
+  // Already clear: returned untouched.
   ["remove the hat", "Remove the hat."],
-  // Vague noun and a trailing "instead" tightened into a direct imperative.
-  ["make the thing on the left blue instead", "Change the object on the left to blue."],
-  // Conversational framing dropped; a compound request split in two.
-  [
-    "can you get rid of the person in the back and also make it brighter",
-    "Remove the person in the background. Increase the overall brightness.",
-  ],
-  // Pronoun resolved, and the "not black" half dropped: it describes what the
-  // image already shows, which this model cannot verify and must not assert.
-  ["her jacket should be red not black", "Change the jacket to red."],
-  // The user's OWN preservation instruction survives. Without this example the
-  // "add no preservation clause" rule above reads as licence to delete theirs,
-  // which is what it did: "preserve her face and hair" was silently dropped
-  // from every rewrite that contained it.
-  [
-    "change the jacket to red but preserve her face and hair",
-    "Change the jacket to red. Preserve the face and hair.",
-  ],
-  // Teaches the describe-don't-instruct case: input that requests no edit comes
-  // back as itself. Kept last deliberately — without it the model invented an
-  // edit in 4 runs out of 5, and moved mid-list it stopped carrying.
-  // Deliberately contains no noun worth borrowing: earlier versions ("a photo
-  // of a dog", "the two of them", "the subject") all had their subject noun
-  // copied into unrelated rewrites.
-  ["the image is slightly blurry", "The image is slightly blurry."],
+  // Filler and politeness go. The qualifier "a bit" is the user's and stays.
+  ["can you please maybe make it a bit brighter if thats ok", "Make it a bit brighter."],
 ];
 
-// Same job as the editing path, same reasoning: clarify the wording, add
-// nothing, avoid commas. The old version appended "Preserve the woman's facial
-// features and identity" to rewrites, which both invented a woman and turned
-// into boilerplate on every output.
-const I2V_SYSTEM =
-  `You clarify instructions for an image-to-video model animating the user's photo, which cannot be told ` +
-  `anything about that photo beyond what the user wrote. Rewrite the instruction to be clearer and more direct: ` +
-  `plain phrasing with no conversational filler. ` +
-  `Add nothing of your own: no second action, no camera move, no shot length, no consistency or preservation ` +
-  `clause. That is a ban on inventing one, never on keeping one — if the user asked for something to stay ` +
-  `consistent or unchanged, it stays in the rewrite. ` +
-  `Avoid commas: these models read a comma as a separator between tags rather than as punctuation. Use short ` +
-  `separate sentences instead, and write "and" where you would otherwise write a comma. ` +
-  IMAGE_RULES +
-  ` Describe only the motion they asked for, and never freeze the subject's position or pose: motion is the ` +
-  `point of a video. Never make the rewrite longer than the user's own instruction. If it is already clear, ` +
-  `return it essentially unchanged. Output only the rewritten instruction.`;
-
-const I2V_SHOTS = [
-  // Pronoun resolved to the user's own noun; nothing else added.
-  ["she turns her head", "The woman turns the woman's head to one side."],
-  ["the car drives away", "The car drives away into the distance."],
-];
 
 // Rewrites a short prompt into a richer one using a chat model on Workers AI.
 // Used by the "Improve" button and works for any provider's models. The model
@@ -306,19 +265,10 @@ async function handleImprovePrompt(request, env) {
   if (!prompt) return json({ error: "Nothing to improve — write a prompt first." }, 400);
   if (prompt.length > 2000) return json({ error: "Prompt is too long to improve." }, 400);
 
-  const forVideo = body.kind === "video";
-  // Worked examples, replayed as prior turns. Only the source-image modes get
-  // them: from-scratch generation was never the failing case, and pinning it to
-  // a handful of examples would only narrow the variety it produces.
-  const shots = body.hasImage ? (forVideo ? I2V_SHOTS : EDIT_SHOTS) : [];
-  const system = body.hasImage
-    ? (forVideo ? I2V_SYSTEM : EDIT_SYSTEM)
-    : `You expand short prompts into vivid ${forVideo ? "video" : "image"} generation prompts. ` +
-      `Add concrete visual detail: subject, setting, lighting, composition, style` +
-      (forVideo ? ", camera movement" : "") +
-      `. Keep the user's original intent and subject — don't contradict anything already stated. ` +
-      `Never swap "photorealistic" for "hyper-realistic", "hyperrealistic", or other intensifiers. ` +
-      `Reply with the rewritten prompt only — no preamble, no quotes, no explanation, under 120 words.`;
+  // Same instruction for every mode. Whether the target is an edit, a video or
+  // a from-scratch generation changes nothing about copy-editing the sentence,
+  // and the branching only ever gave the model more to get wrong.
+  const system = IMPROVE_SYSTEM;
 
   // Only models from the offered list may be run here.
   const improveModel = IMPROVE_MODEL_IDS.has(body.model) ? body.model : DEFAULT_IMPROVE_MODEL;
@@ -331,7 +281,7 @@ async function handleImprovePrompt(request, env) {
     out = await env.AI.run(improveModel, {
       messages: [
         { role: "system", content: system },
-        ...shots.flatMap(([u, a]) => [
+        ...IMPROVE_SHOTS.flatMap(([u, a]) => [
           { role: "user", content: u },
           { role: "assistant", content: a },
         ]),
