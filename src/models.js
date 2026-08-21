@@ -166,6 +166,49 @@ export const MODELS = [
     ],
   },
   {
+    id: "flux-2-klein-4b",
+    label: "FLUX.2 Klein 4B",
+    group: "Image generation",
+    kind: "image",
+    blurb: "Very cheap, fast text-to-image; also accepts reference images.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "1:1",
+        options: [
+          ...AR_COMMON,
+          { value: "21:9", label: "21:9 ultrawide" },
+          { value: "9:21", label: "9:21" },
+          { value: "4:5", label: "4:5" },
+          { value: "5:4", label: "5:4" },
+          { value: "match_input_image", label: "Keep reference image size" },
+        ],
+      },
+      { name: "images", label: "Reference image(s) (optional)", type: "image", maxItems: 5, asArray: true },
+      {
+        name: "output_megapixels",
+        label: "Output size",
+        type: "enum",
+        default: "1",
+        options: [
+          { value: "0.25", label: "0.25 MP (smallest)" },
+          { value: "0.5", label: "0.5 MP" },
+          { value: "1", label: "1 MP" },
+          { value: "2", label: "2 MP" },
+          { value: "4", label: "4 MP (largest)" },
+        ],
+      },
+      { name: "go_fast", label: "Fast mode", type: "bool", default: false },
+      OUTPUT_FORMAT,
+      { ...OUTPUT_QUALITY, default: 95 },
+      SEED,
+      moderationFilter(),
+    ],
+  },
+  {
     id: "qwen-image",
     label: "Qwen-Image",
     group: "Image generation",
@@ -183,6 +226,10 @@ export const MODELS = [
             label: "Photorealism (flymy-ai)",
             value: "huggingface.co/flymy-ai/qwen-image-realism-lora/flymy_realism.safetensors",
             hint: "realism",
+          },
+          {
+            label: "General purpose (flymy-ai)",
+            value: "huggingface.co/flymy-ai/qwen-image-lora/pytorch_lora_weights.safetensors",
           },
           {
             label: "Realistic headshots (HeadshotX)",
@@ -292,7 +339,7 @@ export const MODELS = [
   },
   {
     id: "p-image",
-    label: "P-Image (Pruna)",
+    label: "P-Image",
     group: "Image generation",
     kind: "image",
     blurb: "Pruna's proprietary image model with prompt enhancement + refinement.",
@@ -314,7 +361,7 @@ export const MODELS = [
   },
   {
     id: "p-image-lora",
-    label: "P-Image-LoRA (Pruna)",
+    label: "P-Image-LoRA",
     group: "Image generation",
     kind: "image",
     blurb: "P-Image with a custom LoRA (must be trained via p-image-trainer).",
@@ -389,86 +436,9 @@ export const MODELS = [
       moderationFilter(),
     ],
   },
-
-  {
-    id: "flux-2-klein-4b",
-    label: "FLUX.2 Klein 4B",
-    group: "Image generation",
-    kind: "image",
-    blurb: "Very cheap, fast text-to-image; also accepts reference images.",
-    fields: [
-      { name: "prompt", label: "Prompt", type: "textarea", required: true },
-      {
-        name: "aspect_ratio",
-        label: "Aspect ratio",
-        type: "enum",
-        default: "1:1",
-        options: [
-          ...AR_COMMON,
-          { value: "21:9", label: "21:9 ultrawide" },
-          { value: "9:21", label: "9:21" },
-          { value: "4:5", label: "4:5" },
-          { value: "5:4", label: "5:4" },
-          { value: "match_input_image", label: "Keep reference image size" },
-        ],
-      },
-      { name: "images", label: "Reference image(s) (optional)", type: "image", maxItems: 5, asArray: true },
-      {
-        name: "output_megapixels",
-        label: "Output size",
-        type: "enum",
-        default: "1",
-        options: [
-          { value: "0.25", label: "0.25 MP (smallest)" },
-          { value: "0.5", label: "0.5 MP" },
-          { value: "1", label: "1 MP" },
-          { value: "2", label: "2 MP" },
-          { value: "4", label: "4 MP (largest)" },
-        ],
-      },
-      { name: "go_fast", label: "Fast mode", type: "bool", default: false },
-      OUTPUT_FORMAT,
-      { ...OUTPUT_QUALITY, default: 95 },
-      SEED,
-      moderationFilter(),
-    ],
-  },
-  {
-    id: "wan-image-small",
-    label: "WAN Image Small",
-    group: "Image generation",
-    kind: "image",
-    blurb: "Lightweight text-to-image; can return up to 4 variations at once.",
-    fields: [
-      { name: "prompt", label: "Prompt", type: "textarea", required: true },
-      {
-        name: "aspect_ratio",
-        label: "Aspect ratio",
-        type: "enum",
-        default: "16:9",
-        options: [
-          { value: "1:1", label: "1:1 square" },
-          { value: "16:9", label: "16:9 landscape" },
-          { value: "9:16", label: "9:16 portrait" },
-          { value: "4:3", label: "4:3" },
-          { value: "3:4", label: "3:4" },
-          { value: "21:9", label: "21:9 ultrawide" },
-          { value: "custom", label: "Custom size" },
-        ],
-      },
-      { name: "width", label: "Width (custom size)", type: "int", default: 1024, min: 256, max: 2048, step: 16 },
-      { name: "height", label: "Height (custom size)", type: "int", default: 1024, min: 256, max: 2048, step: 16 },
-      { name: "num_outputs", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
-      { name: "juiced", label: "Fast mode (juiced)", type: "bool", default: false },
-      OUTPUT_FORMAT,
-      OUTPUT_QUALITY,
-      SEED,
-    ],
-  },
-
   {
     id: "p-image-ideogram",
-    label: "P-Image-Ideogram (Pruna)",
+    label: "P-Image-Ideogram",
     group: "Image generation",
     kind: "image",
     blurb: "Ideogram-style generation with an adjustable thinking effort dial.",
@@ -512,40 +482,44 @@ export const MODELS = [
     ],
   },
 
-  // ───────────────────────── Image editing ─────────────────────────
   {
-    id: "qwen-image-edit-plus",
-    label: "Qwen-Image-Edit Plus",
-    group: "Image editing",
+    id: "wan-image-small",
+    label: "WAN Image Small",
+    group: "Image generation",
     kind: "image",
-    blurb: "Edit / transform 1–2 input images from a text instruction.",
+    blurb: "Lightweight text-to-image; can return up to 4 variations at once.",
     fields: [
-      { name: "image", label: "Image(s) to edit", type: "image", required: true, maxItems: 2, asArray: true },
-      { name: "prompt", label: "What to change", type: "textarea", required: true },
-      { name: "go_fast", label: "Fast mode", type: "bool", default: true },
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
       {
         name: "aspect_ratio",
         label: "Aspect ratio",
         type: "enum",
-        default: "match_input_image",
+        default: "16:9",
         options: [
-          { value: "match_input_image", label: "Keep original" },
-          { value: "1:1", label: "1:1" },
-          { value: "16:9", label: "16:9" },
-          { value: "9:16", label: "9:16" },
+          { value: "1:1", label: "1:1 square" },
+          { value: "16:9", label: "16:9 landscape" },
+          { value: "9:16", label: "9:16 portrait" },
           { value: "4:3", label: "4:3" },
           { value: "3:4", label: "3:4" },
+          { value: "21:9", label: "21:9 ultrawide" },
+          { value: "custom", label: "Custom size" },
         ],
       },
+      { name: "width", label: "Width (custom size)", type: "int", default: 1024, min: 256, max: 2048, step: 16 },
+      { name: "height", label: "Height (custom size)", type: "int", default: 1024, min: 256, max: 2048, step: 16 },
+      { name: "num_outputs", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
+      { name: "juiced", label: "Fast mode (juiced)", type: "bool", default: false },
       OUTPUT_FORMAT,
-      { ...OUTPUT_QUALITY, default: 95 },
+      OUTPUT_QUALITY,
       SEED,
-      moderationFilter(),
     ],
   },
+
+
+  // ───────────────────────── Image editing ─────────────────────────
   {
     id: "p-image-edit",
-    label: "P-Image-Edit (Pruna)",
+    label: "P-Image-Edit",
     group: "Image editing",
     kind: "image",
     blurb: "Compose / edit from 1–5 reference images.",
@@ -567,7 +541,7 @@ export const MODELS = [
   },
   {
     id: "p-image-edit-lora",
-    label: "P-Image-Edit-LoRA (Pruna)",
+    label: "P-Image-Edit-LoRA",
     group: "Image editing",
     kind: "image",
     blurb: "P-Image-Edit with a custom LoRA (must be trained via p-image-edit-trainer).",
@@ -632,7 +606,7 @@ export const MODELS = [
   },
   {
     id: "p-image-try-on",
-    label: "P-Image-Try-On (Pruna)",
+    label: "P-Image-Try-On",
     group: "Image editing",
     kind: "image",
     blurb: "Put garments from reference photos onto a person.",
@@ -650,7 +624,7 @@ export const MODELS = [
   },
   {
     id: "p-image-upscale",
-    label: "P-Image-Upscale (Pruna)",
+    label: "P-Image-Upscale",
     group: "Image editing",
     kind: "image",
     blurb: "Upscale an image to a target megapixel count.",
@@ -673,8 +647,74 @@ export const MODELS = [
   // lora_weights URL into P-Image-Edit-LoRA above to use it, and consider
   // uploading the .safetensors to your own Hugging Face repo before it expires.
   {
+    id: "qwen-image-edit-plus",
+    label: "Qwen-Image-Edit Plus",
+    group: "Image editing",
+    kind: "image",
+    blurb: "Edit / transform 1–2 input images from a text instruction.",
+    fields: [
+      { name: "image", label: "Image(s) to edit", type: "image", required: true, maxItems: 2, asArray: true },
+      { name: "prompt", label: "What to change", type: "textarea", required: true },
+      { name: "go_fast", label: "Fast mode", type: "bool", default: true },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "match_input_image",
+        options: [
+          { value: "match_input_image", label: "Keep original" },
+          { value: "1:1", label: "1:1" },
+          { value: "16:9", label: "16:9" },
+          { value: "9:16", label: "9:16" },
+          { value: "4:3", label: "4:3" },
+          { value: "3:4", label: "3:4" },
+        ],
+      },
+      OUTPUT_FORMAT,
+      { ...OUTPUT_QUALITY, default: 95 },
+      SEED,
+      moderationFilter(),
+    ],
+  },
+  {
+    id: "p-image-trainer",
+    label: "P-Image-Trainer",
+    group: "LoRA training",
+    kind: "file",
+    blurb: "Train a LoRA for P-Image-LoRA from a folder of images. Async only; output expires ~30 min after it finishes.",
+    fields: [
+      {
+        name: "image_data",
+        label: "Training images (.zip)",
+        type: "image",
+        required: true,
+        accept: ".zip,application/zip",
+        help: "ZIP of at least 10 images. Add a matching .txt beside any image to caption it (photo.jpg + photo.txt).",
+      },
+      {
+        name: "training_type",
+        label: "What to learn",
+        type: "enum",
+        default: "balanced",
+        options: [
+          { value: "balanced", label: "Balanced — mixed content and style" },
+          { value: "content", label: "Content — subjects, characters, objects" },
+          { value: "style", label: "Style — palettes and aesthetic treatments" },
+        ],
+      },
+      { name: "steps", label: "Training steps", type: "int", default: 1000, min: 100, max: 5000, step: 100 },
+      {
+        name: "default_caption",
+        label: "Default caption (images without a .txt)",
+        type: "text",
+        default: "",
+        help: "Required if any image lacks a caption file — training fails without one.",
+      },
+    ],
+  },
+  {
     id: "p-image-edit-trainer",
-    label: "P-Image-Edit-Trainer (Pruna)",
+    label: "P-Image-Edit-Trainer",
     group: "LoRA training",
     kind: "file",
     blurb: "Train a custom LoRA from before/after image pairs. Slow — minutes to hours.",
@@ -758,7 +798,7 @@ export const MODELS = [
   },
   {
     id: "p-video",
-    label: "P-Video (Pruna)",
+    label: "P-Video",
     group: "Video",
     kind: "video",
     blurb: "Text-, image- or audio-conditioned video up to 20s, 720p/1080p.",
@@ -802,7 +842,7 @@ export const MODELS = [
   },
   {
     id: "p-video-animate",
-    label: "P-Video-Animate (Pruna)",
+    label: "P-Video-Animate",
     group: "Video",
     kind: "video",
     blurb: "Make a person from a photo copy the motion in a source video.",
@@ -837,7 +877,7 @@ export const MODELS = [
   },
   {
     id: "p-video-replace",
-    label: "P-Video-Replace (Pruna)",
+    label: "P-Video-Replace",
     group: "Video",
     kind: "video",
     blurb: "Swap the person in a video for someone from reference photos.",
@@ -872,7 +912,7 @@ export const MODELS = [
   },
   {
     id: "p-video-avatar",
-    label: "P-Video-Avatar (Pruna)",
+    label: "P-Video-Avatar",
     group: "Video",
     kind: "video",
     blurb: "Talking-head video from one portrait — type a script or upload audio.",
@@ -995,7 +1035,7 @@ const WORKERS_AI_MODELS = [
     id: "cf-flux-1-schnell",
     cfModel: "@cf/black-forest-labs/flux-1-schnell",
     label: "FLUX.1 schnell",
-    group: "Cloudflare Workers AI",
+    group: "Image generation",
     kind: "image",
     blurb: "12B rectified-flow model. Very fast, capped at 8 steps.",
     fields: [
@@ -1008,7 +1048,7 @@ const WORKERS_AI_MODELS = [
     id: "cf-flux-2-klein-4b",
     cfModel: "@cf/black-forest-labs/flux-2-klein-4b",
     label: "FLUX.2 Klein 4B",
-    group: "Cloudflare Workers AI",
+    group: "Image generation",
     kind: "image",
     multipart: true,
     blurb: "Ultra-fast distilled FLUX.2. Generates and edits; steps fixed at 4.",
@@ -1024,7 +1064,7 @@ const WORKERS_AI_MODELS = [
     id: "cf-flux-2-klein-9b",
     cfModel: "@cf/black-forest-labs/flux-2-klein-9b",
     label: "FLUX.2 Klein 9B",
-    group: "Cloudflare Workers AI",
+    group: "Image generation",
     kind: "image",
     multipart: true,
     blurb: "Higher-quality Klein variant. Generates and edits from references.",
@@ -1041,7 +1081,7 @@ const WORKERS_AI_MODELS = [
     id: "cf-flux-2-dev",
     cfModel: "@cf/black-forest-labs/flux-2-dev",
     label: "FLUX.2 dev",
-    group: "Cloudflare Workers AI",
+    group: "Image generation",
     kind: "image",
     multipart: true,
     blurb: "Full FLUX.2 dev — most detailed, multi-reference. Priciest per step.",
@@ -1058,7 +1098,7 @@ const WORKERS_AI_MODELS = [
     id: "cf-lucid-origin",
     cfModel: "@cf/leonardo/lucid-origin",
     label: "Leonardo Lucid Origin",
-    group: "Cloudflare Workers AI",
+    group: "Image generation",
     kind: "image",
     blurb: "Strong prompt adherence and legible text; wide style range.",
     fields: [
@@ -1074,7 +1114,7 @@ const WORKERS_AI_MODELS = [
     id: "cf-phoenix-1",
     cfModel: "@cf/leonardo/phoenix-1.0",
     label: "Leonardo Phoenix 1.0",
-    group: "Cloudflare Workers AI",
+    group: "Image generation",
     kind: "image",
     blurb: "Exceptional prompt adherence and coherent text rendering.",
     fields: [
@@ -1091,7 +1131,7 @@ const WORKERS_AI_MODELS = [
     id: "cf-sdxl-base",
     cfModel: "@cf/stabilityai/stable-diffusion-xl-base-1.0",
     label: "Stable Diffusion XL 1.0",
-    group: "Cloudflare Workers AI",
+    group: "Image generation",
     kind: "image",
     blurb: "The classic SDXL base model.",
     fields: [
@@ -1108,7 +1148,7 @@ const WORKERS_AI_MODELS = [
     id: "cf-sdxl-lightning",
     cfModel: "@cf/bytedance/stable-diffusion-xl-lightning",
     label: "SDXL Lightning",
-    group: "Cloudflare Workers AI",
+    group: "Image generation",
     kind: "image",
     blurb: "Lightning-fast 1024px SDXL variant.",
     fields: [
@@ -1125,7 +1165,7 @@ const WORKERS_AI_MODELS = [
     id: "cf-dreamshaper-8",
     cfModel: "@cf/lykon/dreamshaper-8-lcm",
     label: "DreamShaper 8 LCM",
-    group: "Cloudflare Workers AI",
+    group: "Image generation",
     kind: "image",
     blurb: "SD fine-tune tuned for photorealism without losing range.",
     fields: [
@@ -1142,7 +1182,7 @@ const WORKERS_AI_MODELS = [
     id: "cf-sd15-img2img",
     cfModel: "@cf/runwayml/stable-diffusion-v1-5-img2img",
     label: "SD 1.5 Image-to-Image",
-    group: "Cloudflare Workers AI",
+    group: "Image editing",
     kind: "image",
     blurb: "Redraw an existing image from a prompt.",
     fields: [
@@ -1159,7 +1199,7 @@ const WORKERS_AI_MODELS = [
     id: "cf-sd15-inpainting",
     cfModel: "@cf/runwayml/stable-diffusion-v1-5-inpainting",
     label: "SD 1.5 Inpainting",
-    group: "Cloudflare Workers AI",
+    group: "Image editing",
     kind: "image",
     blurb: "Repaint only the masked area. White in the mask = repaint.",
     fields: [
@@ -1234,8 +1274,11 @@ const PRICING = {
   "wan-t2v": { type: "variable" },
   // Flat per video, not per second: $0.05 at 480p, $0.11 at 720p.
   "wan-i2v": { type: "flat_by_resolution", usd: { "480p": 0.05, "720p": 0.11 } },
-  // No published rate found for p-image-edit-trainer; left unpriced rather
-  // than guessed at (falls through to "variable" via the lookup below).
+  // Trainers are billed by training step, not per output. Rates from Pruna's
+  // models page; both are async-only and their output expires ~30 min after
+  // the job finishes.
+  "p-image-trainer": { type: "per_1k_steps", usd: 1.8 },
+  "p-image-edit-trainer": { type: "per_1k_steps", usd: 4.0 },
 };
 
 // Workers AI is billed in "neurons" against a 10,000/day free allowance, with
@@ -1281,19 +1324,29 @@ const XAI_PRICING = {
     usd: { "1k": { low: 0.04, medium: 0.06 }, "2k": { low: 0.06, medium: 0.08 } },
     inputUsd: 0.01,
   },
-  // Output per second of video, by resolution, plus a per-input-image charge
-  // (start image + reference images). 1080p has no published rate, so it's
-  // left out and priced as "varies" rather than guessed at.
-  "xai-imagine-video": { type: "xai_video", outUsdPerSec: { "480p": 0.05, "720p": 0.07 }, inputImageUsd: 0.002 },
-  // Edit/extend don't document a resolution or (for edit) a duration in the
-  // request — output length/resolution follows the input video, which the
-  // Worker never sees before upload. The frontend probes the chosen video
-  // file client-side (duration + height, nothing uploaded) and prices these
-  // from that: $0.01/s for the source video read, output at the generation
-  // model's per-second rate for whichever resolution bucket the source falls
-  // into. No estimate is shown until a video is actually picked.
-  "xai-video-edit": { type: "xai_video_source", inputUsdPerSec: 0.01, outUsdPerSec: { "480p": 0.05, "720p": 0.07 } },
-  "xai-video-extend": { type: "xai_video_source", inputUsdPerSec: 0.01, outUsdPerSec: { "480p": 0.05, "720p": 0.07 } },
+  // Video is priced two ways depending on the mode. Generating: output per
+  // second by resolution, plus a per-input-image charge for the start image and
+  // any reference images. Editing or extending: the source video is charged per
+  // second to read, and the output runs at the generation rate for whichever
+  // resolution bucket the source falls into — neither of which the Worker sees
+  // before upload, so the frontend probes the chosen file client-side (duration
+  // and height only, nothing uploaded) and shows no estimate until one is
+  // picked. 1.0 publishes no 1080p rate, so that tier is left out and priced as
+  // "varies" rather than guessed at.
+  "xai-imagine-video": {
+    type: "xai_video",
+    outUsdPerSec: { "480p": 0.05, "720p": 0.07 },
+    inputImageUsd: 0.002,
+    sourceUsdPerSec: 0.01,
+  },
+  // 1.5 publishes a 1080p rate where 1.0 does not, and charges more per second
+  // across the board. Input images are $0.01 each rather than $0.002.
+  "xai-imagine-video-1-5": {
+    type: "xai_video",
+    outUsdPerSec: { "480p": 0.08, "720p": 0.14, "1080p": 0.25 },
+    inputImageUsd: 0.01,
+    sourceUsdPerSec: 0.01,
+  },
 };
 
 for (const m of MODELS) {
@@ -1304,24 +1357,26 @@ for (const m of MODELS) {
   }
 }
 
-// Chat models offered for the "Improve" button, cheapest first. `neurons` is
-// the rough cost of one rewrite (~120 input + ~200 output tokens) at
-// Cloudflare's published per-million-token rates.
+// Chat models offered for the "Improve" button. Grouped by family and ordered
+// by size within it, so the list reads as a catalogue rather than a price
+// ladder; the cost is shown once a model is picked instead of in its name.
+// `neurons` is the rough cost of one rewrite (~120 input + ~200 output tokens)
+// at Cloudflare's published per-million-token rates.
 export const IMPROVE_MODELS = [
-  { id: "@cf/ibm-granite/granite-4.0-h-micro", label: "Granite 4.0 Micro — cheapest", neurons: 2.2 },
-  { id: "@cf/meta/llama-3.2-1b-instruct", label: "Llama 3.2 1B — fast", neurons: 3.9 },
-  { id: "@cf/meta/llama-3.2-3b-instruct", label: "Llama 3.2 3B — balanced (default)", neurons: 6.6 },
-  { id: "@cf/qwen/qwen3-30b-a3b-fp8", label: "Qwen3 30B — cheap for its size", neurons: 6.6, reasoning: true },
-  { id: "@cf/meta/llama-3.1-8b-instruct-fp8-fast", label: "Llama 3.1 8B — sharper", neurons: 7.5 },
-  { id: "@cf/openai/gpt-oss-20b", label: "GPT-OSS 20B", neurons: 7.7, reasoning: true },
-  { id: "@cf/zai-org/glm-4.7-flash", label: "GLM 4.7 Flash", neurons: 7.9, reasoning: true },
-  { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", label: "Mistral Small 24B", neurons: 13.9 },
-  { id: "@cf/openai/gpt-oss-120b", label: "GPT-OSS 120B", neurons: 17.5, reasoning: true },
-  { id: "@cf/meta/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout 17B", neurons: 18.4 },
-  { id: "@cf/qwen/qwq-32b", label: "QwQ 32B — reasoning", neurons: 25.4, reasoning: true },
-  { id: "@cf/nvidia/nemotron-3-120b-a12b", label: "Nemotron 3 120B", neurons: 32.7, reasoning: true },
-  { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", label: "Llama 3.3 70B — strong", neurons: 44.2 },
-  { id: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", label: "DeepSeek R1 32B — priciest", neurons: 94.2, reasoning: true },
+  { id: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", family: "DeepSeek", label: "DeepSeek R1 32B", neurons: 94.2, reasoning: true },
+  { id: "@cf/zai-org/glm-4.7-flash", family: "GLM", label: "GLM 4.7 Flash", neurons: 7.9, reasoning: true },
+  { id: "@cf/openai/gpt-oss-20b", family: "GPT-OSS", label: "GPT-OSS 20B", neurons: 7.7, reasoning: true },
+  { id: "@cf/openai/gpt-oss-120b", family: "GPT-OSS", label: "GPT-OSS 120B", neurons: 17.5, reasoning: true },
+  { id: "@cf/ibm-granite/granite-4.0-h-micro", family: "Granite", label: "Granite 4.0 Micro", neurons: 2.2 },
+  { id: "@cf/meta/llama-3.2-1b-instruct", family: "Llama", label: "Llama 3.2 1B", neurons: 3.9 },
+  { id: "@cf/meta/llama-3.2-3b-instruct", family: "Llama", label: "Llama 3.2 3B", neurons: 6.6 },
+  { id: "@cf/meta/llama-3.1-8b-instruct-fp8-fast", family: "Llama", label: "Llama 3.1 8B", neurons: 7.5 },
+  { id: "@cf/meta/llama-4-scout-17b-16e-instruct", family: "Llama", label: "Llama 4 Scout 17B", neurons: 18.4 },
+  { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", family: "Llama", label: "Llama 3.3 70B", neurons: 44.2 },
+  { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", family: "Mistral", label: "Mistral Small 24B", neurons: 13.9 },
+  { id: "@cf/nvidia/nemotron-3-120b-a12b", family: "Nemotron", label: "Nemotron 3 120B", neurons: 32.7, reasoning: true },
+  { id: "@cf/qwen/qwen3-30b-a3b-fp8", family: "Qwen", label: "Qwen3 30B", neurons: 6.6, reasoning: true },
+  { id: "@cf/qwen/qwq-32b", family: "Qwen", label: "QwQ 32B", neurons: 25.4, reasoning: true },
 ];
 
 // ───────────────────────── xAI (Grok Imagine) ─────────────────────────
@@ -1370,7 +1425,7 @@ const XAI_MODELS = [
     id: "xai-imagine-image",
     xaiModel: "grok-imagine-image",
     label: "Grok Imagine Image",
-    group: "xAI (Grok)",
+    group: "Image generation",
     kind: "image",
     blurb: "Grok's fast image model. Generates, or edits up to 3 reference images.",
     fields: [
@@ -1394,7 +1449,7 @@ const XAI_MODELS = [
     id: "xai-imagine-image-quality",
     xaiModel: "grok-imagine-image-quality",
     label: "Grok Imagine Image Quality",
-    group: "xAI (Grok)",
+    group: "Image generation",
     kind: "image",
     blurb: "Higher-quality Grok image model. Generates, or edits up to 3 references.",
     fields: [
@@ -1418,7 +1473,7 @@ const XAI_MODELS = [
     id: "xai-imagine-image-2",
     xaiModel: "grok-imagine-image-2.0",
     label: "Grok Imagine Image 2.0",
-    group: "xAI (Grok)",
+    group: "Image generation",
     kind: "image",
     blurb: "Newer Grok image model with a quality dial. Generates, or edits up to 3 references.",
     fields: [
@@ -1448,18 +1503,68 @@ const XAI_MODELS = [
       },
     ],
   },
-  {
-    id: "xai-imagine-video",
-    xaiModel: "grok-imagine-video",
-    xaiEndpoint: "generations",
+];
+
+// Grok Imagine Video is one model reached through three endpoints:
+// /v1/videos/generations, /videos/edits and /videos/extensions. Those were
+// previously three catalogue entries with invented names ("Grok Video Edit"),
+// which read as separate models xAI does not publish. They are now a mode
+// switch on the model itself, and `mode` picks the endpoint at request time.
+//
+// Fields carry showWhen so each mode shows only what its endpoint accepts:
+// editing ignores duration, resolution and aspect ratio entirely (the output
+// inherits them from the source video, capped at 720p), and extension's
+// duration means something different — the length of the *added* footage,
+// 2-10s, not the total.
+const XAI_VIDEO_MODES = [
+  { value: "generations", label: "Generate a new video" },
+  { value: "edits", label: "Edit an existing video" },
+  { value: "extensions", label: "Extend an existing video" },
+];
+
+// Preset voices, shared with the TTS API. Only grok-imagine-video-1.5 accepts
+// them. Caller-supplied audio clips are restricted to trusted partners, so only
+// the presets are offered here.
+const XAI_VOICES = [
+  { value: "", label: "None" },
+  { value: "ara", label: "Ara" },
+  { value: "carina", label: "Carina" },
+  { value: "eve", label: "Eve" },
+  { value: "iris", label: "Iris" },
+  { value: "liora", label: "Liora" },
+  { value: "ursa", label: "Ursa" },
+];
+
+const GEN_ONLY = { field: "mode", is: ["generations"] };
+const SOURCE_ONLY = { field: "mode", is: ["edits", "extensions"] };
+
+function xaiVideoModel({ id, xaiModel, label, blurb, resolutions, voices }) {
+  return {
+    id,
+    xaiModel,
+    xaiEndpoint: "generations", // fallback; `mode` overrides per request
     xaiAsync: true,
-    label: "Grok Imagine Video",
-    group: "xAI (Grok)",
+    xaiModal: true,
+    label,
+    group: "Video",
     kind: "video",
-    blurb: "Text-, image-, or reference-to-video. Async — polls until done.",
+    blurb,
     fields: [
+      { name: "mode", label: "Mode", type: "enum", required: true, default: "generations", options: XAI_VIDEO_MODES },
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
-      { name: "image", label: "Starting image (optional, for image-to-video)", type: "image", asDataUri: true },
+      {
+        ...xaiVideoInputField("Source video"),
+        showWhen: SOURCE_ONLY,
+        help: "MP4, encoded with a codec MP4 supports (H.264, H.265, AV1).",
+      },
+      {
+        name: "image",
+        label: "Starting image (optional, for image-to-video)",
+        type: "image",
+        asDataUri: true,
+        showWhen: GEN_ONLY,
+        help: "Locks the first frame. To guide the video without locking it, use reference images instead.",
+      },
       {
         name: "reference_images",
         label: "Reference image(s) (optional, for reference-to-video)",
@@ -1467,49 +1572,72 @@ const XAI_MODELS = [
         maxItems: 3,
         asArray: true,
         asDataUri: true,
+        showWhen: GEN_ONLY,
+        help: 'Guides people, objects or clothing without locking the first frame. Refer to them in the prompt as <IMAGE_1>, <IMAGE_2>, <IMAGE_3>.',
       },
-      { name: "duration", label: "Length (seconds)", type: "int", default: 8, min: 1, max: 15 },
+      ...(voices
+        ? [
+            {
+              name: "reference_voice",
+              label: "Voice (optional)",
+              type: "enum",
+              default: "",
+              options: XAI_VOICES,
+              showWhen: GEN_ONLY,
+              help: "Gives the subject a preset voice. Refer to it in the prompt as <AUDIO_0>.",
+            },
+          ]
+        : []),
+      { name: "duration", label: "Length (seconds)", type: "int", default: 8, min: 1, max: 15, showWhen: GEN_ONLY },
+      {
+        name: "extend_duration",
+        label: "Length of the new footage (seconds)",
+        type: "int",
+        default: 6,
+        min: 2,
+        max: 10,
+        showWhen: { field: "mode", is: ["extensions"] },
+        help: "Added on top of the source video's own length, not the total.",
+      },
       {
         name: "resolution",
         label: "Resolution",
         type: "enum",
         default: "480p",
-        options: [
-          { value: "480p", label: "480p" },
-          { value: "720p", label: "720p" },
-          { value: "1080p", label: "1080p (no published price)" },
-        ],
+        options: resolutions,
+        showWhen: GEN_ONLY,
       },
-      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "16:9", options: XAI_VIDEO_AR },
+      { name: "aspect_ratio", label: "Aspect ratio", type: "enum", default: "16:9", options: XAI_VIDEO_AR, showWhen: GEN_ONLY },
     ],
-  },
-  {
-    id: "xai-video-edit",
+  };
+}
+
+XAI_MODELS.push(
+  xaiVideoModel({
+    id: "xai-imagine-video",
     xaiModel: "grok-imagine-video",
-    xaiEndpoint: "edits",
-    xaiAsync: true,
-    label: "Grok Video Edit",
-    group: "xAI (Grok)",
-    kind: "video",
-    blurb: "Edit an existing video from a text instruction. Async — polls until done.",
-    fields: [xaiVideoInputField("Video to edit"), { name: "prompt", label: "What to change", type: "textarea", required: true }],
-  },
-  {
-    id: "xai-video-extend",
-    xaiModel: "grok-imagine-video",
-    xaiEndpoint: "extensions",
-    xaiAsync: true,
-    label: "Grok Video Extend",
-    group: "xAI (Grok)",
-    kind: "video",
-    blurb: "Continue a video with new generated footage. Async — polls until done.",
-    fields: [
-      xaiVideoInputField("Video to extend"),
-      { name: "prompt", label: "What happens next", type: "textarea", required: true },
-      { name: "duration", label: "Extra length (seconds)", type: "int", default: 6, min: 2, max: 10 },
+    label: "Grok Imagine Video",
+    blurb: "Text-, image- or reference-to-video, plus editing and extending existing video. Async — polls until done.",
+    resolutions: [
+      { value: "480p", label: "480p" },
+      { value: "720p", label: "720p" },
+      { value: "1080p", label: "1080p (no published price)" },
     ],
-  },
-];
+    voices: false,
+  }),
+  xaiVideoModel({
+    id: "xai-imagine-video-1-5",
+    xaiModel: "grok-imagine-video-1.5",
+    label: "Grok Imagine Video 1.5",
+    blurb: "Newer Grok video model, with a published 1080p tier and preset voices. Async — polls until done.",
+    resolutions: [
+      { value: "480p", label: "480p" },
+      { value: "720p", label: "720p" },
+      { value: "1080p", label: "1080p" },
+    ],
+    voices: true,
+  }),
+);
 
 for (const m of XAI_MODELS) m.provider = "xai";
 MODELS.push(...XAI_MODELS);
@@ -1521,14 +1649,20 @@ for (const m of XAI_MODELS) m.price = XAI_PRICING[m.id] || { type: "variable" };
 //   llava     takes `image` as a byte array, returns {description}
 //   moondream takes `image` as a data URI, streams by default (must disable),
 //             and returns {caption} for task="caption"
+// Vision models offered for the "Describe" button. As with IMPROVE_MODELS the
+// name stands alone and the caveat moves into `note`, shown after selection.
 export const DESCRIBE_MODELS = [
-  { id: "@cf/llava-hf/llava-1.5-7b-hf", label: "LLaVA 1.5 7B — beta, no listed price" },
-  { id: "@cf/moondream/moondream3.1-9B-A2B", label: "Moondream 3.1 — richer detail" },
-  { id: "@cf/meta/llama-3.2-11b-vision-instruct", label: "Llama 3.2 11B Vision — most descriptive" },
+  { id: "@cf/llava-hf/llava-1.5-7b-hf", label: "LLaVA 1.5 7B", note: "beta, no listed price" },
+  { id: "@cf/moondream/moondream3.1-9B-A2B", label: "Moondream 3.1", note: "richer detail than LLaVA" },
+  { id: "@cf/meta/llama-3.2-11b-vision-instruct", label: "Llama 3.2 11B Vision", note: "the most descriptive of the three" },
 ];
 
 export const DESCRIBE_MODEL_IDS = new Set(DESCRIBE_MODELS.map((m) => m.id));
 export const DEFAULT_DESCRIBE_MODEL = "@cf/llava-hf/llava-1.5-7b-hf";
+
+// The model the picker opens on. Editing an image you already have is the
+// common case, so it beats generating one from scratch as a starting point.
+export const DEFAULT_MODEL = "p-image-edit";
 
 export const IMPROVE_MODEL_IDS = new Set(IMPROVE_MODELS.map((m) => m.id));
 export const DEFAULT_IMPROVE_MODEL = "@cf/meta/llama-3.2-3b-instruct";

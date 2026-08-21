@@ -5,6 +5,7 @@
 // ---------------------------------------------------------------------------
 let MODELS = [];
 let improveModels = [];
+let defaultModel = "";
 let defaultImproveModel = "";
 let describeModels = [];
 let defaultDescribeModel = "";
@@ -25,16 +26,61 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ---------------------------------------------------------------------------
 // API helper (adds password header, handles 401)
 // ---------------------------------------------------------------------------
+// A dropped connection makes fetch throw a TypeError whose message is the
+// browser's own wording — "Load failed" on Safari, "Failed to fetch" on Chrome.
+// That string used to reach the status line verbatim, which is what a mid-edit
+// blip looked like: a bare "load failed" with no indication it was the network
+// or that retrying would work.
+//
+// Only those throws are retried. An HTTP error status means the Worker was
+// reached and answered, so repeating it just doubles the work.
+//
+// Retrying is opt-in per call, because a repeat is not always free:
+//   - GET is idempotent here, so it retries by default. Status polling is the
+//     big win — a blip mid-poll used to abandon a job that was still running.
+//   - POSTs must opt in. /api/generate deliberately does not: a throw cannot
+//     tell us whether the request reached the provider, and repeating it risks
+//     paying for a second generation.
+const RETRY_DELAYS = [400, 1200];
+
 async function api(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
   if (authRequired && getPw()) headers["x-app-password"] = getPw();
-  const res = await fetch(path, Object.assign({}, opts, { headers }));
-  if (res.status === 401) {
-    clearPw();
-    showGate("Session expired — enter the password again.");
-    throw new Error("Unauthorized");
+  // retry/onRetry are ours, not fetch's — keep them out of the request init.
+  const { retry, onRetry, ...rest } = opts;
+  const init = Object.assign({}, rest, { headers });
+  const method = (opts.method || "GET").toUpperCase();
+  const canRetry = retry === true || (retry !== false && method === "GET");
+
+  let lastErr;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(path, init);
+      if (res.status === 401) {
+        clearPw();
+        showGate("Session expired — enter the password again.");
+        throw new Error("Unauthorized");
+      }
+      return res;
+    } catch (err) {
+      if (err && err.message === "Unauthorized") throw err; // ours, not the network's
+      lastErr = err;
+      if (!canRetry || attempt >= RETRY_DELAYS.length) break;
+      if (onRetry) onRetry(attempt + 1, RETRY_DELAYS.length + 1);
+      await sleep(RETRY_DELAYS[attempt]);
+    }
   }
-  return res;
+  throw new Error(networkErrorText(lastErr, canRetry));
+}
+
+// Browsers word a failed connection differently and none of the wordings say
+// what to do about it. Anything else is passed through untouched.
+function networkErrorText(err, retried) {
+  const raw = err && err.message ? err.message : String(err);
+  if (!/load failed|failed to fetch|networkerror|network request failed/i.test(raw)) return raw;
+  return retried
+    ? `The connection dropped and ${RETRY_DELAYS.length + 1} attempts failed. Check your connection and try again.`
+    : "The connection dropped before the server answered. Check your connection and try again.";
 }
 
 // ---------------------------------------------------------------------------
@@ -43,7 +89,7 @@ async function api(path, opts = {}) {
 async function boot() {
   let cfg;
   try {
-    const res = await fetch("/api/config");
+    const res = await api("/api/config");
     cfg = await res.json();
   } catch (e) {
     document.body.innerHTML = "<p style='padding:24px'>Failed to load app config.</p>";
@@ -51,6 +97,7 @@ async function boot() {
   }
   MODELS = cfg.models || [];
   improveModels = cfg.improveModels || [];
+  defaultModel = cfg.defaultModel || "";
   defaultImproveModel = cfg.defaultImproveModel || "";
   describeModels = cfg.describeModels || [];
   defaultDescribeModel = cfg.defaultDescribeModel || "";
@@ -85,7 +132,11 @@ $("gate-form").addEventListener("submit", (e) => {
 function startApp() {
   $("app").classList.remove("hidden");
   buildModelSelect();
-  selectModel(MODELS[0].id);
+  // Fall back to whatever the picker lists first if the named default ever
+  // leaves the catalogue, so startup cannot break on a stale id.
+  const first = $("model-select").querySelector("option");
+  const wanted = MODELS.some((m) => m.id === defaultModel) ? defaultModel : first && first.value;
+  selectModel(wanted || MODELS[0].id);
   initPromptLibrary();
   refreshNeurons();
   $("footer-note").textContent =
@@ -95,17 +146,45 @@ function startApp() {
 // ---------------------------------------------------------------------------
 // Model select (grouped)
 // ---------------------------------------------------------------------------
+// Sections read "<task> \u00b7 <provider>". Task comes first because that is
+// what you pick by; provider second because it decides what an option costs
+// and which key it needs, and because two providers ship models under the
+// same name (FLUX.2 Klein 4B is on both Pruna and Workers AI).
+// Editing leads: it is the common case, and the picker opens on a model in it.
+const GROUP_ORDER = ["Image editing", "Image generation", "Video", "LoRA training"];
+const PROVIDER_ORDER = ["pruna", "xai", "workers-ai"];
+const PROVIDER_LABEL = { pruna: "Pruna", xai: "xAI", "workers-ai": "Workers AI" };
+
 function buildModelSelect() {
   const sel = $("model-select");
   sel.innerHTML = "";
-  const groups = {};
+
+  const sections = new Map(); // "group\u0000provider" -> models
   for (const m of MODELS) {
-    (groups[m.group] = groups[m.group] || []).push(m);
+    const key = `${m.group}\u0000${m.provider}`;
+    if (!sections.has(key)) sections.set(key, []);
+    sections.get(key).push(m);
   }
-  for (const [group, list] of Object.entries(groups)) {
+
+  // Anything carrying an unlisted group or provider still has to appear, so
+  // sort unknowns to the end rather than dropping them.
+  const rank = (list, v) => (list.indexOf(v) === -1 ? list.length : list.indexOf(v));
+  const keys = [...sections.keys()].sort((a, b) => {
+    const [ga, pa] = a.split("\u0000");
+    const [gb, pb] = b.split("\u0000");
+    return (
+      rank(GROUP_ORDER, ga) - rank(GROUP_ORDER, gb) ||
+      ga.localeCompare(gb) ||
+      rank(PROVIDER_ORDER, pa) - rank(PROVIDER_ORDER, pb) ||
+      pa.localeCompare(pb)
+    );
+  });
+
+  for (const key of keys) {
+    const [group, provider] = key.split("\u0000");
     const og = document.createElement("optgroup");
-    og.label = group;
-    for (const m of list) {
+    og.label = `${group} \u00b7 ${PROVIDER_LABEL[provider] || provider}`;
+    for (const m of sections.get(key)) {
       const opt = document.createElement("option");
       opt.value = m.id;
       opt.textContent = m.label;
@@ -248,6 +327,9 @@ function priceBlurb(model) {
     );
   }
   if (p.type === "cf_unpriced") return "Runs on Cloudflare Workers AI (no published rate).";
+  if (p.type === "per_1k_steps") {
+    return `List price: ${fmtUsd(p.usd)} per 1,000 training steps.`;
+  }
   if (p.type === "flat") return `List price: ${fmtUsd(p.usd)} per image.`;
   if (p.type === "per_second") return `List price: ${fmtUsd(p.usd["720p"])}/s at 720p, ${fmtUsd(p.usd["1080p"])}/s at 1080p.`;
   if (p.type === "per_second_draft") {
@@ -274,16 +356,18 @@ function priceBlurb(model) {
     );
   }
   if (p.type === "xai_video") {
+    // Which tiers are priced differs by model — 1.5 publishes a 1080p rate,
+    // 1.0 does not — so build the list from the table instead of hardcoding
+    // it, and only add the caveat for tiers the model offers but can't price.
+    const tiers = ["480p", "720p", "1080p"];
+    const priced = tiers.filter((r) => p.outUsdPerSec[r] != null);
+    const unpriced = tiers.filter((r) => p.outUsdPerSec[r] == null);
+    const rates = priced.map((r) => `${fmtUsd(p.outUsdPerSec[r])}/s at ${r}`).join(", ");
+    const caveat = unpriced.length ? ` (${unpriced.join(" and ")} ${unpriced.length > 1 ? "have" : "has"} no published rate)` : "";
     return (
-      `List price: ${fmtUsd(p.outUsdPerSec["480p"])}/s at 480p, ${fmtUsd(p.outUsdPerSec["720p"])}/s at 720p ` +
-      `(1080p has no published rate), plus ${fmtUsd(p.inputImageUsd)} per input image.`
-    );
-  }
-  if (p.type === "xai_video_source") {
-    return (
-      `List price: ${fmtUsd(p.inputUsdPerSec)}/s to read your source video, plus ` +
-      `${fmtUsd(p.outUsdPerSec["480p"])}/s or ${fmtUsd(p.outUsdPerSec["720p"])}/s output depending on its resolution ` +
-      `— estimate appears once a video is chosen.`
+      `List price, generating: ${rates}${caveat}, plus ${fmtUsd(p.inputImageUsd)} per input image. ` +
+      `Editing or extending: ${fmtUsd(p.sourceUsdPerSec)}/s to read your source video plus the output rate for ` +
+      `its resolution — estimate appears once a video is chosen.`
     );
   }
   return "List price: varies with your settings.";
@@ -300,12 +384,24 @@ function renderFields() {
   optionsBadge = null;
 
   const optional = [];
+  visibilityRows = [];
   for (const f of currentModel.fields) {
-    if (f.required) wrap.appendChild(renderRequired(f));
-    else optional.push(f);
+    if (f.required) {
+      const row = renderRequired(f);
+      wrap.appendChild(row);
+      if (f.showWhen) visibilityRows.push({ f, row });
+    } else {
+      optional.push(f);
+    }
   }
   if (optional.length) wrap.appendChild(renderOptionsPanel(optional));
 
+  // Re-evaluate conditional fields whenever the field they depend on changes.
+  for (const name of new Set(currentModel.fields.filter((f) => f.showWhen).map((f) => f.showWhen.field))) {
+    const el = wrap.querySelector(`[data-field="${name}"]`);
+    if (el) el.addEventListener("change", () => { applyVisibility(); refreshOptionState(); });
+  }
+  applyVisibility();
   refreshOptionState();
   // Open the panel when something is already non-default — otherwise a value
   // carried over from the previous model would be invisible.
@@ -424,7 +520,7 @@ async function encodeForField(f, file) {
   if (f.asBase64) return await fileToBase64(file);     // Workers AI: inline bytes
   const fd = new FormData();                            // Pruna: upload, use the URL
   fd.append("file", file);
-  const res = await api("/api/upload", { method: "POST", body: fd });
+  const res = await api("/api/upload", { method: "POST", body: fd, retry: true });
   const data = await res.json();
   if (!res.ok || !data.url) throw new Error(data.error || data.message || "Upload failed");
   return data.url;
@@ -702,9 +798,36 @@ function optionChanged(f, row) {
   return v !== f.default;
 }
 
+// A field with `showWhen: { field, is: [...] }` only applies to some of the
+// model's modes — e.g. the source video belongs to Edit and Extend but not to
+// Generate. Hidden rows are also skipped by buildInput, so a value left behind
+// from another mode is never sent.
+let visibilityRows = [];
+
+function fieldVisible(f) {
+  if (!f.showWhen) return true;
+  const el = $("gen-form").querySelector(`[data-field="${f.showWhen.field}"]`);
+  const v = el ? el.value : undefined;
+  return f.showWhen.is.includes(v);
+}
+
+function applyVisibility() {
+  for (const r of visibilityRows.concat(optionRows.filter((r) => r.f.showWhen))) {
+    r.row.hidden = !fieldVisible(r.f);
+  }
+}
+
 function refreshOptionState() {
+  // Attaching or removing an image changes what Describe would read.
+  updateDescribeNote();
   let changed = 0;
   for (const r of optionRows) {
+    if (r.f.showWhen && !fieldVisible(r.f)) {
+      r.row.classList.remove("changed");
+      r.reset.hidden = true;
+      r.note.textContent = "";
+      continue;
+    }
     // e.g. p-video's aspect ratio: the provider derives it from the start
     // image and ignores the dropdown once one is attached, so gray it out
     // and say why instead of leaving a control that quietly does nothing.
@@ -798,6 +921,9 @@ function buildInput() {
   const touchedNames = new Set(optionRows.filter((r) => r.touched).map((r) => r.f.name));
 
   for (const f of currentModel.fields) {
+    // Belongs to a mode other than the one selected — not asked for, not sent,
+    // and not counted as missing even when it is required in its own mode.
+    if (!fieldVisible(f)) continue;
     const v = readControlValue(f, form);
 
     if (f.required) {
@@ -908,7 +1034,13 @@ async function runGeneration(model, input, kind, onProgress) {
             "fewer frames/steps, or a faster speed mode."
       );
     }
-    const sRes = await api("/api/status?id=" + encodeURIComponent(id));
+    const sRes = await api("/api/status?id=" + encodeURIComponent(id), {
+      // Same (state, seconds) shape the caller already formats, so a dropped
+      // poll reads as "Reconnecting (1/3)… 12s elapsed" rather than stalling
+      // on the last status with no sign anything went wrong.
+      onRetry: (n, of) =>
+        onProgress && onProgress(`reconnecting (${n}/${of})`, Math.round((Date.now() - started) / 1000)),
+    });
     const s = await sRes.json();
     if (!sRes.ok) throw new Error(s.error || `Status HTTP ${sRes.status}`);
     if (s.status === "succeeded") {
@@ -1095,56 +1227,126 @@ function resetImproveState() {
   if (b) b.textContent = "✨ Improve";
 }
 
-function initImproveModelPicker() {
-  const sel = $("improve-model");
+// Groups a list of {family, label} into <optgroup>s, families in first-seen
+// order. Anything without a family is appended ungrouped rather than dropped.
+function fillGroupedSelect(sel, list, optionLabel) {
   sel.innerHTML = "";
-  for (const m of improveModels) {
+  const byFamily = new Map();
+  for (const m of list) {
+    if (!m.family) continue;
+    if (!byFamily.has(m.family)) byFamily.set(m.family, []);
+    byFamily.get(m.family).push(m);
+  }
+  const mkOption = (m) => {
     const o = document.createElement("option");
     o.value = m.id;
-    o.textContent = `${m.label} · ~${m.neurons} neurons`;
-    sel.appendChild(o);
+    o.textContent = optionLabel ? optionLabel(m) : m.label;
+    return o;
+  };
+  for (const [family, members] of byFamily) {
+    const og = document.createElement("optgroup");
+    og.label = family;
+    for (const m of members) og.appendChild(mkOption(m));
+    sel.appendChild(og);
   }
+  for (const m of list) if (!m.family) sel.appendChild(mkOption(m));
+}
+
+function improveNoteFor(m) {
+  if (!m) return "";
+  const cost = `~${m.neurons} neurons per rewrite`;
+  // Reasoning models spend tokens thinking before they answer, which shows up
+  // as latency rather than as a different result, so it is worth flagging.
+  return `✨ ${m.label} · ${cost}${m.reasoning ? " · reasoning, so slower" : ""}`;
+}
+
+function updateImproveNote() {
+  const sel = $("improve-model");
+  $("improve-note").textContent = improveNoteFor(improveModels.find((m) => m.id === sel.value));
+}
+
+function initImproveModelPicker() {
+  const sel = $("improve-model");
+  // Grouped by family and sized within it, so the list reads as a catalogue.
+  // Cost used to be baked into every option name; it now appears in the note
+  // below once a model is chosen.
+  fillGroupedSelect(sel, improveModels);
   const saved = localStorage.getItem(IMPROVE_MODEL_KEY);
   sel.value = improveModels.some((m) => m.id === saved) ? saved : defaultImproveModel;
   sel.addEventListener("change", () => {
     localStorage.setItem(IMPROVE_MODEL_KEY, sel.value);
-    const m = improveModels.find((x) => x.id === sel.value);
-    setStatus(`Improve will use ${m ? m.label : sel.value}.`, "ok");
+    updateImproveNote();
   });
+  updateImproveNote();
 }
 
 // "Describe" captions an uploaded image straight into the prompt box, so a
 // reference picture can seed a prompt.
+// The picture already attached to one of the model's image fields, if any.
+// Describing that is almost always what is wanted -- being made to pick the
+// same file a second time was the old behaviour and it was pure friction.
+// Field order follows the model definition, so the first hit is the primary
+// input rather than a mask or an end frame.
+function attachedImageFile() {
+  if (!currentModel) return null;
+  for (const f of currentModel.fields) {
+    if (f.type !== "image") continue;
+    for (const u of uploads[f.name] || []) {
+      if (u.file && u.isImage) return u.file;
+    }
+  }
+  return null;
+}
+
+function updateDescribeNote() {
+  const noteEl = $("describe-note");
+  if (!noteEl) return; // called from refreshOptionState before the toolbar exists
+  const m = describeModels.find((x) => x.id === $("describe-model").value);
+  if (!m) return void (noteEl.textContent = "");
+  const attached = attachedImageFile();
+  const source = attached
+    ? `reads ${attached.name || "the attached image"}`
+    : "attach an image below and it reads that";
+  noteEl.textContent = `🔍 ${m.label} · ${m.note} · ${source}`;
+}
+
 function initDescribe() {
   const sel = $("describe-model");
-  sel.innerHTML = "";
-  for (const m of describeModels) {
-    const o = document.createElement("option");
-    o.value = m.id;
-    o.textContent = m.label;
-    sel.appendChild(o);
-  }
+  // Bare names here too; the per-model caveat lives in the note below.
+  fillGroupedSelect(sel, describeModels);
   sel.value = defaultDescribeModel;
+  sel.addEventListener("change", updateDescribeNote);
 
   const btn = $("prompt-describe");
   const file = $("describe-file");
-  btn.addEventListener("click", () => file.click());
 
-  file.addEventListener("change", async () => {
+  // Prefer whatever is already attached; only fall back to the file picker
+  // when nothing is.
+  btn.addEventListener("click", () => {
+    const attached = attachedImageFile();
+    if (attached) describeFile(attached);
+    else file.click();
+  });
+
+  file.addEventListener("change", () => {
     const f = file.files && file.files[0];
     file.value = "";
-    if (!f) return;
+    if (f) describeFile(f);
+  });
+
+  async function describeFile(f) {
     const el = primaryPromptEl();
     if (!el) return;
 
     btn.disabled = true;
     const idle = btn.textContent;
     btn.textContent = "Reading…";
-    setStatus("Describing image…", "load");
+    setStatus(`Describing ${f.name || "image"}…`, "load");
     try {
       const b64 = await fileToBase64(f);
       const res = await api("/api/describe", {
         method: "POST",
+        retry: true,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ image_b64: b64, mime: f.type || "image/jpeg", model: sel.value }),
       });
@@ -1159,7 +1361,9 @@ function initDescribe() {
       btn.disabled = false;
       btn.textContent = idle;
     }
-  });
+  }
+
+  updateDescribeNote();
 }
 
 function initPromptLibrary() {
@@ -1233,6 +1437,7 @@ function initPromptLibrary() {
       );
       const res = await api("/api/improve-prompt", {
         method: "POST",
+        retry: true,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ prompt: text, kind: currentModel.kind, hasImage, model: $("improve-model").value }),
       });
@@ -1345,6 +1550,13 @@ function estimateCost(model, input, outputCount) {
     const refs = Array.isArray(input.images) ? input.images.length : 0;
     return per * n + refs * (p.inputUsd || 0);
   }
+  if (p.type === "per_1k_steps") {
+    // Steps range 100-5000, so the bill swings 50x across the slider -- worth
+    // showing before a run that can take hours.
+    const steps = Number(input.steps) || fieldDefault(model, "steps") || 0;
+    if (!steps) return null;
+    return (steps / 1000) * p.usd;
+  }
   if (p.type === "per_second") {
     const rate = p.usd[input.resolution || "720p"];
     if (rate == null) return null;
@@ -1392,29 +1604,32 @@ function estimateCost(model, input, outputCount) {
     return per * n + refs * (p.inputUsd || 0);
   }
   if (p.type === "xai_video") {
+    // Editing and extending are priced from the source video's own duration and
+    // resolution, probed client-side when it was picked. Editing reruns the
+    // whole clip; extending generates only the new footage on top of it.
+    if (input.mode === "edits" || input.mode === "extensions") {
+      const src = (uploads.video || [])[0];
+      if (!src || !src.durationSec || !src.resBucket) return null;
+      const outRate = p.outUsdPerSec[src.resBucket];
+      if (outRate == null) return null;
+      const outSecs = input.mode === "extensions" ? Number(input.extend_duration) || 6 : src.durationSec;
+      return src.durationSec * p.sourceUsdPerSec + outSecs * outRate;
+    }
     const rate = p.outUsdPerSec[input.resolution || "480p"];
-    if (rate == null) return null; // 1080p has no published rate
+    if (rate == null) return null; // a tier the model publishes no rate for
     const secs = Number(input.duration) || 8;
     const refs = (input.image ? 1 : 0) + (Array.isArray(input.reference_images) ? input.reference_images.length : 0);
     return rate * secs + refs * p.inputImageUsd;
-  }
-  if (p.type === "xai_video_source") {
-    // Priced from the source video's own duration/resolution, probed
-    // client-side when it was picked — nothing here comes from the server.
-    const src = (uploads.video || [])[0];
-    if (!src || !src.durationSec || !src.resBucket) return null;
-    const outRate = p.outUsdPerSec[src.resBucket];
-    if (outRate == null) return null;
-    // Extend generates a new segment of its own length; edit's output runs
-    // the same length as the source.
-    const outSecs = input.duration ? Number(input.duration) : src.durationSec;
-    return src.durationSec * p.inputUsdPerSec + outSecs * outRate;
   }
   return null;
 }
 
 function fmtUsd(v) {
-  return "$" + (v < 0.01 ? v.toFixed(4) : v.toFixed(3)).replace(/0+$/, "").replace(/\.$/, "");
+  const n = (v < 0.01 ? v.toFixed(4) : v.toFixed(3)).replace(/0+$/, "").replace(/\.$/, "");
+  // Trailing zeros are stripped so $0.050 reads as $0.05, but that also turns
+  // $1.80 into $1.8. Pad one-decimal results back to cents; leave whole
+  // dollars bare ($4) and keep sub-cent precision ($0.025) intact.
+  return "$" + n.replace(/\.(\d)$/, ".$10");
 }
 
 function addSpend(model, input, outputCount) {

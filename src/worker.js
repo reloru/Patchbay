@@ -9,6 +9,7 @@
 
 import {
   MODELS,
+  DEFAULT_MODEL,
   MODEL_IDS,
   IMPROVE_MODELS,
   IMPROVE_MODEL_IDS,
@@ -69,6 +70,7 @@ export default {
         return json({
           authRequired: Boolean(env.APP_PASSWORD),
           models: MODELS,
+          defaultModel: DEFAULT_MODEL,
           improveModels: IMPROVE_MODELS,
           defaultImproveModel: DEFAULT_IMPROVE_MODEL,
           describeModels: DESCRIBE_MODELS,
@@ -193,102 +195,62 @@ async function runWorkersAI(spec, input, env) {
 // someone described as sitting — and those invented details then fight the real
 // image at generation time.
 //
-// These are taught by example rather than by rule. Spelling the constraints out
-// as prose does not survive contact with the 3B default model: an eight-rule
-// version came back with the rule text itself as the "rewritten prompt", and a
-// terser bulleted version came back as bullets with the section labels still
-// attached. Worked input/output pairs pattern-match instead of having to be
-// parsed, and are the only formulation that held up across every model offered.
-// Example CONTENT leaks too, so these deliberately share no subject or wording
-// with a prompt anyone would realistically type.
-const IMAGE_RULES =
-  `Never invent detail the user did not write — no hair color, age, clothing, pose, room, weather, or lighting, ` +
-  `and no extra people or objects. Replace every pronoun, possessives ("his", "her", "their") included, with the ` +
-  `user's own words for the subject. Keep every ` +
-  `instruction they gave, and keep the word "photorealistic" if present. If they asked for no change at all, ` +
-  `return their words tidied and nothing more.`;
+// One job: copy-editing. Earlier versions of this taught the model about
+// image editing, Pruna's prompt structure, preservation clauses, and tag
+// parsing. Every one of those made it worse, because a model that cannot see
+// the image has no basis for any of it and fills the gap by inventing. It does
+// not need to know what the text is for.
+//
+// Written comma-free on purpose. Image models read a comma as a tag separator
+// rather than punctuation, and small models copy the register of their own
+// instructions, so a comma-heavy system prompt produces comma-heavy output.
+const IMPROVE_SYSTEM =
+  `You are a copy editor. Rewrite the user's text so it is correct and clearly phrased English. ` +
+  `That is the whole job. You are not told what the text is for and you do not need to know. ` +
+  `Fix grammar spelling punctuation and awkward or ambiguous phrasing. ` +
+  `If the text is already correct and clear return it exactly as it is. ` +
+  `Never add anything the user did not write. No new objects people places colours lighting styles or details of any kind. ` +
+  `Never drop anything the user did write. Every instruction object and qualifier in the input must survive into the output. ` +
+  `Never soften weaken or hedge their wording and never make it more polite than they wrote it. ` +
+  `Never invent a relationship between two things the user did not connect. ` +
+  `If they listed things separately keep them separate. ` +
+  `If a clause is ambiguous keep the ambiguity rather than picking a reading for them. ` +
+  `Do not use commas or em dashes anywhere in your output. Write short separate sentences instead. ` +
+  `Keep the user's own words and their pronouns wherever they already read naturally. ` +
+  `Repeating a noun where a pronoun is already clear is wrong. ` +
+  `Keep the grammatical mood. An instruction stays an instruction. A description stays a description. ` +
+  `Never turn "make the sky blue" into "the sky is blue". ` +
+  `Never explain never comment and never ask a question. Output only the rewritten text.`;
 
-// Pruna's own image-editing guide recommends the order
-// [modification] [change target] [preservation requirements], and attributes
-// most real-world editing failures (subject drifts, identity changes, unrelated
-// elements mutate) to a missing preservation clause. Those clauses assert
-// nothing about the image's actual contents, so unlike descriptive detail they
-// are safe for a model that cannot see it — which is what gives this rewrite
-// something substantive to do without inventing anything.
-const EDIT_SYSTEM =
-  `You rewrite image-editing instructions for an image-editing model, which cannot be told anything about the ` +
-  `image beyond what the user wrote. State the change, what it applies to, then what to preserve. ` +
-  IMAGE_RULES +
-  ` Never ask to preserve the very thing the change alters, and never state what the image currently shows — only ` +
-  `what to change it to. Output only the rewritten instruction, under 120 words.`;
-
-const EDIT_SHOTS = [
-  [
-    "remove the hat",
-    "Remove the hat from the subject's head. Preserve the subject's facial features and identity, and keep the " +
-      "same position, scale, pose, camera angle, and framing.",
-  ],
-  [
-    "turn the background into a beach",
-    "Replace the background with a sunlit beach. Keep the subject in the same position, scale, and pose, and " +
-      "maintain the same camera angle, framing, and perspective.",
-  ],
-  [
-    "make it look like a watercolour",
-    "Convert the image to a watercolour painting with soft bleeding washes, visible paper texture, and pooled " +
-      "pigment at the edges. Preserve the subject's facial features and identity, and keep the same composition " +
-      "and framing.",
-  ],
-  [
-    "make it daytime",
-    "Change the scene to daytime with bright natural light. Preserve the subject's facial features and identity, " +
-      "and keep the same position, scale, pose, and framing.",
-  ],
-  // Teaches the describe-don't-instruct case: input that requests no edit comes
-  // back as itself. Kept last deliberately — without it the model invented an
-  // edit in 4 runs out of 5, and moved mid-list it stopped carrying.
-  // Worded around "the subject" on purpose: earlier versions ("a photo of a
-  // dog", "the two of them") had their subject noun borrowed into unrelated
-  // rewrites, so the only phrase this one can leak is the generic already used
-  // everywhere else.
-  ["the subject is in the frame", "The subject is in the frame."],
+// Worked examples rather than more rules: prose constraints do not survive
+// contact with the 3B default model, which has returned the rule text itself as
+// its answer.
+//
+// Replayed as prior turns rather than listed inside the system text. Inline
+// they were treated as prose to continue: the model copied the first example's
+// output and then invented past the user's words ("add a cat, a dog, and a
+// bird" produced "Put the bird in its cage"). As turns it can still occasionally
+// prefix the last answer, which is visible and harmless next to inventing.
+const IMPROVE_SHOTS = [
+  // One subject keeps its pronouns instead of having the noun stamped over
+  // every one of them. Imperative in and imperative out.
+  ["make the womans jacket red and put her hat on the table", "Make the woman's jacket red. Put her hat on the table."],
+  // Both halves survive. Nothing the user asked to preserve is dropped.
+  ["change the jacket to red but preserve her face and hair", "Change the jacket to red. Preserve her face and hair."],
+  // The same lesson worded as "keep", which was being dropped where "preserve"
+  // survived.
+  ["make it snow and keep the building exactly as it is", "Make it snow. Keep the building exactly as it is."],
+  // And the negative form, which was dropped where "preserve" and "keep" both
+  // survived. All three phrasings mean the same thing to the user.
+  ["remove the fence and dont touch anything else", "Remove the fence. Do not touch anything else."],
+  // Two independent items stay independent. No comma and no invented link.
+  ["make the sky purple and the car red", "Make the sky purple. Make the car red."],
+  // Already clear: returned untouched.
+  ["remove the hat", "Remove the hat."],
+  // Filler and politeness go. The qualifier "a bit" is the user's and stays.
+  ["can you please maybe make it a bit brighter if thats ok", "Make it a bit brighter."],
 ];
 
-// Same anti-invention core, but the editing guide's preservation advice is
-// actively wrong here: telling an i2v model to hold position, pose, and camera
-// fixed suppresses the motion that is the entire point of the output. So
-// preservation is narrowed to identity and appearance consistency.
-const I2V_SYSTEM =
-  `You rewrite instructions for an image-to-video model animating the user's photo, which cannot be told anything ` +
-  `about that photo beyond what the user wrote. State the motion, who performs it, then what stays consistent. ` +
-  IMAGE_RULES +
-  ` Describe only the motion they asked for — never add a second action, a camera move, or a shot length. Never ` +
-  `freeze the subject's position or pose: motion is the point of a video. Output only the rewritten instruction, ` +
-  `under 120 words.`;
-
-const I2V_SHOTS = [
-  [
-    "she turns her head",
-    "The woman slowly turns the woman's head to one side. Preserve the woman's facial features and identity " +
-      "throughout, and keep the woman's clothing and the setting consistent across the shot.",
-  ],
-  [
-    "the car drives away",
-    "The car drives away into the distance. Keep the car's colour, shape, and markings consistent throughout the " +
-      "shot, along with the surrounding setting.",
-  ],
-];
-
-// "photorealistic" is load-bearing: swapping it for "hyper-realistic" pushes
-// image models toward an oversaturated, synthetic look, and dropping it loses
-// the constraint entirely. Every model offered here gets this wrong sometimes —
-// Mistral Small dropped it outright mid-test — so it is enforced after the
-// fact rather than left to instruction-following.
-function keepPhotorealistic(original, rewritten) {
-  const out = rewritten.replace(/\bhyper-?realistic\b/gi, "photorealistic");
-  if (!/\bphotorealistic\b/i.test(original) || /\bphotorealistic\b/i.test(out)) return out;
-  return out.replace(/\s*[.!]?\s*$/, "") + ". Keep the image photorealistic.";
-}
 
 // Rewrites a short prompt into a richer one using a chat model on Workers AI.
 // Used by the "Improve" button and works for any provider's models. The model
@@ -303,19 +265,10 @@ async function handleImprovePrompt(request, env) {
   if (!prompt) return json({ error: "Nothing to improve — write a prompt first." }, 400);
   if (prompt.length > 2000) return json({ error: "Prompt is too long to improve." }, 400);
 
-  const forVideo = body.kind === "video";
-  // Worked examples, replayed as prior turns. Only the source-image modes get
-  // them: from-scratch generation was never the failing case, and pinning it to
-  // a handful of examples would only narrow the variety it produces.
-  const shots = body.hasImage ? (forVideo ? I2V_SHOTS : EDIT_SHOTS) : [];
-  const system = body.hasImage
-    ? (forVideo ? I2V_SYSTEM : EDIT_SYSTEM)
-    : `You expand short prompts into vivid ${forVideo ? "video" : "image"} generation prompts. ` +
-      `Add concrete visual detail: subject, setting, lighting, composition, style` +
-      (forVideo ? ", camera movement" : "") +
-      `. Keep the user's original intent and subject — don't contradict anything already stated. ` +
-      `Never swap "photorealistic" for "hyper-realistic", "hyperrealistic", or other intensifiers. ` +
-      `Reply with the rewritten prompt only — no preamble, no quotes, no explanation, under 120 words.`;
+  // Same instruction for every mode. Whether the target is an edit, a video or
+  // a from-scratch generation changes nothing about copy-editing the sentence,
+  // and the branching only ever gave the model more to get wrong.
+  const system = IMPROVE_SYSTEM;
 
   // Only models from the offered list may be run here.
   const improveModel = IMPROVE_MODEL_IDS.has(body.model) ? body.model : DEFAULT_IMPROVE_MODEL;
@@ -328,7 +281,7 @@ async function handleImprovePrompt(request, env) {
     out = await env.AI.run(improveModel, {
       messages: [
         { role: "system", content: system },
-        ...shots.flatMap(([u, a]) => [
+        ...IMPROVE_SHOTS.flatMap(([u, a]) => [
           { role: "user", content: u },
           { role: "assistant", content: a },
         ]),
@@ -344,7 +297,7 @@ async function handleImprovePrompt(request, env) {
 
   const text = stripReasoning(pickText(out)).replace(/^["'\s]+|["'\s]+$/g, "");
   if (!text) return json({ error: "The model returned nothing usable." }, 502);
-  return json({ prompt: keepPhotorealistic(prompt, text) });
+  return json({ prompt: text });
 }
 
 // Actual Workers AI neuron usage for the current UTC day, from Cloudflare's
@@ -490,10 +443,18 @@ async function runXaiVideoStart(spec, input, env) {
 
   const payload = { model: spec.xaiModel, prompt: input.prompt };
 
-  if (spec.xaiEndpoint === "generations") {
+  // One model, three endpoints. `mode` is a UI-level field: it selects the
+  // endpoint and is never forwarded in the payload. Allow-listed so a crafted
+  // request cannot point the fetch below at an arbitrary path.
+  const MODES = ["generations", "edits", "extensions"];
+  const endpoint = spec.xaiModal && MODES.includes(input.mode) ? input.mode : spec.xaiEndpoint;
+
+  if (endpoint === "generations") {
     if (input.image) payload.image = { url: input.image };
     const refs = [].concat(input.reference_images || []).filter(Boolean).slice(0, 3);
     if (refs.length) payload.reference_images = refs.map((url) => ({ url }));
+    // Preset voice, offered only on models that accept reference audio.
+    if (input.reference_voice) payload.reference_audios = [{ voice_id: input.reference_voice }];
     if (input.duration) payload.duration = Number(input.duration);
     if (input.resolution) payload.resolution = input.resolution;
     if (input.aspect_ratio) payload.aspect_ratio = input.aspect_ratio;
@@ -501,12 +462,14 @@ async function runXaiVideoStart(spec, input, env) {
     // edits and extensions both take a single source video.
     if (!input.video) return json({ error: "Missing video to edit/extend." }, 400);
     payload.video = { url: input.video };
-    if (spec.xaiEndpoint === "extensions" && input.duration) payload.duration = Number(input.duration);
+    // Extension's duration is the length of the added footage only. Editing
+    // takes no duration at all — the output follows the source.
+    if (endpoint === "extensions" && input.extend_duration) payload.duration = Number(input.extend_duration);
   }
 
   let res, text;
   try {
-    res = await fetch(`https://api.x.ai/v1/videos/${spec.xaiEndpoint}`, {
+    res = await fetch(`https://api.x.ai/v1/videos/${endpoint}`, {
       method: "POST",
       headers: { authorization: `Bearer ${env.XAI_API_KEY}`, "content-type": "application/json" },
       body: JSON.stringify(payload),

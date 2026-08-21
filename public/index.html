@@ -55,14 +55,29 @@
               <select id="prompt-select" aria-label="Saved prompts">
                 <option value="">Saved prompts…</option>
               </select>
-              <button id="prompt-improve" type="button" class="secondary" title="Rewrite the prompt with more detail">✨ Improve</button>
-              <select id="improve-model" aria-label="Model used by Improve" title="Which model rewrites the prompt"></select>
-              <button id="prompt-describe" type="button" class="secondary" title="Caption an image into the prompt box">🔍 Describe</button>
-              <select id="describe-model" aria-label="Model used by Describe" title="Which model captions the image"></select>
+              <!-- Each button is wrapped with its own model picker so the two
+                   stay together when the toolbar wraps. Left loose, the row
+                   reflows into pairing every button with the next tool's
+                   select. Picker first, button second: that is the side the
+                   button visually sat on before the wrapper existed. -->
+              <span class="tool">
+                <select id="improve-model" aria-label="Model used by Improve" title="Which model rewrites the prompt"></select>
+                <button id="prompt-improve" type="button" class="secondary" title="Rewrite the prompt with more detail">✨ Improve</button>
+              </span>
+              <span class="tool">
+                <select id="describe-model" aria-label="Model used by Describe" title="Which model captions the image"></select>
+                <button id="prompt-describe" type="button" class="secondary" title="Caption an image into the prompt box">🔍 Describe</button>
+              </span>
               <input id="describe-file" type="file" accept="image/*" hidden />
               <button id="prompt-save" type="button" class="secondary" title="Save current prompt">Save</button>
               <button id="prompt-del" type="button" class="secondary" title="Delete selected prompt">Delete</button>
             </div>
+            <!-- What the two pickers above will actually do, kept out of the
+                 option names so those stay scannable. -->
+            <p class="tool-notes">
+              <span id="improve-note"></span>
+              <span id="describe-note"></span>
+            </p>
             <div class="params-head">
               <span>Parameters</span>
               <button id="reset-btn" type="button" class="secondary tiny">Reset</button>
