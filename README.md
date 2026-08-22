@@ -1,4 +1,6 @@
-# 🎛️ Patchbay
+<p align="center">
+  <img src=".github/assets/social-preview.png" alt="Patchbay" width="640" />
+</p>
 
 Patchbay is a web front end for image and video generation and editing. It puts
 41 models from three providers behind one interface and runs entirely on

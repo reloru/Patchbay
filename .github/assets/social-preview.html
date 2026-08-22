@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; }
+  body {
+    background: #0f1115;
+    font-family: "Liberation Sans", "DejaVu Sans", sans-serif;
+    color: #f4f6fa;
+    position: relative;
+    overflow: hidden;
+  }
+  /* Keeps the flat dark panel from reading as a black rectangle in a feed. */
+  .glow {
+    position: absolute; inset: -20%;
+    background:
+      radial-gradient(44% 52% at 30% 32%, rgba(62,201,214,.17), transparent 62%),
+      radial-gradient(42% 50% at 72% 70%, rgba(167,139,250,.16), transparent 62%);
+  }
+  .frame { position: absolute; inset: 0; display: flex; flex-direction: column;
+           align-items: center; justify-content: center; gap: 44px; padding: 80px; }
+  h1 { font-size: 122px; letter-spacing: -4px; font-weight: 700; line-height: 1; }
+</style>
+
+<div class="glow"></div>
+
+<div class="frame">
+  <!-- A patchbay unit: a panel of jacks with one cable patched across it. -->
+  <svg width="300" height="196" viewBox="0 0 300 196" fill="none">
+    <defs>
+      <linearGradient id="cable" x1="72" y1="150" x2="228" y2="150" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#3ec9d6" /><stop offset="1" stop-color="#a78bfa" />
+      </linearGradient>
+    </defs>
+
+    <rect x="6" y="6" width="288" height="184" rx="26" fill="#161a21" stroke="#2b313c" stroke-width="5" />
+
+    <!-- top row of jacks -->
+    <g fill="#0f1115" stroke="#454d5c" stroke-width="5">
+      <circle cx="72"  cy="64" r="21" />
+      <circle cx="150" cy="64" r="21" />
+      <circle cx="228" cy="64" r="21" />
+    </g>
+    <g fill="#5b647a">
+      <circle cx="72"  cy="64" r="7" />
+      <circle cx="150" cy="64" r="7" />
+      <circle cx="228" cy="64" r="7" />
+    </g>
+
+    <!-- bottom row: the two patched jacks light up -->
+    <circle cx="150" cy="140" r="21" fill="#0f1115" stroke="#454d5c" stroke-width="5" />
+    <circle cx="150" cy="140" r="7" fill="#5b647a" />
+
+    <path d="M72 140 C 100 184, 200 184, 228 140" stroke="url(#cable)" stroke-width="9" stroke-linecap="round" />
+
+    <circle cx="72"  cy="140" r="21" fill="#0f1115" stroke="#3ec9d6" stroke-width="5" />
+    <circle cx="72"  cy="140" r="7" fill="#3ec9d6" />
+    <circle cx="228" cy="140" r="21" fill="#0f1115" stroke="#a78bfa" stroke-width="5" />
+    <circle cx="228" cy="140" r="7" fill="#a78bfa" />
+  </svg>
+
+  <h1>Patchbay</h1>
+</div>
