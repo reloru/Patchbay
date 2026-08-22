@@ -39,3 +39,20 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.CLAUDE_ACTION }}
+          # Deleting a branch is not in the action's default allowlist, so a run
+          # asked to tidy merged branches stops for an approval no one is
+          # present to give. Scoped to deletion alone: it authorises no other
+          # git push, so a run cannot move, overwrite, or force a branch.
+          #
+          # main is not reachable this way regardless -- its ruleset has
+          # `deletion` and `non_fast_forward` active, so the delete is refused
+          # server-side.
+          #
+          # Nor can an outsider drive it. This workflow passes no `prompt`, so
+          # it runs in tag mode, where the action requires the triggering actor
+          # to hold write access *and* to be a real user account. The published
+          # bypass -- a GitHub App passing the write check because its login
+          # ends in "[bot]" -- applied to agent mode and was fixed in v1.0.94;
+          # `@v1` floats above that. `allowed_non_write_users` is deliberately
+          # unset, since that is the setting that would open this up.
+          claude_args: '--allowedTools "Bash(git push origin --delete:*)"'
