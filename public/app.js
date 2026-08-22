@@ -150,7 +150,16 @@ function startApp() {
 // what you pick by; provider second because it decides what an option costs
 // and which key it needs, and because two providers ship models under the
 // same name (FLUX.2 Klein 4B is on both Pruna and Workers AI).
-// Editing leads: it is the common case, and the picker opens on a model in it.
+// The first four sections are pinned in a requested order rather than derived,
+// because it does not follow from either grouping key on its own: Pruna editing
+// and video first, then Grok images and video. Everything else falls through to
+// the group/provider ordering below.
+const SECTION_ORDER = [
+  ["Image editing", "pruna"],
+  ["Video", "pruna"],
+  ["Image generation", "xai"],
+  ["Video", "xai"],
+];
 const GROUP_ORDER = ["Image editing", "Image generation", "Video", "LoRA training"];
 const PROVIDER_ORDER = ["pruna", "xai", "workers-ai"];
 const PROVIDER_LABEL = { pruna: "Pruna", xai: "xAI", "workers-ai": "Workers AI" };
@@ -169,10 +178,15 @@ function buildModelSelect() {
   // Anything carrying an unlisted group or provider still has to appear, so
   // sort unknowns to the end rather than dropping them.
   const rank = (list, v) => (list.indexOf(v) === -1 ? list.length : list.indexOf(v));
+  const pinned = (g, p) => {
+    const i = SECTION_ORDER.findIndex(([sg, sp]) => sg === g && sp === p);
+    return i === -1 ? SECTION_ORDER.length : i;
+  };
   const keys = [...sections.keys()].sort((a, b) => {
     const [ga, pa] = a.split("\u0000");
     const [gb, pb] = b.split("\u0000");
     return (
+      pinned(ga, pa) - pinned(gb, pb) ||
       rank(GROUP_ORDER, ga) - rank(GROUP_ORDER, gb) ||
       ga.localeCompare(gb) ||
       rank(PROVIDER_ORDER, pa) - rank(PROVIDER_ORDER, pb) ||
@@ -439,19 +453,29 @@ function inputControl(f) {
       opt.textContent = p.label;
       sel.appendChild(opt);
     }
-    const hint = document.createElement("p");
-    hint.className = "help preset-hint";
+    // A preset's trigger word has to appear in the prompt to do anything, so
+    // it goes straight into the prompt box. Switching presets swaps the word
+    // rather than stacking them, and anything already typed is kept.
+    let applied = "";
     sel.addEventListener("change", () => {
       const preset = f.presets.find((p) => p.value === sel.value);
-      if (preset) {
-        i.value = preset.value;
-        hint.textContent = preset.hint ? "Suggested prompt: " + preset.hint : "";
-      } else {
-        hint.textContent = "";
+      i.value = preset ? preset.value : i.value;
+      const box = primaryPromptEl();
+      if (!box) return;
+      let text = box.value;
+      // Strip the previous preset's word from the front. Anchored and
+      // whitespace-tolerant: matching on the stored "word + space" missed when
+      // the box held the word alone, which stacked them instead of swapping.
+      if (applied) {
+        const esc = applied.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        text = text.replace(new RegExp("^" + esc + "\\s*"), "");
       }
+      const word = preset && preset.hint ? preset.hint : "";
+      box.value = word ? (text ? word + " " + text : word) : text;
+      applied = word;
+      box.dispatchEvent(new Event("input", { bubbles: true }));
     });
     wrap.appendChild(sel);
-    wrap.appendChild(hint);
     wrap.appendChild(i);
     return wrap;
   }
@@ -637,8 +661,10 @@ function imageControl(f) {
     }
   });
 
-  // Adopt files carried over from the previously selected model.
-  if (carryFiles.length) {
+  // Adopt files carried over from the previously selected model. Skipped for a
+  // field the current mode hides -- adopting there swallowed the file into a
+  // control the user cannot see, which looked like the upload disappearing.
+  if (carryFiles.length && fieldVisible(f)) {
     const taken = carryFiles.splice(0, maxItems - uploads[f.name].length);
     for (const file of taken) {
       const placeholder = { file, url: null, name: file.name, isImage: file.type.startsWith("image/"), preview: null, uploading: true };
@@ -795,7 +821,15 @@ function optionChanged(f, row) {
   if (f.type === "image") return (uploads[f.name] || []).some((u) => u.url);
   const v = readControlValue(f, row);
   if (v === undefined) return false;
-  return v !== f.default;
+  // A field with no declared default reads back as "", not undefined, so
+  // comparing the two marked every such field changed the moment it rendered
+  // -- the HuggingFace token and both 2nd-LoRA boxes among them.
+  //
+  // wrapArray fields read back as [1] while their default is 1, which flagged
+  // 2nd LoRA strength on every render for the same reason: comparing the sent
+  // shape against the declared one.
+  const bare = f.wrapArray && Array.isArray(v) && v.length === 1 ? v[0] : v;
+  return bare !== (f.default === undefined ? "" : f.default);
 }
 
 // A field with `showWhen: { field, is: [...] }` only applies to some of the
@@ -1304,10 +1338,9 @@ function updateDescribeNote() {
   const m = describeModels.find((x) => x.id === $("describe-model").value);
   if (!m) return void (noteEl.textContent = "");
   const attached = attachedImageFile();
-  const source = attached
-    ? `reads ${attached.name || "the attached image"}`
-    : "attach an image below and it reads that";
-  noteEl.textContent = `🔍 ${m.label} · ${m.note} · ${source}`;
+  noteEl.textContent = attached
+    ? `🔍 Reads ${attached.name || "the attached image"}`
+    : "🔍 Attach an image below";
 }
 
 function initDescribe() {
