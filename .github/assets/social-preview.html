@@ -10,78 +10,54 @@
     position: relative;
     overflow: hidden;
   }
-  /* Soft glow so the flat dark panel doesn't read as a black rectangle when
-     GitHub shows it small. */
+  /* Keeps the flat dark panel from reading as a black rectangle in a feed. */
   .glow {
     position: absolute; inset: -20%;
     background:
-      radial-gradient(46% 52% at 26% 34%, rgba(62,201,214,.16), transparent 62%),
-      radial-gradient(44% 50% at 76% 68%, rgba(167,139,250,.15), transparent 62%),
-      radial-gradient(40% 46% at 58% 18%, rgba(245,165,36,.10), transparent 62%);
+      radial-gradient(44% 52% at 30% 32%, rgba(62,201,214,.17), transparent 62%),
+      radial-gradient(42% 50% at 72% 70%, rgba(167,139,250,.16), transparent 62%);
   }
   .frame { position: absolute; inset: 0; display: flex; flex-direction: column;
-           align-items: center; justify-content: center; padding: 80px; }
-
-  .brand { display: flex; align-items: center; gap: 20px; }
-  .brand .knob { font-size: 66px; line-height: 1; }
-  .brand h1 { font-size: 104px; letter-spacing: -3px; font-weight: 700; line-height: 1; }
-
-  .tagline { margin-top: 22px; font-size: 33px; color: #c3cad6; letter-spacing: -.2px; }
-
-  .cables { margin-top: 40px; }
-
-  .providers { margin-top: 34px; display: flex; align-items: center; gap: 18px;
-               font-size: 21px; color: #98a2b3; letter-spacing: .3px; }
-  .providers .dot { width: 5px; height: 5px; border-radius: 50%; background: #3a4150; }
-  .count { color: #f4f6fa; font-weight: 700; }
+           align-items: center; justify-content: center; gap: 44px; padding: 80px; }
+  h1 { font-size: 122px; letter-spacing: -4px; font-weight: 700; line-height: 1; }
 </style>
 
 <div class="glow"></div>
 
 <div class="frame">
-  <div class="brand">
-    <span class="knob">🎛️</span>
-    <h1>Patchbay</h1>
-  </div>
-
-  <p class="tagline">Image &amp; video generation and editing, one interface</p>
-
-  <!-- The name made literal: a single input fanning out to three provider
-       jacks. Drawn rather than decorative -- it is what the app does. -->
-  <svg class="cables" width="720" height="118" viewBox="0 0 720 118" fill="none">
+  <!-- A patchbay unit: a panel of jacks with one cable patched across it. -->
+  <svg width="300" height="196" viewBox="0 0 300 196" fill="none">
     <defs>
-      <linearGradient id="c1" x1="0" y1="59" x2="720" y2="16" gradientUnits="userSpaceOnUse">
-        <stop stop-color="#5b647a" /><stop offset="1" stop-color="#3ec9d6" />
-      </linearGradient>
-      <linearGradient id="c2" x1="0" y1="59" x2="720" y2="59" gradientUnits="userSpaceOnUse">
-        <stop stop-color="#5b647a" /><stop offset="1" stop-color="#f5a524" />
-      </linearGradient>
-      <linearGradient id="c3" x1="0" y1="59" x2="720" y2="102" gradientUnits="userSpaceOnUse">
-        <stop stop-color="#5b647a" /><stop offset="1" stop-color="#a78bfa" />
+      <linearGradient id="cable" x1="72" y1="150" x2="228" y2="150" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#3ec9d6" /><stop offset="1" stop-color="#a78bfa" />
       </linearGradient>
     </defs>
 
-    <path d="M78 59 C 210 59, 300 16, 642 16" stroke="url(#c1)" stroke-width="5" stroke-linecap="round" />
-    <path d="M78 59 C 300 59, 380 59, 642 59" stroke="url(#c2)" stroke-width="5" stroke-linecap="round" />
-    <path d="M78 59 C 210 59, 300 102, 642 102" stroke="url(#c3)" stroke-width="5" stroke-linecap="round" />
+    <rect x="6" y="6" width="288" height="184" rx="26" fill="#161a21" stroke="#2b313c" stroke-width="5" />
 
-    <!-- input jack -->
-    <circle cx="78" cy="59" r="17" fill="#0f1115" stroke="#6b7488" stroke-width="4" />
-    <circle cx="78" cy="59" r="6" fill="#8b93a7" />
+    <!-- top row of jacks -->
+    <g fill="#0f1115" stroke="#454d5c" stroke-width="5">
+      <circle cx="72"  cy="64" r="21" />
+      <circle cx="150" cy="64" r="21" />
+      <circle cx="228" cy="64" r="21" />
+    </g>
+    <g fill="#5b647a">
+      <circle cx="72"  cy="64" r="7" />
+      <circle cx="150" cy="64" r="7" />
+      <circle cx="228" cy="64" r="7" />
+    </g>
 
-    <!-- provider jacks -->
-    <circle cx="642" cy="16"  r="13" fill="#0f1115" stroke="#3ec9d6" stroke-width="4" />
-    <circle cx="642" cy="59"  r="13" fill="#0f1115" stroke="#f5a524" stroke-width="4" />
-    <circle cx="642" cy="102" r="13" fill="#0f1115" stroke="#a78bfa" stroke-width="4" />
+    <!-- bottom row: the two patched jacks light up -->
+    <circle cx="150" cy="140" r="21" fill="#0f1115" stroke="#454d5c" stroke-width="5" />
+    <circle cx="150" cy="140" r="7" fill="#5b647a" />
+
+    <path d="M72 140 C 100 184, 200 184, 228 140" stroke="url(#cable)" stroke-width="9" stroke-linecap="round" />
+
+    <circle cx="72"  cy="140" r="21" fill="#0f1115" stroke="#3ec9d6" stroke-width="5" />
+    <circle cx="72"  cy="140" r="7" fill="#3ec9d6" />
+    <circle cx="228" cy="140" r="21" fill="#0f1115" stroke="#a78bfa" stroke-width="5" />
+    <circle cx="228" cy="140" r="7" fill="#a78bfa" />
   </svg>
 
-  <div class="providers">
-    <span><span class="count">41</span> models</span>
-    <span class="dot"></span>
-    <span>Pruna AI</span>
-    <span class="dot"></span>
-    <span>xAI Grok</span>
-    <span class="dot"></span>
-    <span>Cloudflare Workers AI</span>
-  </div>
+  <h1>Patchbay</h1>
 </div>
