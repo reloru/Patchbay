@@ -189,67 +189,13 @@ async function runWorkersAI(spec, input, env) {
   return json({ error: "Unexpected Workers AI response shape." }, 502);
 }
 
-// An editing/i2v prompt describes a source image the improve model can never
-// see. Left to "make it vivid", small chat models default to whatever's
-// statistically typical — golden-hour light indoors, a standing pose for
-// someone described as sitting — and those invented details then fight the real
-// image at generation time.
-//
-// One job: copy-editing. Earlier versions of this taught the model about
-// image editing, Pruna's prompt structure, preservation clauses, and tag
-// parsing. Every one of those made it worse, because a model that cannot see
-// the image has no basis for any of it and fills the gap by inventing. It does
-// not need to know what the text is for.
-//
-// Written comma-free on purpose. Image models read a comma as a tag separator
-// rather than punctuation, and small models copy the register of their own
-// instructions, so a comma-heavy system prompt produces comma-heavy output.
 const IMPROVE_SYSTEM =
-  `You are a copy editor. Rewrite the user's text so it is correct and clearly phrased English. ` +
-  `That is the whole job. You are not told what the text is for and you do not need to know. ` +
-  `Fix grammar spelling punctuation and awkward or ambiguous phrasing. ` +
-  `If the text is already correct and clear return it exactly as it is. ` +
-  `Never add anything the user did not write. No new objects people places colours lighting styles or details of any kind. ` +
-  `Never drop anything the user did write. Every instruction object and qualifier in the input must survive into the output. ` +
-  `Never soften weaken or hedge their wording and never make it more polite than they wrote it. ` +
-  `Never invent a relationship between two things the user did not connect. ` +
-  `If they listed things separately keep them separate. ` +
-  `If a clause is ambiguous keep the ambiguity rather than picking a reading for them. ` +
-  `Do not use commas or em dashes anywhere in your output. Write short separate sentences instead. ` +
-  `Keep the user's own words and their pronouns wherever they already read naturally. ` +
-  `Repeating a noun where a pronoun is already clear is wrong. ` +
-  `Keep the grammatical mood. An instruction stays an instruction. A description stays a description. ` +
-  `Never turn "make the sky blue" into "the sky is blue". ` +
-  `Never explain never comment and never ask a question. Output only the rewritten text.`;
-
-// Worked examples rather than more rules: prose constraints do not survive
-// contact with the 3B default model, which has returned the rule text itself as
-// its answer.
-//
-// Replayed as prior turns rather than listed inside the system text. Inline
-// they were treated as prose to continue: the model copied the first example's
-// output and then invented past the user's words ("add a cat, a dog, and a
-// bird" produced "Put the bird in its cage"). As turns it can still occasionally
-// prefix the last answer, which is visible and harmless next to inventing.
-const IMPROVE_SHOTS = [
-  // One subject keeps its pronouns instead of having the noun stamped over
-  // every one of them. Imperative in and imperative out.
-  ["make the womans jacket red and put her hat on the table", "Make the woman's jacket red. Put her hat on the table."],
-  // Both halves survive. Nothing the user asked to preserve is dropped.
-  ["change the jacket to red but preserve her face and hair", "Change the jacket to red. Preserve her face and hair."],
-  // The same lesson worded as "keep", which was being dropped where "preserve"
-  // survived.
-  ["make it snow and keep the building exactly as it is", "Make it snow. Keep the building exactly as it is."],
-  // And the negative form, which was dropped where "preserve" and "keep" both
-  // survived. All three phrasings mean the same thing to the user.
-  ["remove the fence and dont touch anything else", "Remove the fence. Do not touch anything else."],
-  // Two independent items stay independent. No comma and no invented link.
-  ["make the sky purple and the car red", "Make the sky purple. Make the car red."],
-  // Already clear: returned untouched.
-  ["remove the hat", "Remove the hat."],
-  // Filler and politeness go. The qualifier "a bit" is the user's and stays.
-  ["can you please maybe make it a bit brighter if thats ok", "Make it a bit brighter."],
-];
+  `Take the provided text and improve its clarity by refining the phrasing while preserving its meaning. ` +
+  `Do not soften the language or remove mature content. ` +
+  `Do not invent new objects or details. ` +
+  `Never create a relationship between two things that the original text did not already connect. ` +
+  `An instruction must remain an instruction, and a description must remain a description. ` +
+  `Output only the rewritten text.`;
 
 
 // Rewrites a short prompt into a richer one using a chat model on Workers AI.
@@ -281,10 +227,6 @@ async function handleImprovePrompt(request, env) {
     out = await env.AI.run(improveModel, {
       messages: [
         { role: "system", content: system },
-        ...IMPROVE_SHOTS.flatMap(([u, a]) => [
-          { role: "user", content: u },
-          { role: "assistant", content: a },
-        ]),
         { role: "user", content: prompt },
       ],
       // 120 words runs ~170-200 tokens; 320 leaves headroom so the raised
