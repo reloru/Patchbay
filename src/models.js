@@ -60,7 +60,7 @@ const SEED = {
   name: "seed",
   label: "Seed",
   type: "int",
-  default: -1,
+  default: "",
   min: -1,
   defaultLabel: "random",
 };
@@ -369,7 +369,7 @@ export const MODELS = [
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
       {
         name: "lora_weights",
-        label: "LoRA weights (HuggingFace URL)",
+        label: "LoRA weights (HuggingFace file URL)",
         type: "text",
         required: true,
         help: 'huggingface.co/<owner>/<model>/<file>.safetensors — must be trained with p-image-trainer. Include the exact filename (usually "weights.safetensors"); Pruna\'s default filename guess often 404s otherwise. Presets below include their trigger word — add it to your prompt.',
@@ -421,7 +421,7 @@ export const MODELS = [
         ],
       },
       { name: "lora_scale", label: "LoRA strength", type: "number", default: 0.5, min: -1, max: 3, step: 0.05 },
-      { name: "hf_api_token", label: "HuggingFace token (private repo)", type: "text" },
+      { name: "hf_api_token", label: "HuggingFace API token", type: "text" },
       {
         name: "aspect_ratio",
         label: "Aspect ratio",
@@ -525,7 +525,7 @@ export const MODELS = [
     blurb: "Compose / edit from 1–5 reference images.",
     fields: [
       { name: "images", label: "Image(s) to edit", type: "image", required: true, maxItems: 5, asArray: true },
-      { name: "prompt", label: "What to change", type: "textarea", required: true },
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
       // Pruna turns turbo on unless told otherwise, so this has to be sent.
       { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: false, apiDefault: true },
       {
@@ -547,16 +547,15 @@ export const MODELS = [
     blurb: "P-Image-Edit with a custom LoRA (must be trained via p-image-edit-trainer).",
     fields: [
       { name: "images", label: "Image(s) to edit", type: "image", required: true, maxItems: 5, asArray: true },
-      { name: "prompt", label: "What to change", type: "textarea", required: true },
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
       {
         name: "lora_weights",
-        label: "LoRA weights (HuggingFace URL)",
+        label: "LoRA weights (HuggingFace file URL)",
         type: "text",
         required: true,
         // Pruna's API guesses `pytorch_lora_weights.safetensors` when no filename is
         // given, but p-image-edit-trainer (and these official presets) output
         // `weights.safetensors` — always spell out the filename or it 404s.
-        help: 'huggingface.co/<owner>/<model>/<file>.safetensors — must be trained with p-image-edit-trainer. Include the exact filename (usually "weights.safetensors"); Pruna\'s default filename guess often 404s otherwise.',
         presets: [
           {
             label: "Photo → anime",
@@ -591,8 +590,8 @@ export const MODELS = [
         ],
       },
       { name: "lora_scale", label: "LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.05 },
-      { name: "hf_api_token", label: "HuggingFace token (private repo)", type: "text" },
-      { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: true },
+      { name: "hf_api_token", label: "HuggingFace API token", type: "text" },
+      { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: false },
       {
         name: "aspect_ratio",
         label: "Aspect ratio",
@@ -634,7 +633,7 @@ export const MODELS = [
       { name: "enhance_details", label: "Enhance fine details", type: "bool", default: false },
       { name: "enhance_realism", label: "Enhance realism", type: "bool", default: false },
       OUTPUT_FORMAT,
-      OUTPUT_QUALITY,
+      { ...OUTPUT_QUALITY, default: 100 },
       moderationFilter(),
     ],
   },
@@ -654,8 +653,8 @@ export const MODELS = [
     blurb: "Edit / transform 1–2 input images from a text instruction.",
     fields: [
       { name: "image", label: "Image(s) to edit", type: "image", required: true, maxItems: 2, asArray: true },
-      { name: "prompt", label: "What to change", type: "textarea", required: true },
-      { name: "go_fast", label: "Fast mode", type: "bool", default: true },
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "go_fast", label: "Fast mode", type: "bool", default: false },
       {
         name: "aspect_ratio",
         label: "Aspect ratio",
@@ -671,7 +670,7 @@ export const MODELS = [
         ],
       },
       OUTPUT_FORMAT,
-      { ...OUTPUT_QUALITY, default: 95 },
+      { ...{ ...OUTPUT_QUALITY, default: 100 }, default: 100 },
       SEED,
       moderationFilter(),
     ],
@@ -834,7 +833,7 @@ export const MODELS = [
         disabledNote: "using the start image's aspect ratio",
       },
       { name: "draft", label: "Draft mode (faster preview)", type: "bool", default: false },
-      { name: "prompt_upsampling", label: "Auto-improve prompt", type: "bool", default: true },
+      { name: "prompt_upsampling", label: "Auto-improve prompt", type: "bool", default: false },
       { name: "save_audio", label: "Save With Audio", type: "bool", default: true },
       SEED,
       moderationFilter("disable_safety_filter", true),
@@ -1187,7 +1186,7 @@ const WORKERS_AI_MODELS = [
     blurb: "Redraw an existing image from a prompt.",
     fields: [
       { name: "image_b64", label: "Image to edit", type: "image", required: true, asBase64: true },
-      { name: "prompt", label: "What to change", type: "textarea", required: true },
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
       CF_NEGATIVE,
       { name: "strength", label: "How much to change it", type: "number", default: 1, min: 0, max: 1, step: 0.05 },
       { name: "num_steps", label: "Detail (steps)", type: "int", default: 20, min: 1, max: 20 },
