@@ -282,7 +282,15 @@ function probeMediaMeta(file) {
     const isAudio = file.type.startsWith("audio/");
     if (!isVideo && !isAudio) return resolve(null);
     const url = URL.createObjectURL(file);
-    const el = document.createElement(isVideo ? "video" : "audio");
+    // Two literal tag names rather than one computed one. Behaviour is
+    // identical, but an element built from a dynamic string cannot be resolved
+    // statically: analysis then has to assume `el.src` below might be an
+    // <iframe>, and flags the blob: URL as a possible script-injection sink
+    // (CodeQL js/xss-through-dom, raised when this was a ternary). Neither
+    // <video> nor <audio> parses HTML or runs script from src, and
+    // createObjectURL only ever mints blob:<origin>/<uuid>, so the warning was
+    // never a real finding — but proving that beats suppressing the query.
+    const el = isVideo ? document.createElement("video") : document.createElement("audio");
     el.preload = "metadata";
     el.muted = true;
     const done = (result) => {
