@@ -3,12 +3,12 @@
 </p>
 
 Patchbay is a web front end for image and video generation and editing. It puts
-42 models from three providers behind one interface and runs entirely on
+46 models from three providers behind one interface and runs entirely on
 Cloudflare Workers — no server to maintain, no build step, no framework.
 
 | Provider | Models | Credentials |
 |----------|--------|-------------|
-| [Pruna AI](https://docs.api.pruna.ai/) | 26 | `PRUNA_API_KEY` |
+| [Pruna AI](https://docs.api.pruna.ai/) | 30 | `PRUNA_API_KEY` |
 | [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 11 | none |
 | [xAI (Grok)](https://docs.x.ai/) | 5 | `XAI_API_KEY` |
 
@@ -99,13 +99,13 @@ synchronously and returns no job id.
 
 ## Models
 
-### Pruna (26)
+### Pruna (30)
 
 | Group | Models |
 |-------|--------|
-| Image editing | `p-image-edit`, `p-image-edit-lora`, `p-image-try-on`, `p-image-upscale`, `qwen-image-edit-plus` |
+| Image editing | `p-image-edit`, `p-image-edit-lora`, `p-image-edit-text-aware`, `p-image-rmbg`, `p-image-try-on`, `p-image-upscale`, `qwen-image-edit-plus` |
 | Image generation | `flux-dev`, `flux-dev-lora`, `flux-2-klein-4b`, `qwen-image`, `qwen-image-fast`, `z-image-turbo`, `z-image-turbo-lora`, `p-image`, `p-image-lora`, `p-image-ideogram`, `wan-image-small` |
-| Video | `wan-t2v`, `wan-i2v`, `p-video`, `p-video-edit`, `p-video-animate`, `p-video-replace`, `p-video-avatar`, `vace` |
+| Video | `wan-t2v`, `wan-i2v`, `p-video`, `p-video-edit`, `p-video-2`, `p-video-infiniteworlds`, `p-video-animate`, `p-video-replace`, `p-video-avatar`, `vace` |
 | LoRA training | `p-image-trainer`, `p-image-edit-trainer` |
 
 `p-video-edit` rewrites an existing clip from a text prompt, with up to 4
@@ -113,6 +113,27 @@ optional reference images to guide identity or style. The source may be at most
 15 seconds and the output runs the same length, so it is billed per second of
 that length — $0.045, or $0.025 in draft mode — and the estimate comes from the
 duration the browser reads off your clip when you pick it.
+
+`p-video-2` takes the same inputs as `p-video` at roughly a 25% premium, and its
+Length box is blank by default: leave it that way and the model picks the length
+from the prompt. Nothing can be estimated in that case, and no estimate is shown
+rather than a guessed one. Where audio is attached to `p-video`, `p-video-2` or
+`p-video-infiniteworlds`, the track sets the length and therefore the bill, so
+the browser reads its duration and prices from that instead of the Length box.
+
+`p-image-rmbg` returns a transparent PNG and takes exactly one input, the image
+— no options at all. `p-image-edit-text-aware` routes to whichever edit model
+suits the input, which changes the price: $0.01 per output, or $0.03 when it
+detects text in the image. That decision happens during the run, so the app
+shows the range up front and no per-run estimate. Its `turbo` is left at Pruna's
+documented default of on, unlike `p-image-edit`, where this repo deliberately
+forces it off.
+
+**`p-image-pro` is documented but not included.** As of 2026-09-08 every call to
+it — including a bare prompt — is refused before input validation with
+`422 Deployment disabled`. Listing a model that cannot run is worse than leaving
+it out; `src/models.js` carries a comment with its full parameter set and price
+so it can be restored when Pruna enables the deployment.
 
 `p-judger` is a Pruna model too, but it scores rather than generates, so it sits
 behind the Judge button instead of in the picker. Its documentation describes a

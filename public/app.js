@@ -268,30 +268,36 @@ function fileToBase64(file) {
   });
 }
 
-// Reads a video file's duration and resolution client-side (nothing is
-// uploaded to do this) so per-second video costs can be estimated before the
-// user hits Generate. Resolves to null on anything that isn't decodable
+// Reads a media file's duration (and, for video, its resolution) client-side —
+// nothing is uploaded to do this — so per-second costs can be estimated before
+// the user hits Generate. Resolves to null on anything that isn't decodable
 // metadata-only (huge files, unsupported codecs, etc.) rather than guessing.
-function probeVideoMeta(file) {
+//
+// Audio counts too, because several models take an audio track that overrides
+// the duration setting and therefore decides the bill: p-video, p-video-2 and
+// p-video-infiniteworlds all document audio as setting the length.
+function probeMediaMeta(file) {
   return new Promise((resolve) => {
-    if (!file.type.startsWith("video/")) return resolve(null);
+    const isVideo = file.type.startsWith("video/");
+    const isAudio = file.type.startsWith("audio/");
+    if (!isVideo && !isAudio) return resolve(null);
     const url = URL.createObjectURL(file);
-    const v = document.createElement("video");
-    v.preload = "metadata";
-    v.muted = true;
+    const el = document.createElement(isVideo ? "video" : "audio");
+    el.preload = "metadata";
+    el.muted = true;
     const done = (result) => {
       URL.revokeObjectURL(url);
       resolve(result);
     };
-    v.onloadedmetadata = () => {
-      const durationSec = Number.isFinite(v.duration) ? v.duration : null;
-      const h = v.videoHeight || 0;
+    el.onloadedmetadata = () => {
+      const durationSec = Number.isFinite(el.duration) ? el.duration : null;
+      const h = (isVideo && el.videoHeight) || 0;
       // Bucket into the resolution tiers xAI actually publishes rates for.
       const resBucket = h && h <= 480 ? "480p" : h && h <= 720 ? "720p" : null;
       done(durationSec ? { durationSec, resBucket } : null);
     };
-    v.onerror = () => done(null);
-    v.src = url;
+    el.onerror = () => done(null);
+    el.src = url;
   });
 }
 
@@ -360,6 +366,15 @@ function priceBlurb(model) {
     return (
       `List price: ${fmtUsd(p.usd.normal)} per second of output video, ` +
       `${fmtUsd(p.usd.draft)} in draft mode. The output is as long as your source clip.`
+    );
+  }
+  if (p.type === "per_second_flat") {
+    return `List price: ${fmtUsd(p.usd)} per second of output video, at any resolution.`;
+  }
+  if (p.type === "routed_text") {
+    return (
+      `List price: ${fmtUsd(p.usd.noText)} per output, or ${fmtUsd(p.usd.text)} when the model ` +
+      `detects text in the image — which is decided during the run, so the rate is not known up front.`
     );
   }
   if (p.type === "flat_by_resolution") {
@@ -655,7 +670,7 @@ function imageControl(f) {
       if (placeholder.isImage) placeholder.preview = URL.createObjectURL(file);
       uploads[f.name].push(placeholder);
       redraw();
-      probeVideoMeta(file).then((meta) => {
+      probeMediaMeta(file).then((meta) => {
         if (meta) Object.assign(placeholder, meta);
       });
       try {
@@ -680,7 +695,7 @@ function imageControl(f) {
       const placeholder = { file, url: null, name: file.name, isImage: file.type.startsWith("image/"), preview: null, uploading: true };
       if (placeholder.isImage) placeholder.preview = URL.createObjectURL(file);
       uploads[f.name].push(placeholder);
-      probeVideoMeta(file).then((meta) => {
+      probeMediaMeta(file).then((meta) => {
         if (meta) Object.assign(placeholder, meta);
       });
       encodeForField(f, file)
@@ -1044,6 +1059,22 @@ $("reset-btn").addEventListener("click", () => {
   setStatus("", "hide");
 });
 
+// Providers word failures under different keys and the Worker passes their
+// JSON straight through, so read all of them before falling back to a bare
+// status code. Pruna's own refusals use {title, detail} — a disabled
+// deployment answers 422 with nothing under `error` or `message` at all, which
+// used to reach the status line as an unexplained "HTTP 422".
+function providerErrorText(data, status, fallback) {
+  const parts = [data && data.error, data && data.message, data && data.title, data && data.detail]
+    .filter((v) => typeof v === "string" && v.trim());
+  if (!parts.length) return fallback || `HTTP ${status}`;
+  // title and detail are complementary ("Deployment disabled" + why), so keep
+  // both when they differ rather than showing only the headline.
+  const seen = [];
+  for (const p of parts) if (!seen.some((s) => s.includes(p))) seen.push(p.trim());
+  return seen.join(" — ").replace(/\s*\n\s*-\s*/g, " ").replace(/\s+/g, " ");
+}
+
 async function runGeneration(model, input, kind, onProgress) {
   lastActualCostUsd = null;
   const startRes = await api("/api/generate", {
@@ -1052,13 +1083,13 @@ async function runGeneration(model, input, kind, onProgress) {
     body: JSON.stringify({ model, input, sync: kind === "image" }),
   });
   const data = await startRes.json();
-  if (!startRes.ok) throw new Error(data.error || data.message || `HTTP ${startRes.status}`);
+  if (!startRes.ok) throw new Error(providerErrorText(data, startRes.status));
 
   // Workers AI returns finished images inline as data URIs (no job to poll).
   if (Array.isArray(data.images) && data.images.length) return data.images;
   if (data.status === "succeeded" && data.generation_url) return asUrlList(data.generation_url);
   if (data.status === "failed" || data.status === "error") {
-    throw new Error(data.message || data.error || "Generation failed.");
+    throw new Error(providerErrorText(data, startRes.status, "Generation failed."));
   }
 
   let id = data.id;
@@ -1092,14 +1123,14 @@ async function runGeneration(model, input, kind, onProgress) {
         onProgress && onProgress(`reconnecting (${n}/${of})`, Math.round((Date.now() - started) / 1000)),
     });
     const s = await sRes.json();
-    if (!sRes.ok) throw new Error(s.error || `Status HTTP ${sRes.status}`);
+    if (!sRes.ok) throw new Error(providerErrorText(s, sRes.status));
     if (s.status === "succeeded") {
       // xAI reports the job's real dollar cost — prefer that over any estimate.
       lastActualCostUsd = typeof s.actual_cost_usd === "number" ? s.actual_cost_usd : null;
       return asUrlList(s.generation_url || s.output || s.output_url);
     }
     if (s.status === "failed" || s.status === "error" || s.status === "canceled") {
-      throw new Error(s.message || s.error || "Generation failed.");
+      throw new Error(providerErrorText(s, sRes.status, "Generation failed."));
     }
     onProgress(s.status || "processing", Math.round((Date.now() - started) / 1000));
   }
@@ -1812,6 +1843,19 @@ function fieldDefault(model, name) {
   return f ? f.default : undefined;
 }
 
+// How many seconds of video a run will bill for. An attached audio track wins:
+// p-video, p-video-2 and p-video-infiniteworlds all document audio as setting
+// the length and the duration field as ignored when one is present, so its
+// probed length is what gets billed. Falls back to the duration setting, and to
+// nothing at all when neither is known — p-video-2 lets the length be left to
+// the model, and an estimate cannot be invented for that.
+function outputSeconds(model, input) {
+  const audio = (uploads.audio || [])[0];
+  if (audio && audio.durationSec) return audio.durationSec;
+  const secs = Number(input.duration ?? fieldDefault(model, "duration"));
+  return Number.isFinite(secs) && secs > 0 ? secs : null;
+}
+
 function estimateCost(model, input, outputCount) {
   const p = model.price;
   if (!p || p.type === "variable" || p.type === "cf_neurons" || p.type === "cf_unpriced") return null;
@@ -1842,10 +1886,17 @@ function estimateCost(model, input, outputCount) {
     if (!tier) return null;
     const draft = input.draft ?? fieldDefault(model, "draft") ?? false;
     const rate = draft ? tier.draft : tier.normal;
-    const secs = Number(input.duration ?? fieldDefault(model, "duration"));
+    const secs = outputSeconds(model, input);
     if (!secs) return null;
     return rate * secs;
   }
+  if (p.type === "per_second_flat") {
+    const secs = outputSeconds(model, input);
+    return secs ? p.usd * secs : null;
+  }
+  // Rate depends on whether the model finds text in the image, which it decides
+  // during the run. Guessing either end would be worse than saying nothing.
+  if (p.type === "routed_text") return null;
   if (p.type === "video_second_draft") {
     // There is no duration field: the output runs as long as the source clip,
     // whose length was probed client-side when it was picked. Without that
