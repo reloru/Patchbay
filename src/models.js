@@ -840,6 +840,36 @@ export const MODELS = [
     ],
   },
   {
+    id: "p-video-edit",
+    label: "P-Video-Edit",
+    group: "Video",
+    kind: "video",
+    blurb: "Edit an existing video from a text prompt, optionally guided by reference images.",
+    fields: [
+      {
+        name: "video",
+        label: "Video to edit (.mp4)",
+        type: "image",
+        accept: "video/*",
+        required: true,
+        help: "Maximum length: 15 seconds.",
+      },
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      {
+        name: "images",
+        label: "Reference image(s) (optional)",
+        type: "image",
+        maxItems: 4,
+        asArray: true,
+        help: "Guides identity or style. jpg, jpeg, png or webp.",
+      },
+      { name: "prompt_upsampling", label: "Auto-improve prompt", type: "bool", default: true },
+      { name: "draft", label: "Draft mode (faster preview)", type: "bool", default: false },
+      { name: "save_audio", label: "Save With Audio", type: "bool", default: true },
+      SEED,
+    ],
+  },
+  {
     id: "p-video-animate",
     label: "P-Video-Animate",
     group: "Video",
@@ -1245,6 +1275,11 @@ const PRICING = {
       "1080p": { normal: 0.04, draft: 0.01 },
     },
   },
+  // Per second of *output* video, with a single draft discount and no
+  // resolution tiers — unlike p-video above. There is no duration field
+  // either: the output is as long as the source, so the estimate comes from
+  // the source clip's own duration, probed client-side when it is picked.
+  "p-video-edit": { type: "video_second_draft", usd: { normal: 0.045, draft: 0.025 } },
   // Priced in tiers by target output megapixels, not a flat per-image rate.
   "p-image-upscale": {
     type: "mp_tiered",
@@ -1658,6 +1693,34 @@ export const DESCRIBE_MODELS = [
 
 export const DESCRIBE_MODEL_IDS = new Set(DESCRIBE_MODELS.map((m) => m.id));
 export const DEFAULT_DESCRIBE_MODEL = "@cf/llava-hf/llava-1.5-7b-hf";
+
+// ───────────────────────── p-judger (the "Judge" button) ─────────────────────
+// Scores how well an image matches a prompt. It is deliberately NOT in MODELS:
+// every entry there produces media through /api/generate -> showResult(), and
+// this returns a JSON score object instead. It is a prompt tool like Improve
+// and Describe, and runs through its own /api/judge route.
+//
+// Verified against the live API on 2026-09-08 (four calls: single, batch with a
+// shared prompt, batch with per-image prompts, and the async status path). Two
+// things differ from Pruna's published docs and are load-bearing here:
+//
+//   1. `generation_url` is a JSON *object*, not a URL string —
+//      {"total": 49.1204} for one image, {"results":[{...},{...}]} for a batch.
+//   2. The docs describe a score object "with fields including total, level1,
+//      level2, level3, and detailed". Every call returned `total` alone, and
+//      there is no parameter that asks for more: the endpoint rejects any
+//      undocumented key with "additional properties forbidden". The UI
+//      therefore headlines `total` but still shows the whole payload on
+//      demand, so any field Pruna adds later surfaces without a code change.
+//
+// The scale is undocumented. Two runs on the same image scored 49.12 against
+// its own prompt and 39.20 against an unrelated one, which fixes the direction
+// but not the bounds — so the score is never rendered as a percentage or a bar.
+export const JUDGE_MODEL = "p-judger";
+export const JUDGE_USD_PER_IMAGE = 0.005;
+// Pruna documents no batch limit. This cap is ours: it bounds the per-run cost
+// and the number of thumbnails the picker can hand back at once.
+export const JUDGE_MAX_IMAGES = 10;
 
 // The model the picker opens on. Editing an image you already have is the
 // common case, so it beats generating one from scratch as a starting point.
