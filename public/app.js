@@ -1478,12 +1478,35 @@ function initDescribe() {
 
 // Only images can be scored. A video generation is not a target, and neither
 // is a trained-LoRA .zip.
+// The attached images Judge will score: every image in the FIRST image field
+// that holds any. Field-scoped rather than model-scoped on purpose — several
+// models carry image fields with unrelated roles (person_image next to
+// garment_images, image next to last_frame_image), and scoring those together
+// against a single prompt would be meaningless. Within one field they are the
+// same kind of thing, so a batch is exactly right.
+function attachedImageBatch() {
+  if (!currentModel) return [];
+  for (const f of currentModel.fields) {
+    if (f.type !== "image") continue;
+    const list = (uploads[f.name] || []).filter((u) => u.file && u.isImage);
+    if (list.length) return list.slice(0, judgeMaxImages);
+  }
+  return [];
+}
+
 function judgeTarget() {
   if (lastResult.urls.length && lastResult.kind === "image") {
     return { from: "result", label: lastResult.urls.length > 1 ? `the ${lastResult.urls.length} generated images` : "the generated image" };
   }
-  const file = attachedImageFile();
-  if (file) return { from: "attached", label: file.name || "the attached image" };
+  const batch = attachedImageBatch();
+  if (batch.length) {
+    return {
+      from: "attached",
+      // Name the file when there is one, count them when there are several —
+      // the note has to make a partial read impossible to miss.
+      label: batch.length > 1 ? `${batch.length} attached images` : batch[0].name || "the attached image",
+    };
+  }
   return null;
 }
 
@@ -1549,16 +1572,13 @@ async function generatedImageUrls() {
 }
 
 async function attachedImageUrls() {
-  if (!currentModel) return [];
-  for (const f of currentModel.fields) {
-    if (f.type !== "image") continue;
-    for (const u of uploads[f.name] || []) {
-      if (!u.file || !u.isImage) continue;
-      const ready = typeof u.url === "string" && PRUNA_URL.test(u.url) ? u.url : await uploadForJudge(u.file, u.name);
-      return [ready];
-    }
+  const out = [];
+  for (const u of attachedImageBatch()) {
+    // An upload on a Pruna model already is a Pruna file URL; anything else
+    // (Workers AI base64, an xAI data: URI) has to go through /api/upload.
+    out.push(typeof u.url === "string" && PRUNA_URL.test(u.url) ? u.url : await uploadForJudge(u.file, u.name));
   }
-  return [];
+  return out;
 }
 
 function initJudge() {
