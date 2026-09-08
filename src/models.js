@@ -359,6 +359,16 @@ export const MODELS = [
       moderationFilter(),
     ],
   },
+  // p-image-pro is documented (prompt, aspect_ratio, width, height, seed,
+  // disable_safety_checker; $0.01 per image) but is NOT in this catalogue: as
+  // of 2026-09-08 every call to it, including a bare prompt, is refused before
+  // any input validation with
+  //   422 {"title":"Deployment disabled","detail":"This deployment is
+  //        currently disabled: - This deployment has been disabled in its
+  //        settings."}
+  // Listing a model that cannot run is worse than leaving it out. Re-adding it
+  // is this comment plus a "p-image-pro": {type:"flat", usd:0.01} price entry,
+  // once Pruna enables the deployment.
   {
     id: "p-image-lora",
     label: "P-Image-LoRA",
@@ -602,6 +612,48 @@ export const MODELS = [
       SEED,
       moderationFilter(),
     ],
+  },
+  {
+    id: "p-image-edit-text-aware",
+    label: "P-Image-Edit-Text-Aware",
+    group: "Image editing",
+    kind: "image",
+    blurb: "Edit that picks the best model for the input; costs more when the image contains text.",
+    fields: [
+      {
+        name: "images",
+        label: "Image(s) to edit",
+        type: "image",
+        required: true,
+        maxItems: 5,
+        asArray: true,
+        help: "Main image first. Pruna documents no upper count; 5 matches the other edit models here.",
+      },
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "match_input_image",
+        options: [{ value: "match_input_image", label: "Keep original" }, ...AR_COMMON],
+      },
+      // Documented default is on, unlike p-image-edit above, where turbo is
+      // deliberately forced off. Left at the documented value rather than
+      // assuming that choice carries over; the docs say to turn it off for
+      // complicated edits.
+      { name: "turbo", label: "Fast mode (turbo)", type: "bool", default: true },
+      SEED,
+      moderationFilter(),
+    ],
+  },
+  {
+    id: "p-image-rmbg",
+    label: "P-Image-RMBG",
+    group: "Image editing",
+    kind: "image",
+    blurb: "Remove the background and return a transparent PNG. Flat price at any size.",
+    // The whole documented input: one image, no options at all.
+    fields: [{ name: "image", label: "Image", type: "image", required: true }],
   },
   {
     id: "p-image-try-on",
@@ -865,6 +917,84 @@ export const MODELS = [
       },
       { name: "prompt_upsampling", label: "Auto-improve prompt", type: "bool", default: true },
       { name: "draft", label: "Draft mode (faster preview)", type: "bool", default: false },
+      { name: "save_audio", label: "Save With Audio", type: "bool", default: true },
+      SEED,
+    ],
+  },
+  {
+    id: "p-video-2",
+    label: "P-Video-2",
+    group: "Video",
+    kind: "video",
+    blurb: "Premium successor to P-Video: same inputs, up to 1080p, and the length can be left to the model.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "image", label: "Starting image (optional)", type: "image" },
+      { name: "last_frame_image", label: "Ending image (optional)", type: "image" },
+      { name: "audio", label: "Audio track (optional, sets length)", type: "image", accept: "audio/*" },
+      {
+        // Blank by default on purpose: unlike p-video this model picks the
+        // length from the prompt when duration is omitted, so an empty box is
+        // a real setting rather than a missing one.
+        name: "duration",
+        label: "Length (seconds)",
+        type: "int",
+        default: "",
+        min: 1,
+        max: 20,
+        defaultLabel: "model decides",
+      },
+      {
+        name: "resolution",
+        label: "Resolution",
+        type: "enum",
+        default: "720p",
+        options: [{ value: "720p", label: "720p" }, { value: "1080p", label: "1080p" }],
+      },
+      {
+        // Numbers, not strings — the default comparison that decides what gets
+        // sent is type-strict. Same as p-video above.
+        name: "fps",
+        label: "Frames per second",
+        type: "enum",
+        default: 24,
+        options: [{ value: 24, label: "24" }, { value: 48, label: "48" }],
+      },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "16:9",
+        options: AR_COMMON,
+        disabledWhen: "image",
+        disabledNote: "using the start image's aspect ratio",
+      },
+      { name: "draft", label: "Draft mode (faster preview)", type: "bool", default: false },
+      { name: "prompt_upsampling", label: "Auto-improve prompt", type: "bool", default: true },
+      { name: "save_audio", label: "Save With Audio", type: "bool", default: true },
+      SEED,
+      moderationFilter("disable_safety_filter", true),
+    ],
+  },
+  {
+    id: "p-video-infiniteworlds",
+    label: "P-Video-InfiniteWorlds",
+    group: "Video",
+    kind: "video",
+    blurb: "World-exploration video from a prompt, optionally seeded with a starting image. One flat per-second rate.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "image", label: "Starting image (optional)", type: "image" },
+      { name: "last_frame_image", label: "Ending image (optional)", type: "image" },
+      { name: "audio", label: "Audio track (optional, sets length)", type: "image", accept: "audio/*" },
+      { name: "duration", label: "Length (seconds)", type: "int", default: 5, min: 1, max: 20 },
+      {
+        name: "fps",
+        label: "Frames per second",
+        type: "enum",
+        default: 24,
+        options: [{ value: 24, label: "24" }, { value: 48, label: "48" }],
+      },
       { name: "save_audio", label: "Save With Audio", type: "bool", default: true },
       SEED,
     ],
@@ -1256,8 +1386,12 @@ MODELS.push(...WORKERS_AI_MODELS);
 //   variable   — Pruna lists it as "priced by multiple properties"; not estimable
 const PRICING = {
   "p-image": { type: "flat", usd: 0.005 },
+  "p-image-rmbg": { type: "flat", usd: 0.005 },
   "p-image-edit": { type: "flat", usd: 0.01 },
   "p-image-edit-lora": { type: "flat", usd: 0.01 },
+  // Routed by what the model finds in the image, so the rate is only known
+  // after the run. Both ends are published, so the range can at least be shown.
+  "p-image-edit-text-aware": { type: "routed_text", usd: { noText: 0.01, text: 0.03 } },
   "flux-dev": { type: "flat", usd: 0.005 },
   "flux-2-klein-4b": { type: "flat", usd: 0.0001 },
   "wan-image-small": { type: "flat", usd: 0.005 },
@@ -1275,6 +1409,18 @@ const PRICING = {
       "1080p": { normal: 0.04, draft: 0.01 },
     },
   },
+  // Same shape as p-video, at roughly a 25% premium, and the length may be
+  // left to the model — in which case there is nothing to multiply and no
+  // estimate is shown until the run reports its own length.
+  "p-video-2": {
+    type: "per_second_draft",
+    usd: {
+      "720p": { normal: 0.025, draft: 0.015 },
+      "1080p": { normal: 0.05, draft: 0.03 },
+    },
+  },
+  // One rate at every resolution — the model exposes no resolution setting.
+  "p-video-infiniteworlds": { type: "per_second_flat", usd: 0.01 },
   // Per second of *output* video, with a single draft discount and no
   // resolution tiers — unlike p-video above. There is no duration field
   // either: the output is as long as the source, so the estimate comes from
