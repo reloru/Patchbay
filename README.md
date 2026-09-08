@@ -3,18 +3,18 @@
 </p>
 
 Patchbay is a web front end for image and video generation and editing. It puts
-41 models from three providers behind one interface and runs entirely on
+42 models from three providers behind one interface and runs entirely on
 Cloudflare Workers — no server to maintain, no build step, no framework.
 
 | Provider | Models | Credentials |
 |----------|--------|-------------|
-| [Pruna AI](https://docs.api.pruna.ai/) | 25 | `PRUNA_API_KEY` |
+| [Pruna AI](https://docs.api.pruna.ai/) | 26 | `PRUNA_API_KEY` |
 | [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 11 | none |
 | [xAI (Grok)](https://docs.x.ai/) | 5 | `XAI_API_KEY` |
 
-A further 17 Workers AI models run behind the two prompt tools rather than
-appearing in the picker: 14 chat models rewrite prompts and 3 vision models
-caption images.
+A further 18 models run behind the three prompt tools rather than appearing in
+the picker: 14 Workers AI chat models rewrite prompts, 3 Workers AI vision
+models caption images, and Pruna's `p-judger` scores an image against a prompt.
 
 ## Features
 
@@ -42,6 +42,14 @@ rewrite it afterwards.
 **Image description.** Describe captions an image with one of 3 Workers AI
 vision models and drops the caption in as a starting prompt. It reads whatever
 image is already attached and only opens a file picker when there is none.
+
+**Prompt-match scoring.** Judge runs Pruna's `p-judger` over an image and
+returns how well it matches the prompt. It scores the image you just generated
+if one is on screen, otherwise the one attached to the model's inputs, and the
+note under the toolbar always says which — with an inline link to a file picker
+for anything else, which also reaches batch mode (up to 10 images against a
+shared prompt). The score lands under the toolbar rather than in the output
+panel, so scoring a generation does not clear the generation.
 
 **Uploads.** Init images, edit references, start and end frames, masks, and
 source video or audio are proxied to the provider and referenced by URL.
@@ -76,6 +84,7 @@ Browser (public/)  ──►  Cloudflare Worker (src/worker.js)  ──┬──
    /api/result          streams media back, adds credentials, no-store
    /api/improve-prompt  copy-edits a prompt via Workers AI
    /api/describe        captions an image via Workers AI
+   /api/judge           scores an image against a prompt via Pruna p-judger
    /api/neurons         current-day Workers AI neuron spend
 ```
 
@@ -90,14 +99,28 @@ synchronously and returns no job id.
 
 ## Models
 
-### Pruna (25)
+### Pruna (26)
 
 | Group | Models |
 |-------|--------|
 | Image editing | `p-image-edit`, `p-image-edit-lora`, `p-image-try-on`, `p-image-upscale`, `qwen-image-edit-plus` |
 | Image generation | `flux-dev`, `flux-dev-lora`, `flux-2-klein-4b`, `qwen-image`, `qwen-image-fast`, `z-image-turbo`, `z-image-turbo-lora`, `p-image`, `p-image-lora`, `p-image-ideogram`, `wan-image-small` |
-| Video | `wan-t2v`, `wan-i2v`, `p-video`, `p-video-animate`, `p-video-replace`, `p-video-avatar`, `vace` |
+| Video | `wan-t2v`, `wan-i2v`, `p-video`, `p-video-edit`, `p-video-animate`, `p-video-replace`, `p-video-avatar`, `vace` |
 | LoRA training | `p-image-trainer`, `p-image-edit-trainer` |
+
+`p-video-edit` rewrites an existing clip from a text prompt, with up to 4
+optional reference images to guide identity or style. The source may be at most
+15 seconds and the output runs the same length, so it is billed per second of
+that length — $0.045, or $0.025 in draft mode — and the estimate comes from the
+duration the browser reads off your clip when you pick it.
+
+`p-judger` is a Pruna model too, but it scores rather than generates, so it sits
+behind the Judge button instead of in the picker. Its documentation describes a
+score object carrying `total`, `level1`, `level2`, `level3` and `detailed`; as
+of 2026-09-08 the endpoint returns `total` alone and rejects any undocumented
+input key, so the UI headlines `total` and keeps the whole payload one tap away
+rather than assuming the shape. The scale is not documented, so the score is
+rendered as a bare number — no bar, no percentage.
 
 LoRA variants (`*-lora`) take a weights URL and a strength scale, and several
 ship quick-pick presets. `p-image-lora` and `p-image-edit-lora` require weights

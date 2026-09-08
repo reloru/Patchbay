@@ -301,6 +301,9 @@ select, input, textarea, button { max-width: 100%; }
 .tool-notes { margin: -6px 2px 14px; font-size: 12px; color: var(--muted); }
 .tool-notes span { display: block; overflow-wrap: anywhere; }
 .tool-notes span:empty { display: none; }
+/* Judge's note carries an inline action, so its own children stay on the line
+   the rule above puts the note itself on. */
+#judge-note > span, #judge-note > button { display: inline; }
 
 .prompt-lib { flex-wrap: wrap; }
 .prompt-lib > * { flex: 1 1 auto; min-width: 0; }
@@ -344,6 +347,45 @@ button.tiny { padding: 4px 10px; font-size: 12px; }
   .app { padding: 16px 12px 48px; }
   .prompt-lib > * { flex: 1 1 100%; }
   .prompt-lib button { flex: 1 1 48%; }
+}
+
+/* Judge (p-judger). The score sits under the prompt toolbar rather than in the
+   output panel, so scoring a generation leaves the generation on screen. */
+.judge {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.judge-scores { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+.judge-score { display: flex; align-items: baseline; gap: 7px; }
+.judge-index { font-size: 12px; color: var(--muted); }
+/* The scale is undocumented, so this is a number and nothing more — no bar,
+   no percentage, no colour coding that would imply a range. */
+.judge-total { font-size: 30px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.judge-key { font-size: 12px; color: var(--muted); }
+.judge-payload { margin-top: 10px; }
+.judge-payload summary { font-size: 12px; color: var(--muted); cursor: pointer; }
+.judge-payload pre {
+  margin: 8px 0 0;
+  padding: 10px;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* An inline action inside a note line — reads as text, behaves as a button. */
+.linkish {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .file-result {

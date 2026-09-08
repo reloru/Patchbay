@@ -9,6 +9,8 @@ let defaultModel = "";
 let defaultImproveModel = "";
 let describeModels = [];
 let defaultDescribeModel = "";
+let judgeUsdPerImage = 0;
+let judgeMaxImages = 1;
 let authRequired = false;
 let currentModel = null;
 let optionsPanel = null;
@@ -101,6 +103,8 @@ async function boot() {
   defaultImproveModel = cfg.defaultImproveModel || "";
   describeModels = cfg.describeModels || [];
   defaultDescribeModel = cfg.defaultDescribeModel || "";
+  judgeUsdPerImage = Number(cfg.judgeUsdPerImage) || 0;
+  judgeMaxImages = Number(cfg.judgeMaxImages) || 1;
   authRequired = Boolean(cfg.authRequired);
 
   if (authRequired && !getPw()) {
@@ -350,6 +354,12 @@ function priceBlurb(model) {
     return (
       `List price: ${fmtUsd(p.usd["720p"].draft)}–${fmtUsd(p.usd["1080p"].normal)}/s ` +
       `depending on resolution and draft mode.`
+    );
+  }
+  if (p.type === "video_second_draft") {
+    return (
+      `List price: ${fmtUsd(p.usd.normal)} per second of output video, ` +
+      `${fmtUsd(p.usd.draft)} in draft mode. The output is as long as your source clip.`
     );
   }
   if (p.type === "flat_by_resolution") {
@@ -852,8 +862,9 @@ function applyVisibility() {
 }
 
 function refreshOptionState() {
-  // Attaching or removing an image changes what Describe would read.
+  // Attaching or removing an image changes what Describe and Judge would read.
   updateDescribeNote();
+  updateJudgeNote();
   let changed = 0;
   for (const r of optionRows) {
     if (r.f.showWhen && !fieldVisible(r.f)) {
@@ -1000,6 +1011,10 @@ $("gen-form").addEventListener("submit", async (e) => {
   const btn = $("generate-btn");
   btn.disabled = true;
   $("result").innerHTML = "";
+  // The old output is gone from the panel, so it is no longer something Judge
+  // can offer to score.
+  lastResult = { urls: [], kind: null };
+  clearJudgeResult();
   const kind = currentModel.kind;
   const started = Date.now();
   setStatus("Submitting…", "load");
@@ -1025,6 +1040,7 @@ $("gen-form").addEventListener("submit", async (e) => {
 $("reset-btn").addEventListener("click", () => {
   clearUploads();
   renderFields();
+  clearJudgeResult();
   setStatus("", "hide");
 });
 
@@ -1106,9 +1122,15 @@ function resultUrl(prunaUrl) {
   return u;
 }
 
+// What is currently on screen in the output panel, so Judge can score the
+// image you just generated without making you save and re-attach it.
+let lastResult = { urls: [], kind: null };
+
 function showResult(prunaUrls, kind) {
   const box = $("result");
   box.innerHTML = "";
+  lastResult = { urls: prunaUrls.slice(), kind };
+  updateJudgeNote();
   prunaUrls.forEach((prunaUrl, i) => {
     const proxied = resultUrl(prunaUrl);
     const item = document.createElement("div");
@@ -1399,10 +1421,227 @@ function initDescribe() {
   updateDescribeNote();
 }
 
+// ---------------------------------------------------------------------------
+// Judge (p-judger)
+//
+// Scores how well an image matches the prompt. It is a prompt tool rather than
+// a catalogue model because it returns a number, not media: it has no place in
+// the model picker, the generation polling loop, or the output panel. Its
+// score renders under the toolbar so that scoring a generation does not clear
+// the generation.
+//
+// It reuses what is already on screen instead of asking for it again — the
+// prompt you typed, and the image you already have. Priority is the generated
+// image first (scoring what you just made against the prompt that made it is
+// the common case), then an attached input image, then a file picker. The note
+// line always says which one it will read, so it is never a guess.
+// ---------------------------------------------------------------------------
+
+// Only images can be scored. A video generation is not a target, and neither
+// is a trained-LoRA .zip.
+function judgeTarget() {
+  if (lastResult.urls.length && lastResult.kind === "image") {
+    return { from: "result", label: lastResult.urls.length > 1 ? `the ${lastResult.urls.length} generated images` : "the generated image" };
+  }
+  const file = attachedImageFile();
+  if (file) return { from: "attached", label: file.name || "the attached image" };
+  return null;
+}
+
+function updateJudgeNote() {
+  const noteEl = $("judge-note");
+  if (!noteEl) return; // called before the toolbar exists
+  noteEl.innerHTML = "";
+  const t = judgeTarget();
+  const text = document.createElement("span");
+  text.textContent = t ? `⚖️ Scores ${t.label} against your prompt` : "⚖️ Pick image(s) to score against your prompt";
+  noteEl.appendChild(text);
+  // The button always scores the disclosed target, so without this there would
+  // be no way to reach the file picker — or batch mode — while an image is
+  // attached.
+  if (t) {
+    const alt = document.createElement("button");
+    alt.type = "button";
+    alt.className = "linkish";
+    alt.textContent = "pick files instead";
+    alt.addEventListener("click", () => $("judge-file").click());
+    noteEl.appendChild(document.createTextNode(" · "));
+    noteEl.appendChild(alt);
+  }
+}
+
+function clearJudgeResult() {
+  const box = $("judge-result");
+  if (!box) return;
+  box.innerHTML = "";
+  box.classList.add("hidden");
+}
+
+// p-judger takes URIs, and the ones it accepts are Pruna file URLs. An upload
+// on a Pruna model already is one; anything else (a Workers AI base64 blob, an
+// xAI data: URI, a freshly picked file, a finished generation) has to be sent
+// through /api/upload first.
+const PRUNA_URL = /^https:\/\/([a-z0-9-]+\.)*pruna\.ai\//i;
+
+async function uploadForJudge(blob, name) {
+  const fd = new FormData();
+  fd.append("file", new File([blob], name || "image", { type: blob.type || "image/jpeg" }));
+  const res = await api("/api/upload", { method: "POST", body: fd, retry: true });
+  const data = await res.json();
+  if (!res.ok || !data.url) throw new Error(data.error || data.message || "Upload failed");
+  return data.url;
+}
+
+// Pulls a finished generation back through the Worker (which attaches the
+// provider credentials) and re-uploads it, so what gets scored is the image
+// actually on screen.
+async function generatedImageUrls() {
+  const out = [];
+  for (const u of lastResult.urls.slice(0, judgeMaxImages)) {
+    if (PRUNA_URL.test(u)) {
+      out.push(u);
+      continue;
+    }
+    const res = await fetch(resultUrl(u));
+    if (!res.ok) throw new Error(`Could not read the generated image (HTTP ${res.status}).`);
+    out.push(await uploadForJudge(await res.blob(), "generated"));
+  }
+  return out;
+}
+
+async function attachedImageUrls() {
+  if (!currentModel) return [];
+  for (const f of currentModel.fields) {
+    if (f.type !== "image") continue;
+    for (const u of uploads[f.name] || []) {
+      if (!u.file || !u.isImage) continue;
+      const ready = typeof u.url === "string" && PRUNA_URL.test(u.url) ? u.url : await uploadForJudge(u.file, u.name);
+      return [ready];
+    }
+  }
+  return [];
+}
+
+function initJudge() {
+  const btn = $("prompt-judge");
+  const picker = $("judge-file");
+
+  btn.addEventListener("click", () => {
+    if (judgeTarget()) runJudge();
+    else picker.click();
+  });
+
+  picker.addEventListener("change", () => {
+    const files = Array.from(picker.files || []).slice(0, judgeMaxImages);
+    picker.value = "";
+    if (files.length) runJudge(files);
+  });
+
+  async function runJudge(files) {
+    const promptEl = primaryPromptEl();
+    const prompt = promptEl ? promptEl.value.trim() : "";
+    if (!prompt) {
+      setStatus("Write a prompt first — the score is against it.", "err");
+      return;
+    }
+
+    btn.disabled = true;
+    const idle = btn.textContent;
+    btn.textContent = "Scoring…";
+    setStatus("Scoring…", "load");
+    try {
+      let images;
+      if (files && files.length) {
+        images = [];
+        for (const f of files) images.push(await uploadForJudge(f, f.name));
+      } else {
+        const t = judgeTarget();
+        images = t && t.from === "result" ? await generatedImageUrls() : await attachedImageUrls();
+      }
+      if (!images.length) throw new Error("No image to score.");
+
+      const res = await api("/api/judge", {
+        method: "POST",
+        retry: true,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt, images }),
+      });
+      const data = await res.json();
+      if (!res.ok || !Array.isArray(data.scores)) throw new Error(data.error || `HTTP ${res.status}`);
+
+      renderJudge(data.scores, data.raw);
+      const cost = judgeUsdPerImage * images.length;
+      if (cost > 0) {
+        sessionSpend += cost;
+        sessionRuns++;
+        updateSpendBar();
+      }
+      setStatus(`Scored ${images.length} image${images.length === 1 ? "" : "s"}. Est. ${fmtUsd(cost)}.`, "ok");
+    } catch (e) {
+      setStatus("Judge failed: " + e.message, "err");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = idle;
+    }
+  }
+
+  updateJudgeNote();
+}
+
+// The live API returns `total` and nothing else, so that is what gets the
+// headline. Pruna's docs also describe level1/level2/level3/detailed fields
+// that no call has produced; showing the whole payload behind a disclosure
+// means any of those appearing later is visible without a code change, rather
+// than silently dropped. The scale is undocumented, so the number is shown as
+// a number — never a percentage or a bar.
+function renderJudge(scores, raw) {
+  const box = $("judge-result");
+  box.innerHTML = "";
+
+  const list = document.createElement("div");
+  list.className = "judge-scores";
+  scores.forEach((s, i) => {
+    const row = document.createElement("div");
+    row.className = "judge-score";
+    if (scores.length > 1) {
+      const idx = document.createElement("span");
+      idx.className = "judge-index";
+      idx.textContent = `#${i + 1}`;
+      row.appendChild(idx);
+    }
+    const val = document.createElement("span");
+    val.className = "judge-total";
+    // A payload without `total` is not something to invent a headline for —
+    // say so and let the disclosure below carry the actual content.
+    const total = s && typeof s.total === "number" ? s.total : null;
+    val.textContent = total == null ? "—" : total.toFixed(2);
+    row.appendChild(val);
+    const key = document.createElement("span");
+    key.className = "judge-key";
+    key.textContent = total == null ? "no total field — see payload" : "total";
+    row.appendChild(key);
+    list.appendChild(row);
+  });
+  box.appendChild(list);
+
+  const det = document.createElement("details");
+  det.className = "judge-payload";
+  const sum = document.createElement("summary");
+  sum.textContent = "Full payload";
+  det.appendChild(sum);
+  const pre = document.createElement("pre");
+  pre.textContent = JSON.stringify(raw, null, 2);
+  det.appendChild(pre);
+  box.appendChild(det);
+
+  box.classList.remove("hidden");
+}
+
 function initPromptLibrary() {
   refreshPromptSelect();
   initImproveModelPicker();
   initDescribe();
+  initJudge();
 
   $("prompt-select").addEventListener("change", (e) => {
     const idx = e.target.value;
@@ -1606,6 +1845,15 @@ function estimateCost(model, input, outputCount) {
     const secs = Number(input.duration ?? fieldDefault(model, "duration"));
     if (!secs) return null;
     return rate * secs;
+  }
+  if (p.type === "video_second_draft") {
+    // There is no duration field: the output runs as long as the source clip,
+    // whose length was probed client-side when it was picked. Without that
+    // reading there is nothing to multiply, so no estimate is shown.
+    const src = (uploads.video || [])[0];
+    if (!src || !src.durationSec) return null;
+    const draft = input.draft ?? fieldDefault(model, "draft") ?? false;
+    return src.durationSec * (draft ? p.usd.draft : p.usd.normal);
   }
   if (p.type === "flat_by_resolution") {
     const resolution = input.resolution ?? fieldDefault(model, "resolution");

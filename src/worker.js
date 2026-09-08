@@ -17,6 +17,9 @@ import {
   DESCRIBE_MODELS,
   DESCRIBE_MODEL_IDS,
   DEFAULT_DESCRIBE_MODEL,
+  JUDGE_MODEL,
+  JUDGE_USD_PER_IMAGE,
+  JUDGE_MAX_IMAGES,
 } from "./models.js";
 
 const MODELS_BY_ID = new Map(MODELS.map((m) => [m.id, m]));
@@ -75,6 +78,8 @@ export default {
           defaultImproveModel: DEFAULT_IMPROVE_MODEL,
           describeModels: DESCRIBE_MODELS,
           defaultDescribeModel: DEFAULT_DESCRIBE_MODEL,
+          judgeUsdPerImage: JUDGE_USD_PER_IMAGE,
+          judgeMaxImages: JUDGE_MAX_IMAGES,
         });
       }
 
@@ -97,6 +102,9 @@ export default {
       }
       if (path === "/api/describe" && request.method === "POST") {
         return await handleDescribe(request, env);
+      }
+      if (path === "/api/judge" && request.method === "POST") {
+        return await handleJudge(request, env);
       }
       if (path === "/api/neurons" && request.method === "GET") {
         return await handleNeurons(env);
@@ -547,6 +555,136 @@ async function handleDescribe(request, env) {
   const text = pickText(out);
   if (!text) return json({ error: "The model returned no description." }, 502);
   return json({ description: text });
+}
+
+// Scores one or more images against a prompt with p-judger. This does not go
+// through /api/generate: p-judger returns a JSON score object rather than
+// media, so it has no place in the MODELS catalogue or the polling loop the
+// browser runs for generations. It is a prompt tool, like Improve and Describe.
+//
+// The browser always sends an array. One image uses the API's single-image mode
+// (`image`), more than one uses batch mode (`images`) with the prompt reused
+// for every image. Per-image `prompts` is not exposed — it needs one prompt box
+// per image to mean anything, and the toolbar has exactly one.
+async function handleJudge(request, env) {
+  const body = await request.json().catch(() => null);
+  const prompt = body && typeof body.prompt === "string" ? body.prompt.trim() : "";
+  if (!prompt) return json({ error: "Write a prompt first — the score is against it." }, 400);
+
+  const images = Array.isArray(body.images) ? body.images.filter((u) => typeof u === "string" && u) : [];
+  if (!images.length) return json({ error: "No image to score." }, 400);
+  if (images.length > JUDGE_MAX_IMAGES) {
+    return json({ error: `Too many images — ${JUDGE_MAX_IMAGES} at a time.` }, 400);
+  }
+  // These come from /api/upload, so they are always Pruna file URLs. Checking
+  // keeps the endpoint from being used to point Pruna at an arbitrary host.
+  for (const u of images) {
+    let parsed;
+    try {
+      parsed = new URL(u);
+    } catch {
+      return json({ error: "Images must be uploaded first." }, 400);
+    }
+    if (parsed.protocol !== "https:" || !/(^|\.)pruna\.ai$/.test(parsed.hostname)) {
+      return json({ error: "Images must be uploaded first." }, 400);
+    }
+  }
+
+  const input = images.length === 1 ? { prompt, image: images[0] } : { prompt, images };
+
+  let res, text;
+  try {
+    res = await fetch(`${PRUNA_BASE}/predictions`, {
+      method: "POST",
+      headers: {
+        apikey: env.PRUNA_API_KEY,
+        Model: JUDGE_MODEL,
+        "content-type": "application/json",
+        "Try-Sync": "true",
+      },
+      body: JSON.stringify({ input }),
+    });
+    text = await res.text();
+  } catch (err) {
+    return json({ error: "Judge request failed: " + (err && err.message ? err.message : String(err)) }, 502);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return json({ error: "Pruna returned a non-JSON response." }, 502);
+  }
+  if (!res.ok) {
+    return json({ error: "Pruna: " + (data.message || data.error || `HTTP ${res.status}`) }, res.status);
+  }
+
+  // Try-Sync usually finishes in about a second, but it is best-effort: a
+  // response carrying an id instead of a result has to be polled like any
+  // other async job. Each poll is one subrequest, so the budget is bounded.
+  if (data.status !== "succeeded" && data.id) {
+    data = await pollJudge(data.id, env);
+    if (data.error) return json({ error: data.error }, 502);
+  }
+
+  if (data.status === "failed" || data.status === "error" || data.status === "canceled") {
+    return json({ error: data.message || data.error || "Scoring failed." }, 502);
+  }
+  if (data.status !== "succeeded") {
+    return json({ error: "Scoring did not finish in time. Try again." }, 504);
+  }
+
+  const payload = judgePayload(data.generation_url);
+  if (payload == null) return json({ error: "Pruna returned no score." }, 502);
+  // One shape for the UI whichever mode ran: batch results carry a `results`
+  // list, a single image is its own score object.
+  const scores = Array.isArray(payload.results) ? payload.results : [payload];
+  return json({ scores, raw: payload, count: images.length });
+}
+
+const JUDGE_POLL_MS = 1500;
+const JUDGE_POLL_TRIES = 20;
+
+async function pollJudge(id, env) {
+  for (let i = 0; i < JUDGE_POLL_TRIES; i++) {
+    await new Promise((r) => setTimeout(r, JUDGE_POLL_MS));
+    let res, text;
+    try {
+      res = await fetch(`${PRUNA_BASE}/predictions/status/${encodeURIComponent(id)}`, {
+        headers: { apikey: env.PRUNA_API_KEY },
+      });
+      text = await res.text();
+    } catch (err) {
+      return { error: "Judge status check failed: " + (err && err.message ? err.message : String(err)) };
+    }
+    let d;
+    try {
+      d = JSON.parse(text);
+    } catch {
+      return { error: "Pruna returned a non-JSON status response." };
+    }
+    if (d.status === "succeeded" || d.status === "failed" || d.status === "error" || d.status === "canceled") {
+      return d;
+    }
+  }
+  return { status: "processing" };
+}
+
+// p-judger puts the score object straight into `generation_url` rather than a
+// download link — verified against the live API. It is returned as a JSON
+// object; a string is parsed in case that ever changes, and anything else is
+// treated as no result rather than guessed at.
+function judgePayload(v) {
+  if (v && typeof v === "object") return v;
+  if (typeof v === "string") {
+    try {
+      const parsed = JSON.parse(v);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 // The FLUX.2 family takes multipart/form-data rather than JSON. Reference
