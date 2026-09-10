@@ -1045,7 +1045,7 @@ $("gen-form").addEventListener("submit", async (e) => {
   try {
     const urls = await runGeneration(currentModel.id, input, kind, (state, secs) => {
       setStatus(`${cap(state)}… ${secs}s elapsed`, "load");
-    });
+    }, currentModel.forceAsync);
     if (!urls.length) throw new Error("No output URL returned.");
     showResult(urls, kind);
     const secs = Math.round((Date.now() - started) / 1000);
@@ -1083,12 +1083,12 @@ function providerErrorText(data, status, fallback) {
   return seen.join(" — ").replace(/\s*\n\s*-\s*/g, " ").replace(/\s+/g, " ");
 }
 
-async function runGeneration(model, input, kind, onProgress) {
+async function runGeneration(model, input, kind, onProgress, forceAsync) {
   lastActualCostUsd = null;
   const startRes = await api("/api/generate", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model, input, sync: kind === "image" }),
+    body: JSON.stringify({ model, input, sync: kind === "image" && !forceAsync }),
   });
   const data = await startRes.json();
   if (!startRes.ok) throw new Error(providerErrorText(data, startRes.status));

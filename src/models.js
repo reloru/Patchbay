@@ -338,6 +338,22 @@ export const MODELS = [
     ],
   },
   {
+    id: "z-image-turbo-small",
+    label: "Z-Image Turbo (Small)",
+    group: "Image generation",
+    kind: "image",
+    // Try-Sync doesn't return quickly for this model — confirmed live, it hangs
+    // to a 60s gateway 504 instead of falling back to a pollable id. Force the
+    // async path so the UI polls /api/status like the other slow models do.
+    forceAsync: true,
+    blurb: "Smaller/cheaper Z-Image Turbo variant. Prompt only — no size or step controls.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "go_fast", label: "Fast mode", type: "bool", default: false },
+      SEED,
+    ],
+  },
+  {
     id: "p-image",
     label: "P-Image",
     group: "Image generation",
@@ -671,6 +687,22 @@ export const MODELS = [
       OUTPUT_FORMAT,
       { ...OUTPUT_QUALITY, default: 95 },
       SEED,
+    ],
+  },
+  {
+    id: "p-try-on-glasses",
+    label: "P-Try-On-Glasses",
+    group: "Image editing",
+    kind: "image",
+    // Confirmed live: a real run took ~238s, and Try-Sync hangs to a 60s
+    // gateway 504 rather than returning a pollable id quickly. Force async so
+    // the UI polls /api/status instead of eating a guaranteed timeout.
+    forceAsync: true,
+    blurb: "Put a pair of glasses from a reference photo onto a person.",
+    fields: [
+      { name: "person", label: "Person photo", type: "image", required: true },
+      { name: "glass", label: "Glasses photo", type: "image", required: true },
+      moderationFilter(),
     ],
   },
   {
@@ -1398,6 +1430,7 @@ const PRICING = {
   "qwen-image": { type: "flat", usd: 0.025 },
   "qwen-image-fast": { type: "flat", usd: 0.005 },
   "z-image-turbo": { type: "flat", usd: 0.005 },
+  "z-image-turbo-small": { type: "flat", usd: 0.0025 },
   "qwen-image-edit-plus": { type: "flat", usd: 0.03 },
   "p-video-animate": { type: "per_second", usd: { "720p": 0.03, "1080p": 0.06 } },
   "p-video-replace": { type: "per_second", usd: { "720p": 0.03, "1080p": 0.06 } },
@@ -1449,6 +1482,7 @@ const PRICING = {
     },
   },
   "p-image-try-on": { type: "variable" },
+  "p-try-on-glasses": { type: "flat", usd: 0.02 },
   "p-video-avatar": { type: "variable" },
   "vace": { type: "variable" },
   "wan-t2v": { type: "variable" },
