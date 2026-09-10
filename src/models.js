@@ -342,6 +342,10 @@ export const MODELS = [
     label: "Z-Image Turbo (Small)",
     group: "Image generation",
     kind: "image",
+    // Try-Sync doesn't return quickly for this model — confirmed live, it hangs
+    // to a 60s gateway 504 instead of falling back to a pollable id. Force the
+    // async path so the UI polls /api/status like the other slow models do.
+    forceAsync: true,
     blurb: "Smaller/cheaper Z-Image Turbo variant. Prompt only — no size or step controls.",
     fields: [
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
@@ -690,6 +694,10 @@ export const MODELS = [
     label: "P-Try-On-Glasses",
     group: "Image editing",
     kind: "image",
+    // Confirmed live: a real run took ~238s, and Try-Sync hangs to a 60s
+    // gateway 504 rather than returning a pollable id quickly. Force async so
+    // the UI polls /api/status instead of eating a guaranteed timeout.
+    forceAsync: true,
     blurb: "Put a pair of glasses from a reference photo onto a person.",
     fields: [
       { name: "person", label: "Person photo", type: "image", required: true },
