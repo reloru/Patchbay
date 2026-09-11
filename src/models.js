@@ -698,7 +698,12 @@ export const MODELS = [
     // gateway 504 rather than returning a pollable id quickly. Force async so
     // the UI polls /api/status instead of eating a guaranteed timeout.
     forceAsync: true,
-    blurb: "Put a pair of glasses from a reference photo onto a person.",
+    // Measured, not estimated: a real run took ~238s. Surfaced in the status
+    // line while the job is in flight, because a four-minute wait with no stated
+    // expectation reads as a hang and gets abandoned — which wastes the run,
+    // since the job keeps going and billing on Pruna after the tab closes.
+    typicalSeconds: 238,
+    blurb: "Put a pair of glasses from a reference photo onto a person. Slow — usually about 4 minutes.",
     fields: [
       { name: "person", label: "Person photo", type: "image", required: true },
       { name: "glass", label: "Glasses photo", type: "image", required: true },

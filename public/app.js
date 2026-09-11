@@ -1023,6 +1023,16 @@ function buildInput() {
 // ---------------------------------------------------------------------------
 // Generate
 // ---------------------------------------------------------------------------
+// A bare "Processing… 200s elapsed" is indistinguishable from a hang, which is
+// exactly how a correct run of a multi-minute model reads. Where a model
+// carries a measured typical runtime, say it while the job is in flight — the
+// blurb was read once before pressing Generate and is no help four minutes in.
+function slowHint(model) {
+  const t = model && model.typicalSeconds;
+  if (!t) return "";
+  return t >= 90 ? ` · usually about ${Math.round(t / 60)} min` : ` · usually about ${t}s`;
+}
+
 $("gen-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const { input, missing } = buildInput();
@@ -1044,7 +1054,7 @@ $("gen-form").addEventListener("submit", async (e) => {
 
   try {
     const urls = await runGeneration(currentModel.id, input, kind, (state, secs) => {
-      setStatus(`${cap(state)}… ${secs}s elapsed`, "load");
+      setStatus(`${cap(state)}… ${secs}s elapsed${slowHint(currentModel)}`, "load");
     }, currentModel.forceAsync);
     if (!urls.length) throw new Error("No output URL returned.");
     showResult(urls, kind);
@@ -1137,7 +1147,15 @@ async function runGeneration(model, input, kind, onProgress, forceAsync) {
       lastActualCostUsd = typeof s.actual_cost_usd === "number" ? s.actual_cost_usd : null;
       return asUrlList(s.generation_url || s.output || s.output_url);
     }
-    if (s.status === "failed" || s.status === "error" || s.status === "canceled") {
+    // A failed Pruna prediction can answer HTTP 200 with {message, error} and
+    // report no `status` at all. On the status checks alone that fell through to
+    // the onProgress call below, so the loop kept saying "processing" until the
+    // timeout and a failure was indistinguishable from a slow success. An
+    // in-progress body is {message:"Generation in progress", status:"processing"}
+    // with no `error` key, so treating a populated `error` as terminal cannot
+    // misfire on a job that is merely still running.
+    const errText = typeof s.error === "string" ? s.error.trim() : "";
+    if (s.status === "failed" || s.status === "error" || s.status === "canceled" || errText) {
       throw new Error(providerErrorText(s, sRes.status, "Generation failed."));
     }
     onProgress(s.status || "processing", Math.round((Date.now() - started) / 1000));
