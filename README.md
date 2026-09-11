@@ -3,12 +3,12 @@
 </p>
 
 Patchbay is a web front end for image and video generation and editing. It puts
-46 models from three providers behind one interface and runs entirely on
+48 models from three providers behind one interface and runs entirely on
 Cloudflare Workers — no server to maintain, no build step, no framework.
 
 | Provider | Models | Credentials |
 |----------|--------|-------------|
-| [Pruna AI](https://docs.api.pruna.ai/) | 30 | `PRUNA_API_KEY` |
+| [Pruna AI](https://docs.api.pruna.ai/) | 32 | `PRUNA_API_KEY` |
 | [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 11 | none |
 | [xAI (Grok)](https://docs.x.ai/) | 5 | `XAI_API_KEY` |
 
@@ -99,7 +99,7 @@ synchronously and returns no job id.
 
 ## Models
 
-### Pruna (30)
+### Pruna (32)
 
 | Group | Models |
 |-------|--------|
