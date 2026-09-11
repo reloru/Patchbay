@@ -64,6 +64,16 @@ reported rather than repeated.
 **No persistence.** Nothing is stored server-side. Generated media is served
 `no-store`, so neither the browser nor Cloudflare's edge keeps a copy.
 
+**Job recovery.** A phone can discard the tab mid-generation to reclaim memory,
+and the provider job keeps running and billing regardless. The running job's
+id is kept in this browser — id and model only, never the input or the output —
+so the next load reattaches, polls it to completion and shows the result rather
+than paying for output nobody sees. The media still streams from the provider on
+demand; the `input` object is deliberately excluded, since Workers AI and xAI
+models carry base64 and `data:` URI images inline. A record is discarded once
+collected, once the job definitively fails, or after an hour (six for training
+runs, which legitimately take that long).
+
 **Credential isolation.** API keys live in Cloudflare secrets and never reach
 the browser. Every provider call is made by the Worker.
 

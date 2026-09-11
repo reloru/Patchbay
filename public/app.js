@@ -144,7 +144,10 @@ function startApp() {
   initPromptLibrary();
   refreshNeurons();
   $("footer-note").textContent =
-    "Generations are proxied through a Cloudflare Worker. Nothing is stored and nothing is cached.";
+    "Generations are proxied through a Cloudflare Worker. No media is stored and nothing is cached; " +
+    "a running job's id is kept in this browser only, so a closed tab can pick it back up.";
+  // Last, so a recovered job cannot delay the UI becoming usable.
+  resumeInFlightJob();
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,22 +1120,23 @@ async function runGeneration(model, input, kind, onProgress, forceAsync) {
   }
   if (!id) throw new Error("No job id returned. Response: " + JSON.stringify(data).slice(0, 240));
 
+  // The job now exists on the provider and will run to completion whether or
+  // not this tab survives, so record it before the first poll.
+  saveJob({ id, model, kind, startedAt: Date.now() });
+  return await pollJob(id, kind, onProgress);
+}
+
+const POLL_MS = 2500;
+
+// Polls one provider job to a terminal state. Split out of runGeneration so a
+// reload can reattach to a job this tab never saw start.
+async function pollJob(id, kind, onProgress) {
   const started = Date.now();
   // Heavy video jobs (VACE especially) can run well past 10 minutes. LoRA
   // training is documented as "minutes to hours", so it gets the longest
   // budget this tab is willing to wait on.
   const maxMs = (kind === "file" ? 45 : kind === "video" ? 30 : 10) * 60 * 1000;
   while (true) {
-    await sleep(2500);
-    if (Date.now() - started > maxMs) {
-      throw new Error(
-        kind === "file"
-          ? `Still training after ${Math.round(maxMs / 60000)} min — this can take hours. ` +
-            "Check back later; the job keeps running on Pruna even after this tab gives up."
-          : `Timed out after ${Math.round(maxMs / 60000)} min. Try a lower resolution, ` +
-            "fewer frames/steps, or a faster speed mode."
-      );
-    }
     const sRes = await api("/api/status?id=" + encodeURIComponent(id), {
       // Same (state, seconds) shape the caller already formats, so a dropped
       // poll reads as "Reconnecting (1/3)… 12s elapsed" rather than stalling
@@ -1145,6 +1149,7 @@ async function runGeneration(model, input, kind, onProgress, forceAsync) {
     if (s.status === "succeeded") {
       // xAI reports the job's real dollar cost — prefer that over any estimate.
       lastActualCostUsd = typeof s.actual_cost_usd === "number" ? s.actual_cost_usd : null;
+      clearJob(); // collected — nothing left to reattach to
       return asUrlList(s.generation_url || s.output || s.output_url);
     }
     // A failed Pruna prediction can answer HTTP 200 with {message, error} and
@@ -1156,9 +1161,112 @@ async function runGeneration(model, input, kind, onProgress, forceAsync) {
     // misfire on a job that is merely still running.
     const errText = typeof s.error === "string" ? s.error.trim() : "";
     if (s.status === "failed" || s.status === "error" || s.status === "canceled" || errText) {
+      clearJob(); // it will never produce anything — do not offer to reattach
       throw new Error(providerErrorText(s, sRes.status, "Generation failed."));
     }
-    onProgress(s.status || "processing", Math.round((Date.now() - started) / 1000));
+    if (onProgress) onProgress(s.status || "processing", Math.round((Date.now() - started) / 1000));
+    // Checked only after a poll that still reported work in progress. A phone
+    // that suspended this tab past the deadline would otherwise throw a timeout
+    // on resume without ever asking, discarding a job that had finished.
+    if (Date.now() - started > maxMs) {
+      const mins = Math.round(maxMs / 60000);
+      throw new Error(
+        kind === "file"
+          ? `Still training after ${mins} min — this can take hours. The job keeps running ` +
+            "on the provider; reopen the app later to pick it up."
+          : `No result after ${mins} min. The job keeps running on the provider and is billed ` +
+            "either way; reopen the app to pick it up, or try again with lighter settings."
+      );
+    }
+    await sleep(POLL_MS);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// In-flight job handoff
+//
+// A phone can discard this tab at any moment to reclaim memory, and the
+// provider job keeps running — and billing — regardless. Keeping the job *id*
+// lets the next load reattach and collect the result instead of paying for
+// output nobody ever sees.
+//
+// Only the id and enough metadata to resume are kept, in this browser's
+// localStorage. No image or video is stored: the media still streams from the
+// provider through /api/result on demand, exactly as before, and none of this
+// reaches the Worker. The `input` object is deliberately excluded — Workers AI
+// and xAI models carry base64 and data: URI images inline, and writing those to
+// disk is precisely what "don't store the images" rules out.
+//
+// Every accessor is wrapped: localStorage throws outright in some contexts
+// (private windows, blocked site data) and a resume convenience must never be
+// the thing that stops the app loading.
+// ---------------------------------------------------------------------------
+const JOB_KEY = "pruna_inflight_job";
+
+// How long a record stays worth trying. Delivery URLs expire, so an ancient
+// record is likely to resolve to nothing; training runs get far longer because
+// they legitimately take hours.
+const JOB_MAX_AGE_MS = { file: 6 * 60 * 60 * 1000, other: 60 * 60 * 1000 };
+
+function saveJob(rec) {
+  try {
+    localStorage.setItem(JOB_KEY, JSON.stringify(rec));
+  } catch {
+    /* storage unavailable — resume is a convenience, not a requirement */
+  }
+}
+
+function loadJob() {
+  try {
+    const v = JSON.parse(localStorage.getItem(JOB_KEY));
+    return v && typeof v.id === "string" && v.id ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearJob() {
+  try {
+    localStorage.removeItem(JOB_KEY);
+  } catch {
+    /* nothing to do */
+  }
+}
+
+// Called once on boot. Picks up a job left running by a tab that went away.
+async function resumeInFlightJob() {
+  const rec = loadJob();
+  if (!rec) return;
+
+  const age = Date.now() - (Number(rec.startedAt) || 0);
+  const maxAge = rec.kind === "file" ? JOB_MAX_AGE_MS.file : JOB_MAX_AGE_MS.other;
+  // A negative age means the clock moved; treat it as unusable rather than
+  // trusting it.
+  if (!(age >= 0) || age > maxAge) {
+    clearJob();
+    return;
+  }
+
+  const btn = $("generate-btn");
+  btn.disabled = true;
+  const mins = Math.floor(age / 60000);
+  const ago = mins < 1 ? "less than a minute ago" : `${mins} min ago`;
+  setStatus(`Picking up the ${rec.model || "job"} you left running ${ago}…`, "load");
+  try {
+    const urls = await pollJob(rec.id, rec.kind, (state, secs) => {
+      setStatus(`${cap(state)}… ${secs}s since reattaching`, "load");
+    });
+    if (!urls.length) throw new Error("No output URL returned.");
+    showResult(urls, rec.kind);
+    // No spend is added: the estimate needs the original input, which is not
+    // stored, and this run was already paid for before the tab went away.
+    setStatus(`Recovered the ${rec.model || "job"} you left running.`, "ok");
+  } catch (e) {
+    // The record is left in place unless pollJob cleared it on a terminal
+    // outcome, so another reload can try again.
+    setStatus("Could not finish the earlier job: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
   }
 }
 
