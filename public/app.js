@@ -1058,7 +1058,7 @@ $("gen-form").addEventListener("submit", async (e) => {
   try {
     const urls = await runGeneration(currentModel.id, input, kind, (state, secs) => {
       setStatus(`${cap(state)}… ${secs}s elapsed${slowHint(currentModel)}`, "load");
-    }, currentModel.forceAsync);
+    });
     if (!urls.length) throw new Error("No output URL returned.");
     showResult(urls, kind);
     const secs = Math.round((Date.now() - started) / 1000);
@@ -1096,12 +1096,28 @@ function providerErrorText(data, status, fallback) {
   return seen.join(" — ").replace(/\s*\n\s*-\s*/g, " ").replace(/\s+/g, " ");
 }
 
-async function runGeneration(model, input, kind, onProgress, forceAsync) {
+// Try-Sync used to be requested for every image model except the two known to
+// hang past it (forceAsync in models.js). That was the bug behind "closed the
+// PWA mid-job, reopened, nothing to resume": a Try-Sync generation runs entirely
+// inside one fetch, and saveJob() only ever ran on the *fallback* response —
+// never on a synchronous success. So for most image models there was no job id
+// to persist until that single request already finished, and closing the app at
+// any point before it resolved (a network blip, the phone reclaiming the tab, a
+// slow model outrunning Cloudflare's own gateway timeout) discarded the run with
+// nothing to reattach to — a total loss, not merely an interrupted one, since a
+// bare 504 with no body carries no id either.
+//
+// Sync is no longer requested for anything: every generation now gets an id
+// back near-instantly and is polled, which is the same path forceAsync models
+// already used successfully. `forceAsync` in models.js is consequently inert —
+// left in place as documentation of which models are known to run especially
+// long, not because anything still reads it.
+async function runGeneration(model, input, kind, onProgress) {
   lastActualCostUsd = null;
   const startRes = await api("/api/generate", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model, input, sync: kind === "image" && !forceAsync }),
+    body: JSON.stringify({ model, input }),
   });
   const data = await startRes.json();
   if (!startRes.ok) throw new Error(providerErrorText(data, startRes.status));
@@ -1127,6 +1143,14 @@ async function runGeneration(model, input, kind, onProgress, forceAsync) {
 }
 
 const POLL_MS = 2500;
+// Removing Try-Sync above traded away its main benefit: a fast image used to
+// come back in a single round trip, and now always pays for at least one poll
+// cycle. Most images finish in 1-3s (execution_time on p-image has run ~1.4s in
+// earlier testing), so a coarse 2.5s cadence would be a felt slowdown on the
+// single most common action. Images poll on a tighter cadence to close most of
+// that gap; slower kinds keep the cadence above; a job's cost is what it costs
+// regardless of how often its status is checked.
+const IMAGE_POLL_MS = 900;
 
 // Polls one provider job to a terminal state. Split out of runGeneration so a
 // reload can reattach to a job this tab never saw start.
@@ -1178,7 +1202,7 @@ async function pollJob(id, kind, onProgress) {
             "either way; reopen the app to pick it up, or try again with lighter settings."
       );
     }
-    await sleep(POLL_MS);
+    await sleep(kind === "image" ? IMAGE_POLL_MS : POLL_MS);
   }
 }
 
