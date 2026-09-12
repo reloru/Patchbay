@@ -103,9 +103,15 @@ models and to serve `/api/config`; the browser renders its entire UI from the
 same data. Each model carries a `provider` tag and `handleGenerate` dispatches
 on it, so adding a model is usually a catalog edit alone.
 
-Image jobs are submitted with `Try-Sync: true` and fall back to polling. Video
-and training jobs poll `/api/status` until they finish. Workers AI runs
-synchronously and returns no job id.
+Every Pruna job — image, video, and training — is submitted async and polled
+via `/api/status` until it finishes. Try-Sync is deliberately not used for
+this: it runs the whole generation inside a single request, and a job only
+gets an id (and therefore becomes resumable) on the *fallback* response, never
+on a synchronous success — so closing the app during that window loses the
+run outright rather than merely interrupting it. Workers AI and xAI's
+synchronous image endpoints run in one request each and return no job id;
+that is a genuine limit of those two providers, not something this app can
+poll around.
 
 ## Models
 
