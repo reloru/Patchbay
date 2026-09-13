@@ -75,6 +75,13 @@
               <input id="judge-file" type="file" accept="image/*" multiple hidden />
               <button id="prompt-save" type="button" class="secondary" title="Save current prompt">Save</button>
               <button id="prompt-del" type="button" class="secondary" title="Delete selected prompt">Delete</button>
+              <!-- Undo/redo for the prompt box only. Wrapped as a pair so the
+                   two never end up on separate rows, and visible rather than
+                   keyboard-only because this is mainly used on a phone. -->
+              <span class="undo-redo">
+                <button id="prompt-undo" type="button" class="secondary" title="Undo the last prompt change" disabled>↶ Undo</button>
+                <button id="prompt-redo" type="button" class="secondary" title="Redo the last undone prompt change" disabled>↷ Redo</button>
+              </span>
             </div>
             <!-- What the pickers and buttons above will actually do, kept out of
                  the option names so those stay scannable. -->

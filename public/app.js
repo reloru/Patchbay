@@ -133,7 +133,7 @@ $("gate-form").addEventListener("submit", (e) => {
   startApp();
 });
 
-function startApp() {
+async function startApp() {
   $("app").classList.remove("hidden");
   buildModelSelect();
   // Fall back to whatever the picker lists first if the named default ever
@@ -144,8 +144,13 @@ function startApp() {
   initPromptLibrary();
   refreshNeurons();
   $("footer-note").textContent =
-    "Generations are proxied through a Cloudflare Worker. No media is stored and nothing is cached; " +
-    "a running job's id is kept in this browser only, so a closed tab can pick it back up.";
+    "Generations are proxied through a Cloudflare Worker. Nothing is stored server-side and no output " +
+    "is cached; your current edit — files, prompt, model and settings — is kept in this browser only, " +
+    "as is a running job's id, so a closed tab picks up where it left off.";
+  // Puts the last session's files, prompt, model and settings back before any
+  // of the listeners below can overwrite the saved snapshot.
+  await restoreSession();
+  initSessionPersistence();
   // Last, so a recovered job cannot delay the UI becoming usable.
   resumeInFlightJob();
 }
@@ -222,7 +227,10 @@ function selectModel(id) {
   // uploaded files (re-encoded for whatever the new provider expects).
   const priorText = {};
   const form = $("gen-form");
-  if (currentModel) {
+  // A restore is not a switch: every value is about to be written from the
+  // snapshot, so carrying anything over from the model shown at boot would only
+  // leak that model's defaults into fields the snapshot does not mention.
+  if (currentModel && !restoringSession) {
     for (const f of currentModel.fields) {
       if (f.type !== "text" && f.type !== "textarea") continue;
       const el = form.querySelector(`[data-field="${f.name}"]`);
@@ -259,6 +267,10 @@ function selectModel(id) {
   if (primaryNow && !primaryNow.value.trim() && priorText.__primary) {
     primaryNow.value = priorText.__primary;
   }
+  // The prompt box is a new element holding new text, so nothing in the old
+  // history applies to it.
+  syncPromptHistory();
+  scheduleSessionSave();
 }
 
 // Reads a file as bare base64 (no data: prefix) for Workers AI inputs.
@@ -456,6 +468,10 @@ function renderFields() {
   // Open the panel when something is already non-default — otherwise a value
   // carried over from the previous model would be invisible.
   if (optionsPanel && optionsBadge && optionsBadge.textContent) optionsPanel.open = true;
+  // The old prompt element is gone, so its undo history no longer refers to
+  // anything. Callers that then write text into the new box (selectModel,
+  // restoreSession) re-sync afterwards.
+  syncPromptHistory();
 }
 
 function inputControl(f) {
@@ -510,6 +526,7 @@ function inputControl(f) {
       box.value = word ? (text ? word + " " + text : word) : text;
       applied = word;
       box.dispatchEvent(new Event("input", { bubbles: true }));
+      commitPromptHistory(); // swapping the trigger word is one discrete change
     });
     wrap.appendChild(sel);
     wrap.appendChild(i);
@@ -589,6 +606,31 @@ async function encodeForField(f, file) {
 // Files carried across a model switch, consumed by the new model's image fields.
 let carryFiles = [];
 
+// Takes File objects the user did not just pick — carried across a model switch,
+// or restored from the last session — into one image field. The thumbnail is
+// shown straight away and the provider encoding runs behind it, because each
+// provider wants a different one (a Pruna upload, base64, a data: URI) and a
+// restored file has no usable encoding from last time.
+function adoptFiles(f, files, redraw, failPrefix) {
+  for (const file of files) {
+    const placeholder = { file, url: null, name: file.name, isImage: file.type.startsWith("image/"), preview: null, uploading: true };
+    if (placeholder.isImage) placeholder.preview = URL.createObjectURL(file);
+    uploads[f.name].push(placeholder);
+    probeMediaMeta(file).then((meta) => {
+      if (meta) Object.assign(placeholder, meta);
+    });
+    encodeForField(f, file)
+      .then((url) => { placeholder.url = url; placeholder.uploading = false; })
+      .catch((e) => {
+        releasePreview(placeholder);
+        const i = uploads[f.name].indexOf(placeholder);
+        if (i >= 0) uploads[f.name].splice(i, 1);
+        redraw();
+        setStatus(failPrefix + ": " + e.message, "err");
+      });
+  }
+}
+
 // The "image" field type is reused for audio, video, and .zip uploads (via
 // `accept`), so the picker's wording has to follow suit rather than always
 // saying "image".
@@ -665,6 +707,9 @@ function imageControl(f) {
     // A sibling field may be conditionally disabled based on this field's
     // uploads (e.g. aspect ratio once a start image sets it instead).
     refreshOptionState();
+    // Every path that adds, swaps or drops a file lands here, so this is the
+    // one place the snapshot has to follow.
+    scheduleSessionSave();
   };
 
   input.addEventListener("change", async () => {
@@ -701,24 +746,14 @@ function imageControl(f) {
   // field the current mode hides -- adopting there swallowed the file into a
   // control the user cannot see, which looked like the upload disappearing.
   if (carryFiles.length && fieldVisible(f)) {
-    const taken = carryFiles.splice(0, maxItems - uploads[f.name].length);
-    for (const file of taken) {
-      const placeholder = { file, url: null, name: file.name, isImage: file.type.startsWith("image/"), preview: null, uploading: true };
-      if (placeholder.isImage) placeholder.preview = URL.createObjectURL(file);
-      uploads[f.name].push(placeholder);
-      probeMediaMeta(file).then((meta) => {
-        if (meta) Object.assign(placeholder, meta);
-      });
-      encodeForField(f, file)
-        .then((url) => { placeholder.url = url; placeholder.uploading = false; })
-        .catch((e) => {
-          releasePreview(placeholder);
-          const i = uploads[f.name].indexOf(placeholder);
-          if (i >= 0) uploads[f.name].splice(i, 1);
-          redraw();
-          setStatus("Could not carry image over: " + e.message, "err");
-        });
-    }
+    adoptFiles(f, carryFiles.splice(0, maxItems - uploads[f.name].length), redraw, "Could not carry image over");
+  }
+
+  // Files put back from the last session's snapshot. Field-keyed rather than a
+  // flat list, so no visibility check is needed: each file returns to the field
+  // it was chosen for, and that field's own mode value is restored right after.
+  if (restoreFiles[f.name] && restoreFiles[f.name].length) {
+    adoptFiles(f, restoreFiles[f.name].splice(0, maxItems - uploads[f.name].length), redraw, "Could not restore an upload");
   }
 
   const row = document.createElement("div");
@@ -1078,6 +1113,7 @@ $("reset-btn").addEventListener("click", () => {
   renderFields();
   clearJudgeResult();
   setStatus("", "hide");
+  scheduleSessionSave();
 });
 
 // Providers word failures under different keys and the Worker passes their
@@ -1292,6 +1328,310 @@ async function resumeInFlightJob() {
   } finally {
     btn.disabled = false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Editing session persistence
+//
+// iOS discards a backgrounded PWA whenever it feels like it, and reopening from
+// the home screen is a cold start: the prompt you were drafting, the model you
+// picked, every option you changed and — worst of all — the photo you just took
+// were all gone. This keeps that whole editing state in IndexedDB on the device.
+//
+// IndexedDB rather than localStorage because the uploads are the point: it
+// stores Blobs, where localStorage would need every file base64'd into a string
+// (a third larger, synchronous, and against a ~5 MB quota).
+//
+// On-device only. Nothing here is sent to the Worker or to any provider, which
+// is the same line the prompt library and the in-flight job id already sit on:
+// the "nothing is stored" rule is about provider media on servers, not about
+// your own draft on your own phone. Restoring an upload does re-encode it for
+// whichever provider the model uses — a Pruna file URL from last time has
+// expired — and that upload is the same one you would have made by hand.
+//
+// The record is written in two halves under separate keys. The metadata half is
+// small and rewritten on every change; the file half is only rewritten when the
+// set of attached files actually changes, so typing a prompt with a 40 MB video
+// attached does not rewrite that video every 600 ms.
+//
+// Every path is failure-tolerant: a browser with IndexedDB blocked (private
+// windows, blocked site data, Lockdown Mode) or a full quota loses the restore
+// and nothing else.
+// ---------------------------------------------------------------------------
+const DB_NAME = "patchbay";
+const DB_STORE = "session";
+const META_KEY = "meta";
+const FILES_KEY = "files";
+
+// Old enough that the attached files are probably not what you meant to come
+// back to, and past the point iOS itself starts evicting storage.
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const SAVE_DEBOUNCE_MS = 600;
+// A cap so one enormous clip cannot fail the whole write; the rest of the
+// session still saves without it.
+const MAX_PERSIST_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_PERSIST_TOTAL_BYTES = 192 * 1024 * 1024;
+
+let dbPromise = null;
+let saveTimer = null;
+let persistenceReady = false; // nothing is written until the restore has run
+let restoringSession = false;
+let persistBroken = false; // one hard failure is enough to stop trying
+let lastFilesSig = null;
+// fieldName -> [File], consumed by the image controls as renderFields builds them.
+let restoreFiles = {};
+
+function openSessionDb() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve) => {
+    let req;
+    try {
+      req = indexedDB.open(DB_NAME, 1);
+    } catch {
+      return resolve(null); // no indexedDB at all, or access throws outright
+    }
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+    req.onblocked = () => resolve(null);
+  });
+  return dbPromise;
+}
+
+// Resolves rather than rejects throughout: a caller only ever wants "did it
+// work", and an unhandled rejection here must not surface as an app error.
+// { ok } separates a failed transaction from one that succeeded and found
+// nothing, which a bare value cannot.
+async function idbRun(mode, work) {
+  const db = await openSessionDb();
+  if (!db) return { ok: false, value: undefined };
+  return new Promise((resolve) => {
+    let tx;
+    try {
+      tx = db.transaction(DB_STORE, mode);
+    } catch {
+      return resolve({ ok: false, value: undefined });
+    }
+    let value;
+    tx.onabort = () => resolve({ ok: false, value: undefined });
+    tx.onerror = () => resolve({ ok: false, value: undefined });
+    tx.oncomplete = () => resolve({ ok: true, value });
+    try {
+      const req = work(tx.objectStore(DB_STORE));
+      if (req) req.onsuccess = () => { value = req.result; };
+    } catch {
+      resolve({ ok: false, value: undefined });
+    }
+  });
+}
+
+const idbGet = (key) => idbRun("readonly", (store) => store.get(key)).then((r) => r.value);
+const idbPut = (key, value) => idbRun("readwrite", (store) => store.put(value, key)).then((r) => r.ok);
+const idbDelete = (key) => idbRun("readwrite", (store) => store.delete(key)).then((r) => r.ok);
+
+async function clearSession() {
+  lastFilesSig = null;
+  await idbDelete(META_KEY);
+  await idbDelete(FILES_KEY);
+}
+
+// The raw control values, as shown. Deliberately not buildInput()'s output:
+// that is the API payload (inverted bools, omitted defaults, array-wrapped
+// singles), and what has to go back into the form is what the form displayed.
+function snapshotFieldValues() {
+  const form = $("gen-form");
+  const out = {};
+  for (const f of currentModel.fields) {
+    if (f.type === "image") continue;
+    const el = form.querySelector(`[data-field="${f.name}"]`);
+    if (!el) continue;
+    out[f.name] = f.type === "bool" ? el.checked : el.value;
+  }
+  return out;
+}
+
+// Identifies the current set of attached files well enough to tell whether the
+// stored copy is still the right one.
+function uploadsSignature() {
+  return Object.keys(uploads)
+    .sort()
+    .map((k) => k + "=" + uploads[k].map((u) => `${u.name}|${u.file ? u.file.size : 0}`).join(","))
+    .join(";");
+}
+
+function collectFilesForPersist() {
+  const out = {};
+  let total = 0;
+  for (const field of Object.keys(uploads)) {
+    for (const u of uploads[field]) {
+      if (!u.file || u.file.size > MAX_PERSIST_FILE_BYTES) continue;
+      if (total + u.file.size > MAX_PERSIST_TOTAL_BYTES) continue;
+      total += u.file.size;
+      // Stored as a plain Blob plus its name: a File survives structured
+      // cloning in principle, but the Blob path is the one every engine has
+      // supported since IndexedDB shipped, and the name is needed either way.
+      if (!out[field]) out[field] = [];
+      out[field].push({ name: u.name || u.file.name || "file", type: u.file.type || "", blob: u.file.slice() });
+    }
+  }
+  return out;
+}
+
+async function saveSessionNow() {
+  if (!persistenceReady || restoringSession || persistBroken || !currentModel) return;
+  const meta = {
+    savedAt: Date.now(),
+    modelId: currentModel.id,
+    fields: snapshotFieldValues(),
+    // Which options were deliberately set, since that alone decides whether a
+    // value equal to the default is still sent (see buildInput).
+    touched: optionRows.filter((r) => r.touched).map((r) => r.f.name),
+    optionsOpen: Boolean(optionsPanel && optionsPanel.open),
+  };
+  if (!(await idbPut(META_KEY, meta))) {
+    persistBroken = true;
+    return;
+  }
+
+  const sig = uploadsSignature();
+  if (sig === lastFilesSig) return;
+  const wrote = await idbPut(FILES_KEY, { savedAt: meta.savedAt, files: collectFilesForPersist() });
+  // Either way this file set has had its turn: retrying a quota rejection on
+  // every keystroke would just burn battery. A stored set that is now known to
+  // be out of date is dropped rather than left to be restored later.
+  lastFilesSig = sig;
+  if (!wrote) await idbDelete(FILES_KEY);
+}
+
+// Debounced, because the point is surviving a kill the app never sees coming —
+// a write that only happens on the way out is a write that may never happen.
+function scheduleSessionSave() {
+  if (!persistenceReady || restoringSession || persistBroken) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveSessionNow, SAVE_DEBOUNCE_MS);
+}
+
+function flushSessionSave() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  saveSessionNow();
+}
+
+function fileFromRecord(rec) {
+  if (rec instanceof File) return rec;
+  if (!rec || !(rec.blob instanceof Blob)) return null;
+  try {
+    // Back to a real File, so previews, Describe, Judge and re-encoding all
+    // treat it exactly like something just picked from the camera roll.
+    return new File([rec.blob], rec.name || "file", { type: rec.type || rec.blob.type || "" });
+  } catch {
+    return null;
+  }
+}
+
+async function loadSession() {
+  const meta = await idbGet(META_KEY);
+  if (!meta || typeof meta !== "object" || typeof meta.modelId !== "string") return null;
+  const age = Date.now() - (Number(meta.savedAt) || 0);
+  // A negative age means the clock moved; treat it as unusable rather than
+  // trusting it, same as the in-flight job record.
+  if (!(age >= 0) || age > SESSION_MAX_AGE_MS) {
+    await clearSession();
+    return null;
+  }
+  const rec = await idbGet(FILES_KEY);
+  const files = rec && rec.files && typeof rec.files === "object" ? rec.files : {};
+  return { meta, files };
+}
+
+async function restoreSession() {
+  let saved = null;
+  try {
+    saved = await loadSession();
+  } catch {
+    /* unreadable store — carry on with a fresh session */
+  }
+  // Saving starts now whether or not there was anything to read back.
+  persistenceReady = true;
+  if (!saved) return;
+
+  const { meta, files } = saved;
+  // A model that has left the catalogue takes its field values with it.
+  if (!MODELS.some((m) => m.id === meta.modelId)) {
+    await clearSession();
+    return;
+  }
+
+  restoringSession = true;
+  try {
+    restoreFiles = {};
+    for (const field of Object.keys(files)) {
+      if (!Array.isArray(files[field])) continue;
+      const revived = files[field].map(fileFromRecord).filter(Boolean);
+      if (revived.length) restoreFiles[field] = revived;
+    }
+    selectModel(meta.modelId); // renders the fields and adopts restoreFiles
+    applyRestoredFields(meta);
+    syncPromptHistory();
+  } catch (e) {
+    setStatus("Could not restore your last session: " + e.message, "err");
+  } finally {
+    restoreFiles = {};
+    restoringSession = false;
+    // The stored files are, by definition, the ones now attached.
+    lastFilesSig = uploadsSignature();
+  }
+}
+
+function applyRestoredFields(meta) {
+  const form = $("gen-form");
+  const values = meta.fields && typeof meta.fields === "object" ? meta.fields : {};
+  for (const f of currentModel.fields) {
+    if (f.type === "image" || !(f.name in values)) continue;
+    const el = form.querySelector(`[data-field="${f.name}"]`);
+    if (!el) continue;
+    const v = values[f.name];
+    if (f.type === "bool") {
+      el.checked = Boolean(v);
+    } else if (el.tagName === "SELECT") {
+      // An enum whose options changed since the save keeps its default rather
+      // than showing a value the model no longer offers.
+      if (!Array.from(el.options).some((o) => o.value === String(v))) continue;
+      el.value = String(v);
+    } else {
+      el.value = v == null ? "" : String(v);
+    }
+    // Drives the bool row's On/Off text and any field whose visibility depends
+    // on this one — a restored mode has to bring its own fields back with it.
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  // Those dispatches marked every row they touched as deliberately edited. The
+  // saved flags are the truth, so they go back last.
+  const touched = new Set(Array.isArray(meta.touched) ? meta.touched : []);
+  for (const r of optionRows) r.touched = touched.has(r.f.name);
+  applyVisibility();
+  refreshOptionState();
+  if (optionsPanel && (meta.optionsOpen || (optionsBadge && optionsBadge.textContent))) optionsPanel.open = true;
+}
+
+function initSessionPersistence() {
+  const form = $("gen-form");
+  form.addEventListener("input", scheduleSessionSave);
+  form.addEventListener("change", scheduleSessionSave);
+  // The model picker sits outside the form, so it needs its own listener.
+  $("model-select").addEventListener("change", scheduleSessionSave);
+  // iOS gives no reliable notice before it kills a backgrounded PWA: unload
+  // often never runs, and beforeunload is not fired for a page being discarded.
+  // visibilitychange and pagehide are the two that do arrive, so they force a
+  // write — but the debounce above is what actually makes this work, because by
+  // the time either fires the snapshot is usually already on disk.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) flushSessionSave();
+  });
+  window.addEventListener("pagehide", flushSessionSave);
 }
 
 // Pruna returns generation_url as a plain string for some models and as an
@@ -1598,6 +1938,7 @@ function initDescribe() {
       if (!res.ok || !data.description) throw new Error(data.error || `HTTP ${res.status}`);
       el.value = data.description;
       el.dispatchEvent(new Event("input", { bubbles: true }));
+      commitPromptHistory(); // the caption is one entry, so Undo puts back what you had
       setStatus("Prompt filled from the image.", "ok");
     } catch (e) {
       setStatus("Describe failed: " + e.message, "err");
@@ -1846,11 +2187,168 @@ function renderJudge(scores, raw) {
   box.classList.remove("hidden");
 }
 
+// ---------------------------------------------------------------------------
+// Prompt undo / redo
+//
+// The main prompt box only. It is the one field that gets rewritten wholesale by
+// something other than typing — Improve, Describe, loading a saved prompt — and
+// before this there was no way back from any of those except the one-shot undo
+// built into Improve itself. Nothing else on the form is covered: an option is a
+// single value you can see and set back, a prompt is paragraphs you cannot.
+//
+// The buttons are the interface. iOS has no keyboard chord for undo in a web
+// textarea and the shake-to-undo gesture does not reach one, so on a phone a
+// visible control is the only way to offer this at all; the desktop shortcuts
+// below are a convenience on top.
+//
+// History is in-memory and per-load: the text itself is what the session
+// snapshot persists, not the route taken to it.
+// ---------------------------------------------------------------------------
+// Long enough that a burst of typing is one entry, short enough that a pause to
+// think is a boundary you can come back to.
+const PROMPT_COMMIT_MS = 500;
+const PROMPT_HISTORY_MAX = 200;
+
+let promptHistory = []; // [{ text, start, end }], oldest first
+let promptIndex = -1; // which entry the box is currently showing
+let promptCommitTimer = null;
+let applyingPromptState = false;
+
+function promptStateNow() {
+  const el = primaryPromptEl();
+  if (!el) return null;
+  const start = typeof el.selectionStart === "number" ? el.selectionStart : el.value.length;
+  const end = typeof el.selectionEnd === "number" ? el.selectionEnd : start;
+  return { text: el.value, start, end };
+}
+
+// Starts the history over from whatever the box holds now. Called whenever the
+// box is rebuilt (model switch, Reset, restore) — the old entries described an
+// element that no longer exists.
+function syncPromptHistory() {
+  clearTimeout(promptCommitTimer);
+  promptCommitTimer = null;
+  const s = promptStateNow();
+  promptHistory = s ? [s] : [];
+  promptIndex = s ? 0 : -1;
+  updatePromptHistoryButtons();
+}
+
+// True while the box holds an edit that has not been committed as an entry yet —
+// i.e. mid-burst typing. Redo is unavailable in that state because those
+// keystrokes are exactly what "type something new" means.
+function promptDiverged() {
+  const s = promptStateNow();
+  if (!s || promptIndex < 0) return false;
+  return promptHistory[promptIndex].text !== s.text;
+}
+
+// Records the box's current text as one entry. Called directly by anything that
+// replaces the prompt in one go, and by the typing timer below.
+function commitPromptHistory() {
+  clearTimeout(promptCommitTimer);
+  promptCommitTimer = null;
+  const s = promptStateNow();
+  if (!s) return;
+  if (promptIndex >= 0 && promptHistory[promptIndex].text === s.text) {
+    promptHistory[promptIndex] = s; // same text, newer caret — not a new entry
+    updatePromptHistoryButtons();
+    return;
+  }
+  promptHistory.splice(promptIndex + 1); // a new edit after an undo drops the redo tail
+  promptHistory.push(s);
+  if (promptHistory.length > PROMPT_HISTORY_MAX) promptHistory.shift();
+  promptIndex = promptHistory.length - 1;
+  updatePromptHistoryButtons();
+}
+
+function applyPromptState(state) {
+  const el = primaryPromptEl();
+  if (!el) return;
+  applyingPromptState = true;
+  el.value = state.text;
+  try {
+    el.setSelectionRange(state.start, state.end);
+  } catch {
+    /* not a control with a selection — the text is what matters */
+  }
+  // Other listeners still have to hear this: a stale Improve undo has to drop,
+  // and the session snapshot has to follow the new text. The flag keeps this
+  // module's own input handler from treating it as fresh typing.
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  applyingPromptState = false;
+  updatePromptHistoryButtons();
+}
+
+const canUndoPrompt = () => promptIndex > 0 || promptDiverged();
+const canRedoPrompt = () => !promptDiverged() && promptIndex >= 0 && promptIndex < promptHistory.length - 1;
+
+function undoPrompt() {
+  if (!canUndoPrompt()) return;
+  // An uncommitted edit is committed first, so undoing out of it leaves it
+  // sitting there as the redo target rather than losing it.
+  if (promptDiverged()) commitPromptHistory();
+  if (promptIndex <= 0) {
+    updatePromptHistoryButtons();
+    return;
+  }
+  promptIndex--;
+  applyPromptState(promptHistory[promptIndex]);
+}
+
+function redoPrompt() {
+  if (!canRedoPrompt()) return;
+  promptIndex++;
+  applyPromptState(promptHistory[promptIndex]);
+}
+
+function updatePromptHistoryButtons() {
+  const u = $("prompt-undo");
+  const r = $("prompt-redo");
+  if (u) u.disabled = !canUndoPrompt();
+  if (r) r.disabled = !canRedoPrompt();
+}
+
+function initPromptHistory() {
+  $("prompt-undo").addEventListener("click", undoPrompt);
+  $("prompt-redo").addEventListener("click", redoPrompt);
+
+  // Delegated on the form, because the prompt element is replaced whenever the
+  // fields re-render.
+  $("gen-form").addEventListener("input", (e) => {
+    if (applyingPromptState) return;
+    if (e.target !== primaryPromptEl()) return;
+    // One entry per burst of typing rather than one per keystroke.
+    clearTimeout(promptCommitTimer);
+    promptCommitTimer = setTimeout(commitPromptHistory, PROMPT_COMMIT_MS);
+    updatePromptHistoryButtons();
+  });
+
+  // Desktop only, and only while the prompt itself has focus — the browser's
+  // own undo would otherwise fight this one over the same text.
+  $("gen-form").addEventListener("keydown", (e) => {
+    if (e.target !== primaryPromptEl()) return;
+    if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+    const k = (e.key || "").toLowerCase();
+    if (k === "z") {
+      e.preventDefault();
+      if (e.shiftKey) redoPrompt();
+      else undoPrompt();
+    } else if (k === "y") {
+      e.preventDefault();
+      redoPrompt();
+    }
+  });
+
+  syncPromptHistory();
+}
+
 function initPromptLibrary() {
   refreshPromptSelect();
   initImproveModelPicker();
   initDescribe();
   initJudge();
+  initPromptHistory();
 
   $("prompt-select").addEventListener("change", (e) => {
     const idx = e.target.value;
@@ -1860,6 +2358,7 @@ function initPromptLibrary() {
     if (!p || !el) return;
     el.value = p.text;
     el.dispatchEvent(new Event("input", { bubbles: true }));
+    commitPromptHistory(); // one entry for the whole load, undoable in one press
     setStatus(`Loaded prompt "${p.name}".`, "ok");
   });
 
@@ -1897,6 +2396,8 @@ function initPromptLibrary() {
     if (preImprove !== null) {
       el.value = preImprove;
       resetImproveState();
+      commitPromptHistory();
+      scheduleSessionSave();
       setStatus("Reverted to your original prompt.", "ok");
       return;
     }
@@ -1928,6 +2429,7 @@ function initPromptLibrary() {
       improvedText = data.prompt;
       el.value = data.prompt;
       el.dispatchEvent(new Event("input", { bubbles: true }));
+      commitPromptHistory(); // the rewrite is one entry, so Undo reverses it whole
       improveBtn.textContent = "↩ Undo";
       setStatus("Prompt improved — click Undo to revert.", "ok");
     } catch (e) {
