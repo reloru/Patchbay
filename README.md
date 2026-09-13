@@ -275,6 +275,18 @@ AI has no local emulation — without it every AI call fails with `Binding AI
 needs to be run remotely`. Inference during local development is billed
 normally.
 
+## Tests
+
+`npm test` drives the session restore and the prompt undo history in real
+browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
+are needed and nothing is billed. 86 assertions per engine.
+
+Run both engines. These features are about what a browser keeps, and a
+Chromium-only run once reported the session restore working while Safari's engine
+was silently failing to store the uploads. Playwright is needed and is
+deliberately not a dependency of this repo; `test/README.md` explains why and how
+to install it.
+
 ## Installing as a PWA
 
 A web manifest and touch icons are included, so the app installs to a home
