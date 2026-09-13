@@ -61,8 +61,31 @@ settings, and Workers AI neuron consumption against the free daily allowance.
 could bill twice — a generation that may already have reached the provider is
 reported rather than repeated.
 
-**No persistence.** Nothing is stored server-side. Generated media is served
-`no-store`, so neither the browser nor Cloudflare's edge keeps a copy.
+**Prompt undo/redo.** Undo and Redo buttons in the prompt toolbar cover the main
+prompt box and nothing else. Typing is grouped into one entry per burst rather
+than one per keystroke, and an Improve rewrite, a Describe caption or a loaded
+saved prompt is a single entry, so one press reverses the whole replacement.
+Editing after an undo drops the redo tail, as it does in any editor. History is
+in memory only. `Cmd`/`Ctrl`+`Z` and `Shift`+`Cmd`/`Ctrl`+`Z` work on a desktop
+keyboard while the prompt has focus; the buttons exist because iOS offers no
+undo gesture that reaches a web textarea.
+
+**Session restore.** iOS discards a backgrounded PWA whenever it needs the
+memory, and reopening it is a cold start. The current edit — attached files,
+prompt text, selected model, and every option including which were deliberately
+set — is kept in IndexedDB on the device and put back on the next load. Files are
+stored as Blobs (which is what rules localStorage out) and come back as real
+`File` objects, re-encoded for whichever provider the model uses, since last
+session's upload URL has expired. Writes are debounced rather than hung off
+`beforeunload`, which iOS does not fire for a page it is discarding. The file
+half of the record is only rewritten when the set of attached files changes.
+Blocked site data, Lockdown Mode or a full quota costs the restore and nothing
+else.
+
+**No server-side persistence.** Nothing is stored server-side. Generated media
+is served `no-store`, so neither the browser nor Cloudflare's edge keeps a copy.
+What the browser keeps — the session above, saved prompts, the running job's id —
+never leaves the device.
 
 **Job recovery.** A phone can discard the tab mid-generation to reclaim memory,
 and the provider job keeps running and billing regardless. The running job's
