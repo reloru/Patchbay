@@ -1383,6 +1383,13 @@ const SAVE_DEBOUNCE_MS = 600;
 // session still saves without it.
 const MAX_PERSIST_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_PERSIST_TOTAL_BYTES = 192 * 1024 * 1024;
+// Tighter caps for the ArrayBuffer fallback below, which unlike the Blob path
+// holds every byte in JS memory to write it. A 190 MB allocation on a phone
+// risks the very tab kill this whole feature exists to survive, so that mode
+// keeps what a camera roll actually produces — several photos and one short
+// clip — and skips anything larger.
+const MAX_BUFFER_FILE_BYTES = 24 * 1024 * 1024;
+const MAX_BUFFER_TOTAL_BYTES = 48 * 1024 * 1024;
 
 let dbPromise = null;
 let saveTimer = null;
@@ -1474,19 +1481,43 @@ function uploadsSignature() {
     .join(";");
 }
 
-function collectFilesForPersist() {
+// Whether this browser will accept a Blob in an IndexedDB value at all. Some
+// engines refuse every Blob shape — a File, a slice of one, even a Blob built
+// from bytes already in memory — and abort the whole transaction with
+// "Error preparing Blob/File data to be stored in object store", which silently
+// cost the uploads while the rest of the session restored fine. Rather than
+// guess per browser, the first file write tries Blobs and falls back to raw
+// ArrayBuffers, which every engine stores; this remembers the answer so later
+// writes go straight to what works.
+let blobStorageWorks = true;
+
+// `asBuffers` reads each file's bytes into memory instead of handing over a
+// Blob the engine may refuse. Async either way so the two paths are called the
+// same; the Blob path never awaits anything real.
+async function collectFilesForPersist(asBuffers) {
+  const maxFile = asBuffers ? MAX_BUFFER_FILE_BYTES : MAX_PERSIST_FILE_BYTES;
+  const maxTotal = asBuffers ? MAX_BUFFER_TOTAL_BYTES : MAX_PERSIST_TOTAL_BYTES;
   const out = {};
   let total = 0;
   for (const field of Object.keys(uploads)) {
     for (const u of uploads[field]) {
-      if (!u.file || u.file.size > MAX_PERSIST_FILE_BYTES) continue;
-      if (total + u.file.size > MAX_PERSIST_TOTAL_BYTES) continue;
+      if (!u.file || u.file.size > maxFile) continue;
+      if (total + u.file.size > maxTotal) continue;
+      // The name and type ride alongside either way: a File's own name does not
+      // survive every engine's structured clone, and the bytes carry neither.
+      const rec = { name: u.name || u.file.name || "file", type: u.file.type || "" };
+      if (asBuffers) {
+        try {
+          rec.buf = await u.file.arrayBuffer();
+        } catch {
+          continue; // unreadable file — skip it rather than fail the whole write
+        }
+      } else {
+        rec.blob = u.file.slice();
+      }
       total += u.file.size;
-      // Stored as a plain Blob plus its name: a File survives structured
-      // cloning in principle, but the Blob path is the one every engine has
-      // supported since IndexedDB shipped, and the name is needed either way.
       if (!out[field]) out[field] = [];
-      out[field].push({ name: u.name || u.file.name || "file", type: u.file.type || "", blob: u.file.slice() });
+      out[field].push(rec);
     }
   }
   return out;
@@ -1510,12 +1541,23 @@ async function saveSessionNow() {
 
   const sig = uploadsSignature();
   if (sig === lastFilesSig) return;
-  const wrote = await idbPut(FILES_KEY, { savedAt: meta.savedAt, files: collectFilesForPersist() });
+  let wrote = await writeFiles(meta.savedAt, blobStorageWorks);
+  if (!wrote && blobStorageWorks) {
+    // The Blob attempt failed. It may have been a quota rejection, but it is
+    // just as likely this engine refuses Blobs outright, so try the bytes
+    // before writing the uploads off.
+    blobStorageWorks = false;
+    wrote = await writeFiles(meta.savedAt, false);
+  }
   // Either way this file set has had its turn: retrying a quota rejection on
   // every keystroke would just burn battery. A stored set that is now known to
   // be out of date is dropped rather than left to be restored later.
   lastFilesSig = sig;
   if (!wrote) await idbDelete(FILES_KEY);
+}
+
+async function writeFiles(savedAt, asBlobs) {
+  return await idbPut(FILES_KEY, { savedAt, files: await collectFilesForPersist(!asBlobs) });
 }
 
 // Debounced, because the point is surviving a kill the app never sees coming —
@@ -1532,13 +1574,16 @@ function flushSessionSave() {
   saveSessionNow();
 }
 
+// Accepts either shape the writer above may have produced.
 function fileFromRecord(rec) {
   if (rec instanceof File) return rec;
-  if (!rec || !(rec.blob instanceof Blob)) return null;
+  if (!rec) return null;
+  const body = rec.blob instanceof Blob ? rec.blob : rec.buf instanceof ArrayBuffer ? rec.buf : null;
+  if (!body) return null;
   try {
     // Back to a real File, so previews, Describe, Judge and re-encoding all
     // treat it exactly like something just picked from the camera roll.
-    return new File([rec.blob], rec.name || "file", { type: rec.type || rec.blob.type || "" });
+    return new File([body], rec.name || "file", { type: rec.type || (rec.blob && rec.blob.type) || "" });
   } catch {
     return null;
   }
