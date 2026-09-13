@@ -37,7 +37,8 @@ models as a copy edit: grammar, phrasing and punctuation only. It adds nothing,
 drops nothing, keeps your pronouns and your grammatical mood, and avoids commas,
 which image models read as tag separators rather than punctuation. The result
 reaches the prompt box exactly as the model produced it — the Worker does not
-rewrite it afterwards.
+rewrite it afterwards. Reverting a rewrite is the prompt Undo button's job, so
+the button stays Improve rather than turning into a one-shot undo of its own.
 
 **Image description.** Describe captions an image with one of 3 Workers AI
 vision models and drops the caption in as a starting prompt. It reads whatever
@@ -63,12 +64,16 @@ reported rather than repeated.
 
 **Prompt undo/redo.** Undo and Redo buttons in the prompt toolbar cover the main
 prompt box and nothing else. Typing is grouped into one entry per burst rather
-than one per keystroke, and an Improve rewrite, a Describe caption or a loaded
-saved prompt is a single entry, so one press reverses the whole replacement.
-Editing after an undo drops the redo tail, as it does in any editor. History is
-in memory only. `Cmd`/`Ctrl`+`Z` and `Shift`+`Cmd`/`Ctrl`+`Z` work on a desktop
-keyboard while the prompt has focus; the buttons exist because iOS offers no
-undo gesture that reaches a web textarea.
+than one per keystroke, and an Improve rewrite, a Describe caption, a loaded
+saved prompt or a Reset is a single entry, so one press reverses the whole
+replacement. Editing after an undo drops the redo tail, as it does in any
+editor. The history is text rather than a handle on the element it was typed
+into, so it survives switching models and a Reset; a model with no prompt field
+holds it rather than dropping it, and the buttons come back with the next model
+that has one. History is in memory only. `Cmd`/`Ctrl`+`Z` and
+`Shift`+`Cmd`/`Ctrl`+`Z` work on a desktop keyboard while the prompt has focus;
+the buttons exist because iOS offers no undo gesture that reaches a web
+textarea.
 
 **Session restore.** iOS discards a backgrounded PWA whenever it needs the
 memory, and reopening it is a cold start. The current edit — attached files,
