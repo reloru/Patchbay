@@ -227,6 +227,9 @@ function selectModel(id) {
   // uploaded files (re-encoded for whatever the new provider expects).
   const priorText = {};
   const form = $("gen-form");
+  // Same reason as Reset: an uncommitted edit has to make it into the history
+  // before the prompt element goes away.
+  commitPromptHistory();
   // A restore is not a switch: every value is about to be written from the
   // snapshot, so carrying anything over from the model shown at boot would only
   // leak that model's defaults into fields the snapshot does not mention.
@@ -250,7 +253,6 @@ function selectModel(id) {
   // carryFiles already holds the File objects; revoking the old previews here
   // is safe, and the carried files get fresh preview URLs when re-adopted.
   clearUploads();
-  resetImproveState();
   renderFields();
   carryFiles = [];
 
@@ -267,9 +269,12 @@ function selectModel(id) {
   if (primaryNow && !primaryNow.value.trim() && priorText.__primary) {
     primaryNow.value = priorText.__primary;
   }
-  // The prompt box is a new element holding new text, so nothing in the old
-  // history applies to it.
-  syncPromptHistory();
+  // The undo history survives the switch: it holds text, not the element the
+  // text was typed into. Committing here records whatever the new box ended up
+  // with — usually the same text carried straight over, in which case this is a
+  // no-op; a new model's own default, or an empty box after a model with no
+  // prompt field at all, becomes an entry you can undo back out of.
+  commitPromptHistory();
   scheduleSessionSave();
 }
 
@@ -468,10 +473,10 @@ function renderFields() {
   // Open the panel when something is already non-default — otherwise a value
   // carried over from the previous model would be invisible.
   if (optionsPanel && optionsBadge && optionsBadge.textContent) optionsPanel.open = true;
-  // The old prompt element is gone, so its undo history no longer refers to
-  // anything. Callers that then write text into the new box (selectModel,
-  // restoreSession) re-sync afterwards.
-  syncPromptHistory();
+  // The prompt element has been replaced, so the buttons' enabled state has to
+  // be recomputed against the new box — the history itself carries over, and
+  // every caller settles the new text and commits it afterwards.
+  updatePromptHistoryButtons();
 }
 
 function inputControl(f) {
@@ -1109,10 +1114,17 @@ $("gen-form").addEventListener("submit", async (e) => {
 });
 
 $("reset-btn").addEventListener("click", () => {
+  // Before the box is rebuilt, so a burst of typing that has not hit its commit
+  // boundary yet is still in the history to come back to.
+  commitPromptHistory();
   clearUploads();
   renderFields();
   clearJudgeResult();
   setStatus("", "hide");
+  // Reset puts every field back to its default, the prompt included. That is a
+  // change to the prompt like any other, so it becomes an undo entry — Undo
+  // brings the prompt back, though only the prompt: the rest stays reset.
+  commitPromptHistory();
   scheduleSessionSave();
 });
 
@@ -1799,19 +1811,6 @@ function refreshPromptSelect(keepValue) {
 
 const IMPROVE_MODEL_KEY = "pruna_improve_model";
 
-// "Improve" rewrites the prompt in place and keeps the original so a second
-// click can undo it. Editing the prompt afterwards makes the undo stale, so the
-// button goes back to "Improve" rather than offering to restore unrelated text.
-let preImprove = null;
-let improvedText = null;
-
-function resetImproveState() {
-  preImprove = null;
-  improvedText = null;
-  const b = $("prompt-improve");
-  if (b) b.textContent = "✨ Improve";
-}
-
 // Groups a list of {family, label} into <optgroup>s, families in first-seen
 // order. Anything without a family is appended ungrouped rather than dropped.
 function fillGroupedSelect(sel, list, optionLabel) {
@@ -2191,18 +2190,23 @@ function renderJudge(scores, raw) {
 // Prompt undo / redo
 //
 // The main prompt box only. It is the one field that gets rewritten wholesale by
-// something other than typing — Improve, Describe, loading a saved prompt — and
-// before this there was no way back from any of those except the one-shot undo
-// built into Improve itself. Nothing else on the form is covered: an option is a
-// single value you can see and set back, a prompt is paragraphs you cannot.
+// something other than typing — Improve, Describe, loading a saved prompt,
+// Reset — and none of those used to have a way back. Nothing else on the form is
+// covered: an option is a single value you can see and set back, a prompt is
+// paragraphs you cannot.
 //
 // The buttons are the interface. iOS has no keyboard chord for undo in a web
 // textarea and the shake-to-undo gesture does not reach one, so on a phone a
 // visible control is the only way to offer this at all; the desktop shortcuts
 // below are a convenience on top.
 //
-// History is in-memory and per-load: the text itself is what the session
-// snapshot persists, not the route taken to it.
+// The history is text, not a reference to the element the text was typed into,
+// so it outlives the prompt box: switching models keeps it, and so does a Reset.
+// A model with no prompt field at all simply has nothing to apply it to, so the
+// buttons go inert there and come back when a prompt field does.
+//
+// In memory and per-load: the text itself is what the session snapshot persists,
+// not the route taken to it.
 // ---------------------------------------------------------------------------
 // Long enough that a burst of typing is one entry, short enough that a pause to
 // think is a boundary you can come back to.
@@ -2222,9 +2226,9 @@ function promptStateNow() {
   return { text: el.value, start, end };
 }
 
-// Starts the history over from whatever the box holds now. Called whenever the
-// box is rebuilt (model switch, Reset, restore) — the old entries described an
-// element that no longer exists.
+// Starts the history over from whatever the box holds now. A page load only:
+// there is no earlier history to keep, and a restored prompt is the baseline
+// rather than something to undo out of.
 function syncPromptHistory() {
   clearTimeout(promptCommitTimer);
   promptCommitTimer = null;
@@ -2280,8 +2284,12 @@ function applyPromptState(state) {
   updatePromptHistoryButtons();
 }
 
-const canUndoPrompt = () => promptIndex > 0 || promptDiverged();
-const canRedoPrompt = () => !promptDiverged() && promptIndex >= 0 && promptIndex < promptHistory.length - 1;
+// A model with no prompt field has nowhere to put a restored state, so the
+// history is held rather than applied — it comes back with the next model that
+// does have one.
+const canUndoPrompt = () => Boolean(primaryPromptEl()) && (promptIndex > 0 || promptDiverged());
+const canRedoPrompt = () =>
+  Boolean(primaryPromptEl()) && !promptDiverged() && promptIndex >= 0 && promptIndex < promptHistory.length - 1;
 
 function undoPrompt() {
   if (!canUndoPrompt()) return;
@@ -2386,21 +2394,16 @@ function initPromptLibrary() {
     setStatus(`Saved prompt "${name}".`, "ok");
   });
 
-  // "Improve" rewrites the prompt in place via a small chat model, keeping the
-  // previous text so a second click can undo it.
+  // "Improve" rewrites the prompt in place via a small chat model. It used to
+  // turn into its own one-shot "↩ Undo" afterwards, which is now the prompt
+  // Undo button's job — and that one is not one-shot, does not go stale when you
+  // type, and covers Describe and saved prompts the same way. So the button
+  // stays Improve and only ever improves.
   const improveBtn = $("prompt-improve");
+  const improveIdle = improveBtn.textContent;
   improveBtn.addEventListener("click", async () => {
     const el = primaryPromptEl();
     if (!el) return;
-
-    if (preImprove !== null) {
-      el.value = preImprove;
-      resetImproveState();
-      commitPromptHistory();
-      scheduleSessionSave();
-      setStatus("Reverted to your original prompt.", "ok");
-      return;
-    }
 
     const text = el.value.trim();
     if (!text) {
@@ -2425,30 +2428,18 @@ function initPromptLibrary() {
       });
       const data = await res.json();
       if (!res.ok || !data.prompt) throw new Error(data.error || `HTTP ${res.status}`);
-      preImprove = text;
-      improvedText = data.prompt;
       el.value = data.prompt;
       el.dispatchEvent(new Event("input", { bubbles: true }));
       commitPromptHistory(); // the rewrite is one entry, so Undo reverses it whole
-      improveBtn.textContent = "↩ Undo";
-      setStatus("Prompt improved — click Undo to revert.", "ok");
+      setStatus("Prompt improved — press Undo to revert.", "ok");
     } catch (e) {
       setStatus("Improve failed: " + e.message, "err");
     } finally {
+      // Restored here rather than on the success path alone: a failed rewrite
+      // used to leave the button reading "Improving…" until a model switch.
       improveBtn.disabled = false;
+      improveBtn.textContent = improveIdle;
     }
-  });
-
-  // A new prompt from any other source invalidates the undo buffer.
-  $("prompt-select").addEventListener("change", resetImproveState);
-
-  // Typing in the prompt invalidates the undo. Delegated on the form because
-  // the prompt element is rebuilt whenever fields re-render.
-  $("gen-form").addEventListener("input", (e) => {
-    if (preImprove === null) return;
-    if (e.target !== primaryPromptEl()) return;
-    if (e.target.value === improvedText) return; // our own programmatic set
-    resetImproveState();
   });
 
   $("prompt-del").addEventListener("click", () => {
