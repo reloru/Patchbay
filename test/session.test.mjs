@@ -1,0 +1,590 @@
+// Browser tests for the on-device editing session and the prompt undo history.
+// Run through `npm test`, which starts test/server.mjs first; see test/README.md.
+//
+// Takes the engine as its first argument, because these two features are about
+// what a browser keeps and iOS is the platform that matters. A Chromium-only run
+// of this exact suite once reported the session restore working while Safari's
+// engine silently failed to store the uploads — the storage assertions below
+// pass in Chromium and failed in WebKit until the ArrayBuffer fallback landed.
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadPlaywright } from "./playwright.mjs";
+
+const ENGINE_NAME = process.argv[2] === "webkit" ? "webkit" : "chromium";
+const BASE = `http://localhost:${Number(process.env.PORT) || 8788}/`;
+const playwright = await loadPlaywright();
+const ENGINE = playwright[ENGINE_NAME];
+
+const dir = mkdtempSync(join(tmpdir(), "pb-"));
+
+// 1x1 PNG and a tiny "video" stand-in for the file-field tests.
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
+  "base64"
+);
+const imgPath = join(dir, "cat.png");
+writeFileSync(imgPath, PNG);
+
+let pass = 0;
+const fails = [];
+function check(name, cond, extra = "") {
+  if (cond) {
+    pass++;
+    console.log(`  ok   ${name}`);
+  } else {
+    fails.push(name + (extra ? ` — ${extra}` : ""));
+    console.log(`  FAIL ${name}${extra ? " — " + extra : ""}`);
+  }
+}
+
+const promptSel = '[data-field="prompt"]';
+
+async function open(context, init) {
+  const page = await context.newPage();
+  page.on("pageerror", (e) => {
+    fails.push("pageerror: " + e.message);
+    console.log("  FAIL pageerror: " + e.message);
+  });
+  if (init) await page.addInitScript(init);
+  await page.goto(BASE);
+  await page.waitForSelector("#app:not(.hidden)");
+  await page.waitForFunction(() => document.querySelector("#footer-note").textContent.length > 0);
+  // Let the restore's async IndexedDB reads settle.
+  await page.waitForTimeout(350);
+  return page;
+}
+
+const settle = (page) => page.waitForTimeout(900); // > SAVE_DEBOUNCE_MS
+
+const browser = await ENGINE.launch();
+console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
+
+// ── Persistence ────────────────────────────────────────────────────────────
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+
+  // model + prompt + options
+  await page.selectOption("#model-select", "p-image");
+  await page.fill(promptSel, "a cat wearing a tiny hat");
+  await page.locator(".options > summary").click();
+  await page.fill('[data-field="width"]', "1536");
+  await page.selectOption('[data-field="aspect_ratio"]', "9:16");
+  // The real checkbox is visually replaced by the switch track, so the label is
+  // what a user taps.
+  await page.locator('label.toggle:has([data-field="prompt_upsampling"])').click();
+  await settle(page);
+  const badgeBefore = await page.locator(".opt-badge").textContent();
+  await page.close();
+
+  page = await open(context);
+  check("model restored", (await page.inputValue("#model-select")) === "p-image");
+  check("prompt restored", (await page.inputValue(promptSel)) === "a cat wearing a tiny hat");
+  // The restored text is the baseline: there is no history from last time to
+  // undo into, and the first edit after a reopen undoes back to it.
+  check("undo disabled after a restore", await page.locator("#prompt-undo").isDisabled());
+  await page.locator(promptSel).pressSequentially(" and boots", { delay: 15 });
+  await page.waitForTimeout(700);
+  await page.locator("#prompt-undo").click();
+  check("undo after a restore returns the restored text", (await page.inputValue(promptSel)) === "a cat wearing a tiny hat");
+  await page.locator("#prompt-redo").click();
+  await page.fill(promptSel, "a cat wearing a tiny hat");
+  await page.waitForTimeout(700);
+  check("number option restored", (await page.inputValue('[data-field="width"]')) === "1536");
+  check("enum option restored", (await page.inputValue('[data-field="aspect_ratio"]')) === "9:16");
+  check("bool option restored", await page.locator('[data-field="prompt_upsampling"]').isChecked());
+  check("options panel reopened", await page.locator(".options").evaluate((d) => d.open));
+  const badgeAfter = await page.locator(".opt-badge").textContent();
+  check("changed count restored", badgeBefore === badgeAfter, `${badgeBefore} vs ${badgeAfter}`);
+
+  // uploads: p-image-edit takes up to 5 images
+  await page.selectOption("#model-select", "p-image-edit");
+  await page.setInputFiles(".file-input", imgPath);
+  await page.waitForSelector(".thumbs .thumb img");
+  await page.fill(promptSel, "make it rain");
+  await settle(page);
+  const uploadsBefore = (await (await fetch(BASE + "__uploads")).json()).uploadCount;
+  await page.close();
+
+  page = await open(context);
+  check("upload survived reopen", (await page.locator(".thumbs .thumb").count()) === 1);
+  const restored = await page.evaluate(() =>
+    (uploads.images || []).map((u) => ({
+      isFile: u.file instanceof File,
+      name: u.file && u.file.name,
+      type: u.file && u.file.type,
+      size: u.file && u.file.size,
+      url: u.url,
+    }))
+  );
+  check(
+    "upload is a real File again, named and typed",
+    restored.length === 1 &&
+      restored[0].isFile &&
+      restored[0].name === "cat.png" &&
+      restored[0].type === "image/png" &&
+      restored[0].size === 70,
+    JSON.stringify(restored)
+  );
+  check("restored upload got a fresh provider url", /^https:\/\/files\.pruna\.ai\//.test(restored[0].url || ""), restored[0].url);
+  check("prompt restored with upload", (await page.inputValue(promptSel)) === "make it rain");
+  const uploadsAfter = (await (await fetch(BASE + "__uploads")).json()).uploadCount;
+  check("restored file was re-encoded for the provider", uploadsAfter === uploadsBefore + 1, `${uploadsBefore} -> ${uploadsAfter}`);
+  const thumbSrc = await page.locator(".thumbs .thumb img").getAttribute("src");
+  check("restored thumbnail has a fresh preview url", /^blob:/.test(thumbSrc), thumbSrc);
+
+  // model switch with an image attached still carries it over
+  await page.selectOption("#model-select", "p-image-edit-text-aware");
+  await page.waitForTimeout(200);
+  const carried = await page.locator(".thumbs .thumb").count();
+  check("image carries across a model switch", carried === 1, `thumbs=${carried}`);
+  await settle(page);
+  await page.close();
+
+  page = await open(context);
+  check("switched model persisted", (await page.inputValue("#model-select")) === "p-image-edit-text-aware");
+  check("carried image persisted", (await page.locator(".thumbs .thumb").count()) === 1);
+
+  // Reset clears the snapshot too
+  await page.locator("#reset-btn").click();
+  await settle(page);
+  await page.close();
+  page = await open(context);
+  check("Reset persisted as empty", (await page.locator(".thumbs .thumb").count()) === 0);
+  check("Reset cleared the prompt for good", (await page.inputValue(promptSel)) === "");
+  await page.close();
+  await context.close();
+}
+
+// ── IndexedDB unavailable ──────────────────────────────────────────────────
+{
+  const context = await browser.newContext();
+  const page = await open(context, () => {
+    Object.defineProperty(window, "indexedDB", {
+      get() {
+        throw new Error("IndexedDB is blocked");
+      },
+    });
+  });
+  await page.fill(promptSel, "still works without storage");
+  await settle(page);
+  check("app usable with IndexedDB blocked", (await page.inputValue(promptSel)) === "still works without storage");
+  check("no error status shown", await page.locator("#status").evaluate((el) => el.classList.contains("hidden")));
+  // Undo still works with no storage at all.
+  await page.waitForTimeout(600);
+  await page.locator("#prompt-undo").click();
+  check("undo works with IndexedDB blocked", (await page.inputValue(promptSel)) === "");
+  await page.close();
+  await context.close();
+}
+
+// ── An engine that refuses Blobs in IndexedDB ──────────────────────────────
+//
+// WebKit aborts the whole transaction with "Error preparing Blob/File data to be
+// stored in object store" for any value containing a Blob, which cost exactly the
+// uploads while everything else restored. This reproduces that refusal in
+// whichever engine is running — abort the transaction the way WebKit does — so the
+// ArrayBuffer fallback is covered even in a browser that would have taken the
+// Blob happily.
+{
+  const context = await browser.newContext();
+  const refuseBlobs = () => {
+    const holdsBlob = (v) => {
+      if (v instanceof Blob) return true;
+      if (!v || typeof v !== "object") return false;
+      return Object.values(v).some((x) => holdsBlob(x));
+    };
+    const realPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value, key) {
+      if (!holdsBlob(value)) return realPut.call(this, value, key);
+      const req = realPut.call(this, { refused: true }, key);
+      try {
+        this.transaction.abort();
+      } catch {
+        /* already finished — the request result is moot either way */
+      }
+      return req;
+    };
+  };
+
+  let page = await open(context, refuseBlobs);
+  await page.selectOption("#model-select", "p-image-edit");
+  await page.setInputFiles(".file-input", imgPath);
+  await page.waitForSelector(".thumbs .thumb img");
+  await page.fill(promptSel, "stored as bytes");
+  await settle(page);
+  const shape = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const r = indexedDB.open("patchbay", 1);
+        r.onsuccess = () => {
+          const tx = r.result.transaction("session", "readonly");
+          const g = tx.objectStore("session").get("files");
+          tx.oncomplete = () => {
+            const rec = g.result && g.result.files && g.result.files.images && g.result.files.images[0];
+            resolve(
+              !rec
+                ? "no record"
+                : rec.buf instanceof ArrayBuffer
+                  ? "buf:" + rec.buf.byteLength
+                  : rec.blob
+                    ? "blob"
+                    : "neither"
+            );
+          };
+          tx.onerror = () => resolve("read failed");
+        };
+        r.onerror = () => resolve("open failed");
+      })
+  );
+  check("falls back to storing the bytes", shape === "buf:70", shape);
+  await page.close();
+
+  page = await open(context, refuseBlobs);
+  check("upload restores from the byte fallback", (await page.locator(".thumbs .thumb").count()) === 1);
+  const back = await page.evaluate(() =>
+    (uploads.images || []).map((u) => ({ isFile: u.file instanceof File, name: u.file && u.file.name, size: u.file && u.file.size }))
+  );
+  check(
+    "byte fallback restores a named File",
+    back.length === 1 && back[0].isFile && back[0].name === "cat.png" && back[0].size === 70,
+    JSON.stringify(back)
+  );
+  check("prompt restored alongside it", (await page.inputValue(promptSel)) === "stored as bytes");
+  await page.close();
+  await context.close();
+}
+
+// ── Undo / redo ────────────────────────────────────────────────────────────
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  const undo = page.locator("#prompt-undo");
+  const redo = page.locator("#prompt-redo");
+
+  check("undo disabled on a fresh load", await undo.isDisabled());
+  check("redo disabled on a fresh load", await redo.isDisabled());
+
+  // Typing: one entry per burst, not per keystroke.
+  await page.locator(promptSel).pressSequentially("hello world", { delay: 15 });
+  await page.waitForTimeout(700);
+  check("undo enabled after typing", await undo.isEnabled());
+  await undo.click();
+  check("a typing burst is one undo entry", (await page.inputValue(promptSel)) === "", await page.inputValue(promptSel));
+  check("redo enabled after undo", await redo.isEnabled());
+  await redo.click();
+  check("redo restores the burst", (await page.inputValue(promptSel)) === "hello world");
+  check("redo disabled at the tip", await redo.isDisabled());
+
+  // Undo → type → redo cleared
+  await undo.click();
+  check("undo again empties it", (await page.inputValue(promptSel)) === "");
+  await page.locator(promptSel).pressSequentially("brand new text", { delay: 15 });
+  check("typing clears redo immediately", await redo.isDisabled());
+  await page.waitForTimeout(700);
+  check("redo still cleared after the commit", await redo.isDisabled());
+  await undo.click();
+  check("undo after retyping goes back to empty", (await page.inputValue(promptSel)) === "");
+
+  // Improve → Undo
+  await page.fill(promptSel, "cat on a skateboard");
+  await page.waitForTimeout(700);
+  await page.locator("#prompt-improve").click();
+  await page.waitForFunction(
+    (s) => document.querySelector(s).value === "IMPROVED PROMPT TEXT",
+    promptSel
+  );
+  check("Improve stays Improve rather than becoming its own undo", (await page.locator("#prompt-improve").textContent()) === "✨ Improve");
+  await undo.click();
+  check("Improve is undoable in one press", (await page.inputValue(promptSel)) === "cat on a skateboard");
+  await redo.click();
+  check("Improve is redoable", (await page.inputValue(promptSel)) === "IMPROVED PROMPT TEXT");
+  await undo.click();
+
+  // Describe → Undo (uses the file picker path)
+  await page.setInputFiles("#describe-file", imgPath);
+  await page.waitForFunction((s) => document.querySelector(s).value === "STUB CAPTION TEXT", promptSel);
+  await undo.click();
+  check("Describe is undoable in one press", (await page.inputValue(promptSel)) === "cat on a skateboard");
+
+  // Saved prompt load → Undo
+  await page.evaluate(() =>
+    localStorage.setItem("pruna_prompts", JSON.stringify([{ name: "saved one", text: "a saved prompt body" }]))
+  );
+  await page.reload();
+  await page.waitForSelector("#app:not(.hidden)");
+  await page.waitForTimeout(400);
+  const before = await page.inputValue(promptSel);
+  await page.selectOption("#prompt-select", "0");
+  check("saved prompt loaded", (await page.inputValue(promptSel)) === "a saved prompt body");
+  await page.locator("#prompt-undo").click();
+  check("loading a saved prompt is undoable", (await page.inputValue(promptSel)) === before, `back to "${await page.inputValue(promptSel)}" want "${before}"`);
+
+  // Keyboard shortcuts (desktop)
+  await page.fill(promptSel, "");
+  await page.locator(promptSel).pressSequentially("keyboard test", { delay: 15 });
+  await page.waitForTimeout(700);
+  await page.locator(promptSel).press("Control+z");
+  check("Ctrl+Z undoes", (await page.inputValue(promptSel)) !== "keyboard test");
+  await page.locator(promptSel).press("Control+Shift+z");
+  check("Ctrl+Shift+Z redoes", (await page.inputValue(promptSel)) === "keyboard test");
+
+  // Improve twice in a row: the second click improves again rather than reverting.
+  await page.fill(promptSel, "first text");
+  await page.waitForTimeout(700);
+  await page.locator("#prompt-improve").click();
+  await page.waitForFunction((s) => document.querySelector(s).value === "IMPROVED PROMPT TEXT", promptSel);
+  await page.fill(promptSel, "second text");
+  await page.waitForTimeout(700);
+  await page.locator("#prompt-improve").click();
+  await page.waitForFunction((s) => document.querySelector(s).value === "IMPROVED PROMPT TEXT", promptSel);
+  check("a second Improve improves instead of reverting", (await page.inputValue(promptSel)) === "IMPROVED PROMPT TEXT");
+  await undo.click();
+  check("the second Improve is undoable to its own input", (await page.inputValue(promptSel)) === "second text");
+
+  // History survives a model switch.
+  await page.fill(promptSel, "text typed on the first model");
+  await page.waitForTimeout(700);
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(200);
+  check("prompt carried across the switch", (await page.inputValue(promptSel)) === "text typed on the first model");
+  check("undo still available after a model switch", await undo.isEnabled());
+  await undo.click();
+  check("undo after a switch reaches pre-switch text", (await page.inputValue(promptSel)) === "second text");
+  await redo.click();
+  check("redo after a switch works too", (await page.inputValue(promptSel)) === "text typed on the first model");
+
+  // A model with no prompt field holds the history rather than dropping it.
+  await page.selectOption("#model-select", "p-image-upscale");
+  await page.waitForTimeout(200);
+  check("no prompt field means no prompt to undo", await undo.isDisabled());
+  check("redo inert on a promptless model", await redo.isDisabled());
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(200);
+  check("undo returns with the next model that has a prompt", await undo.isEnabled());
+  await undo.click();
+  check("text lost to the promptless model is recoverable", (await page.inputValue(promptSel)) === "text typed on the first model");
+
+  // Reset is an undo entry for the prompt.
+  await page.fill(promptSel, "about to be reset");
+  await page.waitForTimeout(700);
+  await page.locator("#reset-btn").click();
+  check("Reset clears the prompt", (await page.inputValue(promptSel)) === "");
+  check("Reset is undoable", await undo.isEnabled());
+  await undo.click();
+  check("undo after Reset restores the prompt", (await page.inputValue(promptSel)) === "about to be reset");
+
+  // Reset mid-burst, before the typing timer fires.
+  await page.fill(promptSel, "");
+  await page.waitForTimeout(700);
+  await page.locator(promptSel).pressSequentially("typed then immediately reset", { delay: 5 });
+  await page.locator("#reset-btn").click();
+  await undo.click();
+  check("an uncommitted edit survives Reset", (await page.inputValue(promptSel)) === "typed then immediately reset");
+  await page.close();
+  await context.close();
+}
+
+// ── Mode-dependent fields, multi-file fields, stale records ────────────────
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+
+  // A field that only exists in one mode: xAI video's source video belongs to
+  // edit/extend, and the mode itself is restored from the same snapshot.
+  const vidPath = join(dir, "clip.mp4");
+  writeFileSync(vidPath, Buffer.from("00000018667479706d70343200000000", "hex"));
+  await page.selectOption("#model-select", "xai-imagine-video");
+  await page.selectOption('[data-field="mode"]', "edits");
+  await page.locator('label.field:has-text("Source video") .file-input').setInputFiles(vidPath);
+  await page.waitForSelector(".thumbs .thumb.file");
+  await page.fill(promptSel, "make the sky purple");
+  await settle(page);
+  await page.close();
+
+  page = await open(context);
+  check("mode restored", (await page.inputValue('[data-field="mode"]')) === "edits");
+  check("mode-only field is visible again", await page.locator('label.field:has-text("Source video")').isVisible());
+  check("video file restored into its own field", (await page.locator(".thumbs .thumb.file").count()) === 1);
+  const vid = await page.evaluate(() => (uploads.video || []).map((u) => ({ n: u.file && u.file.name, url: (u.url || "").slice(0, 14) })));
+  check("restored video re-encoded as a data URI for xAI", vid.length === 1 && vid[0].n === "clip.mp4" && vid[0].url === "data:video/mp4", JSON.stringify(vid));
+
+  // Several files in one field.
+  await page.selectOption("#model-select", "p-image-edit");
+  const imgPath2 = join(dir, "dog.png");
+  writeFileSync(imgPath2, PNG);
+  await page.setInputFiles(".file-input", [imgPath, imgPath2]);
+  await page.waitForFunction(() => document.querySelectorAll(".thumbs .thumb").length === 2);
+  await settle(page);
+  await page.close();
+
+  page = await open(context);
+  // Three: the clip carried over from the xAI model, plus the two just added.
+  check("every file in a multi-file field restored", (await page.locator(".thumbs .thumb").count()) === 3);
+  check("file count label restored", (await page.locator(".file-status").textContent()).includes("3 of 5"));
+  const names = await page.evaluate(() => (uploads.images || []).map((u) => u.file.name));
+  check("restored in the original order", names.join(",") === "clip.mp4,cat.png,dog.png", names.join(","));
+  check("mixed image and non-image thumbs restored", (await page.locator(".thumbs .thumb.file").count()) === 1);
+  await page.close();
+  await context.close();
+}
+
+// ── A snapshot naming a model that has left the catalogue ──────────────────
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const r = indexedDB.open("patchbay", 1);
+        r.onsuccess = () => {
+          const tx = r.result.transaction("session", "readwrite");
+          tx.objectStore("session").put({ savedAt: Date.now(), modelId: "model-that-left", fields: { prompt: "x" }, touched: [] }, "meta");
+          tx.oncomplete = () => resolve();
+        };
+      })
+  );
+  // Stop the page's own pagehide flush from overwriting the record just planted.
+  await page.evaluate(() => { persistBroken = true; });
+  await page.close();
+  page = await open(context);
+  check("boots on the default model when the saved one is gone", (await page.inputValue("#model-select")) === "p-image-edit");
+  check("prompt left empty by the unusable snapshot", (await page.inputValue(promptSel)) === "");
+  const wiped = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const r = indexedDB.open("patchbay", 1);
+        r.onsuccess = () => {
+          const tx = r.result.transaction("session", "readonly");
+          const g = tx.objectStore("session").get("meta");
+          g.onsuccess = () => resolve(g.result === undefined || g.result.modelId !== "model-that-left");
+        };
+      })
+  );
+  check("unusable snapshot discarded", wiped);
+  await page.close();
+  await context.close();
+}
+
+// ── A restored session generates the payload it was left with ──────────────
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+  await page.selectOption("#model-select", "p-image-edit");
+  await page.setInputFiles(".file-input", imgPath);
+  await page.waitForSelector(".thumbs .thumb img");
+  await page.fill(promptSel, "restored payload prompt");
+  await page.locator(".options > summary").click();
+  await page.selectOption('[data-field="aspect_ratio"]', "3:2");
+  // seed defaults to "" and its own -1 means "randomise": setting it is only
+  // sent because the row is marked deliberately edited, which is the flag the
+  // snapshot has to carry.
+  await page.fill('[data-field="seed"]', "1234");
+  await settle(page);
+  // What this same state sends before any reopen, to compare against.
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#status.ok");
+  const fresh = await (await fetch(BASE + "__generate")).json();
+  await page.close();
+
+  page = await open(context);
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#status.ok");
+  const sent = await (await fetch(BASE + "__generate")).json();
+  check("generates with the restored model", sent.model === "p-image-edit", JSON.stringify(sent.model));
+  check("generates with the restored prompt", sent.input.prompt === "restored payload prompt");
+  check("generates with the restored option", sent.input.aspect_ratio === "3:2");
+  check("generates with the restored seed", sent.input.seed === 1234);
+  check("generates with the re-encoded upload", Array.isArray(sent.input.images) && /^https:\/\/files\.pruna\.ai\//.test(sent.input.images[0]), JSON.stringify(sent.input.images));
+  // The point: a restored session sends exactly what the live one did. p-image-edit
+  // sends turbo and the moderation flag on every request by design (their shown
+  // defaults deliberately differ from the provider's), so the comparison is
+  // against the pre-reopen payload rather than against a guessed key list.
+  const keys = (o) => Object.keys(o).sort().join(",");
+  check("restored payload carries the same fields", keys(sent.input) === keys(fresh.input), `${keys(sent.input)} vs ${keys(fresh.input)}`);
+  const same = Object.keys(fresh.input).every((k) => JSON.stringify(sent.input[k]) === JSON.stringify(fresh.input[k]) || k === "images");
+  check("restored payload carries the same values", same, JSON.stringify(sent.input));
+  await page.close();
+  await context.close();
+}
+
+// ── Every model in the catalogue renders ───────────────────────────────────
+//
+// Breadth rather than depth: selecting each of the 48 models in turn catches a
+// field definition that throws while rendering, and confirms the undo buttons
+// end up in a sane state on every one — including the five with no prompt field,
+// which hold the history rather than dropping it.
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  const ids = await page.evaluate(() => MODELS.map((m) => m.id));
+  const broken = [];
+  const promptless = [];
+  let sawPrompt = false;
+  for (const id of ids) {
+    await page.selectOption("#model-select", id);
+    await page.waitForTimeout(25);
+    const s = await page.evaluate(() => ({
+      hasPrompt: Boolean(primaryPromptEl()),
+      undoDisabled: document.getElementById("prompt-undo").disabled,
+      redoDisabled: document.getElementById("prompt-redo").disabled,
+      entries: promptHistory.length,
+    }));
+    if (!s.hasPrompt) {
+      promptless.push(id);
+      if (!s.undoDisabled || !s.redoDisabled) broken.push(`${id}: buttons live with no prompt field`);
+      if (sawPrompt && s.entries === 0) broken.push(`${id}: dropped the history`);
+    } else {
+      sawPrompt = true;
+      // Nothing has been typed, so a switch that carries empty text over must
+      // not invent an entry to undo into.
+      if (!s.undoDisabled) broken.push(`${id}: undo offered with nothing to undo`);
+    }
+  }
+  check(`all ${ids.length} models render with sane undo state`, broken.length === 0, broken.join("; "));
+  check("the promptless models are the five expected", promptless.length === 5, promptless.join(","));
+  await page.close();
+  await context.close();
+}
+
+// ── Phone layout ───────────────────────────────────────────────────────────
+{
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await open(context);
+  check("undo button visible on a phone viewport", await page.locator("#prompt-undo").isVisible());
+  check("redo button visible on a phone viewport", await page.locator("#prompt-redo").isVisible());
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  check("no horizontal overflow at 390px", overflow <= 0, `overflow=${overflow}px`);
+  const box = await page.locator("#prompt-undo").boundingBox();
+  check("undo is a usable tap target", box.height >= 36 && box.width >= 60, JSON.stringify(box));
+  await page.close();
+  await context.close();
+}
+
+// ── Real disk persistence (separate browser process, same profile) ──────────
+{
+  const profile = mkdtempSync(join(tmpdir(), "pb-profile-"));
+  let ctx = await ENGINE.launchPersistentContext(profile, {});
+  let page = await open(ctx);
+  await page.selectOption("#model-select", "p-image-edit");
+  await page.setInputFiles(".file-input", imgPath);
+  await page.waitForSelector(".thumbs .thumb img");
+  await page.fill(promptSel, "survives a process restart");
+  await settle(page);
+  await ctx.close();
+
+  ctx = await ENGINE.launchPersistentContext(profile, {});
+  page = await open(ctx);
+  check("prompt survived a browser restart", (await page.inputValue(promptSel)) === "survives a process restart");
+  check("upload survived a browser restart", (await page.locator(".thumbs .thumb").count()) === 1);
+  await ctx.close();
+}
+
+await browser.close();
+
+console.log(`\n[${ENGINE_NAME}] ${pass} passed, ${fails.length} failed`);
+if (fails.length) {
+  for (const f of fails) console.log("  ✗ " + f);
+  process.exit(1);
+}
