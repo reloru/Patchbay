@@ -446,6 +446,7 @@ function priceBlurb(model) {
 function renderFields() {
   const wrap = $("fields");
   wrap.innerHTML = "";
+  fieldUI = {};
   optionRows = [];
   optionsPanel = null;
   optionsBadge = null;
@@ -611,6 +612,17 @@ async function encodeForField(f, file) {
 // Files carried across a model switch, consumed by the new model's image fields.
 let carryFiles = [];
 
+// name -> { redraw, box } for every image field currently rendered. Lets an
+// image be dropped into a field from outside without calling renderFields(),
+// which would rebuild the form and wipe every typed value. Rebuilt with the
+// fields.
+let fieldUI = {};
+
+// Files handed over by "use this output as input" for the model being switched
+// to. Separate from carryFiles because selectModel overwrites that one with the
+// outgoing model's own uploads.
+let pendingAdopt = [];
+
 // Takes File objects the user did not just pick — carried across a model switch,
 // or restored from the last session — into one image field. The thumbnail is
 // shown straight away and the provider encoding runs behind it, because each
@@ -717,6 +729,8 @@ function imageControl(f) {
     scheduleSessionSave();
   };
 
+  fieldUI[f.name] = { redraw, box };
+
   input.addEventListener("change", async () => {
     const files = Array.from(input.files || []);
     input.value = "";
@@ -746,6 +760,13 @@ function imageControl(f) {
       }
     }
   });
+
+  // A generation being sent into this model claims its slot before the outgoing
+  // model's own uploads do: "edit this image" is a request about that image, so
+  // it must not be crowded out by files that merely came along for the ride.
+  if (pendingAdopt.length && fieldVisible(f) && takesImages(f) && uploads[f.name].length < maxItems) {
+    adoptFiles(f, pendingAdopt.splice(0, maxItems - uploads[f.name].length), redraw, "Could not use that image");
+  }
 
   // Adopt files carried over from the previously selected model. Skipped for a
   // field the current mode hides -- adopting there swallowed the file into a
@@ -928,9 +949,11 @@ function applyVisibility() {
 }
 
 function refreshOptionState() {
-  // Attaching or removing an image changes what Describe and Judge would read.
+  // Attaching or removing an image changes what Describe and Judge would read,
+  // and where a generated image would land if it were reused.
   updateDescribeNote();
   updateJudgeNote();
+  refreshReuseLabels();
   let changed = 0;
   for (const r of optionRows) {
     if (r.f.showWhen && !fieldVisible(r.f)) {
@@ -1100,7 +1123,7 @@ $("gen-form").addEventListener("submit", async (e) => {
       setStatus(`${cap(state)}… ${secs}s elapsed${slowHint(currentModel)}`, "load");
     });
     if (!urls.length) throw new Error("No output URL returned.");
-    showResult(urls, kind);
+    await showResult(urls, kind);
     const secs = Math.round((Date.now() - started) / 1000);
     const cost = addSpend(currentModel, input, urls.length);
     // Analytics lag inference slightly, so give it a moment before re-reading.
@@ -1329,7 +1352,7 @@ async function resumeInFlightJob() {
       setStatus(`${cap(state)}… ${secs}s since reattaching`, "load");
     });
     if (!urls.length) throw new Error("No output URL returned.");
-    showResult(urls, rec.kind);
+    await showResult(urls, rec.kind);
     // No spend is added: the estimate needs the original input, which is not
     // stored, and this run was already paid for before the tab went away.
     setStatus(`Recovered the ${rec.model || "job"} you left running.`, "ok");
@@ -1710,20 +1733,68 @@ function resultUrl(prunaUrl) {
 
 // What is currently on screen in the output panel, so Judge can score the
 // image you just generated without making you save and re-attach it.
-let lastResult = { urls: [], kind: null };
+//
+// `urls` stays the PROVIDER urls even though the panel now renders from local
+// bytes: Judge tests them against PRUNA_URL to decide whether it can hand one
+// straight to p-judger instead of re-uploading it. `blobs` is the parallel
+// array of bytes, aligned by index, null where the fetch failed.
+let lastResult = { urls: [], kind: null, blobs: [] };
 
-function showResult(prunaUrls, kind) {
+// Object URLs for whatever the panel is showing. An object URL pins its whole
+// image in memory until revoked, so the previous set goes when the panel is
+// replaced — the same discipline releasePreview() applies to upload thumbnails.
+let resultObjectUrls = [];
+
+function releaseResultUrls() {
+  for (const u of resultObjectUrls) URL.revokeObjectURL(u);
+  resultObjectUrls = [];
+}
+
+// Pulls one finished result into memory. A data: URI is already the bytes and
+// costs no request; anything else comes through /api/result, which answers
+// no-store, so this is the only copy we get without paying for the download
+// twice — once for the <img> and again for saving or reuse.
+async function fetchResultBlob(prunaUrl) {
+  const res = await fetch(resultUrl(prunaUrl));
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return await res.blob();
+}
+
+async function showResult(prunaUrls, kind) {
   const box = $("result");
+  releaseResultUrls();
   box.innerHTML = "";
-  lastResult = { urls: prunaUrls.slice(), kind };
+  lastResult = { urls: prunaUrls.slice(), kind, blobs: [] };
   updateJudgeNote();
-  prunaUrls.forEach((prunaUrl, i) => {
+
+  for (let i = 0; i < prunaUrls.length; i++) {
+    const prunaUrl = prunaUrls[i];
     const proxied = resultUrl(prunaUrl);
+    // A trained LoRA .zip is not media; there is nothing to preview or reuse,
+    // so it is never fetched here.
+    let blob = null;
+    let src = proxied;
+    if (kind !== "file") {
+      try {
+        blob = await fetchResultBlob(prunaUrl);
+        src = URL.createObjectURL(blob);
+        resultObjectUrls.push(src);
+      } catch {
+        // Holding the bytes buys saving without a second download, reuse as an
+        // input, and a copy that outlives the provider's expiring delivery URL.
+        // None of that is worth losing the picture over: fall back to streaming
+        // it through the proxy exactly as before.
+        blob = null;
+        src = proxied;
+      }
+    }
+    lastResult.blobs.push(blob);
+
     const item = document.createElement("div");
     item.className = "result-item";
     if (kind === "video") {
       const v = document.createElement("video");
-      v.src = proxied;
+      v.src = src;
       v.controls = true;
       v.autoplay = true;
       v.loop = true;
@@ -1738,12 +1809,138 @@ function showResult(prunaUrls, kind) {
       item.appendChild(box2);
     } else {
       const img = document.createElement("img");
-      img.src = proxied;
+      img.src = src;
       item.appendChild(img);
     }
-    item.appendChild(downloadButton(proxied, kind, i, prunaUrls.length));
+    const actions = document.createElement("div");
+    actions.className = "result-actions";
+    actions.appendChild(downloadButton(proxied, kind, i, prunaUrls.length, blob));
+    if (kind === "image" && blob) actions.appendChild(reuseButton(blob, i, prunaUrls.length));
+    item.appendChild(actions);
     box.appendChild(item);
-  });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sending a generated image back in as an input
+//
+// Before this, the only route from an output to an input was Save to the camera
+// roll and pick it back up — on iOS a share-sheet round trip for bytes that were
+// already on the device. The picture is now held in memory when it renders, so
+// it can go straight into an image field as an ordinary File: the same
+// adoptFiles() path a carried-over or restored upload takes, which means it gets
+// a thumbnail immediately, the provider encoding it needs, and a place in the
+// saved session for free.
+// ---------------------------------------------------------------------------
+
+// The model an image goes to when the current one has nowhere to put it.
+const REUSE_FALLBACK_MODEL = "p-image-edit";
+
+// The "image" field type is reused for audio, video and .zip slots via accept,
+// so a picture only belongs in the ones that actually take pictures.
+function takesImages(f) {
+  return (f.accept || "image/*").startsWith("image/");
+}
+
+// Where a generated image would land if it were reused right now: the first
+// image field with room. "First image field in model order" is the convention
+// attachedImageFile() and attachedImageBatch() already follow — model
+// definitions put the subject before masks, end frames and garments.
+//
+// A field that is full is skipped rather than overwritten: replacing a picture
+// the user chose, to make room for one the app chose, is not a trade it gets to
+// make on their behalf.
+function reuseTarget() {
+  if (!currentModel) return null;
+  for (const f of currentModel.fields) {
+    if (f.type !== "image" || !takesImages(f)) continue;
+    if (!fieldVisible(f)) continue;
+    if ((uploads[f.name] || []).length >= (f.maxItems || 1)) continue;
+    return f;
+  }
+  return null;
+}
+
+// Says what the button will do before it is pressed, the way Judge's and
+// Describe's note lines do. The distinction that matters is whether the image
+// becomes the thing being edited or a reference alongside a prompt.
+function reuseLabel(f) {
+  if (!f) {
+    const m = MODELS.find((x) => x.id === REUSE_FALLBACK_MODEL);
+    return `✏️ Edit in ${m ? m.label : REUSE_FALLBACK_MODEL}`;
+  }
+  return currentModel.group === "Image editing" && f.required ? "✏️ Edit this" : "🖼 Use as reference";
+}
+
+// Every reuse button on screen, so their labels can follow the current target.
+let reuseButtons = [];
+
+function reuseButton(blob, index, total) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "secondary reuse";
+  const label = () => reuseLabel(reuseTarget()) + (total > 1 ? ` #${index + 1}` : "");
+  btn.textContent = label();
+  btn.title = "Send this image into the model's input";
+  btn.addEventListener("click", () => useGeneratedAsInput(blob, index));
+  // The target moves as fields fill up or the mode changes, so the label is
+  // re-read rather than frozen at render time.
+  btn.refreshLabel = () => { btn.textContent = label(); };
+  reuseButtons.push(btn);
+  return btn;
+}
+
+function refreshReuseLabels() {
+  reuseButtons = reuseButtons.filter((b) => b.isConnected);
+  for (const b of reuseButtons) b.refreshLabel();
+}
+
+function generatedFileName(blob, index) {
+  return `generated-${Date.now()}${index ? "-" + (index + 1) : ""}.${extFromType(blob.type, "image")}`;
+}
+
+function useGeneratedAsInput(blob, index) {
+  const file = new File([blob], generatedFileName(blob, index), { type: blob.type || "image/jpeg" });
+  const f = reuseTarget();
+
+  if (f) {
+    const ui = fieldUI[f.name];
+    if (!ui) return;
+    adoptFiles(f, [file], ui.redraw, "Could not use that image");
+    ui.redraw();
+    // An optional field lives inside the collapsed Options panel, so without
+    // this the image lands somewhere the user cannot see and the tap reads as
+    // having done nothing.
+    if (optionsPanel && optionsPanel.contains(ui.box)) optionsPanel.open = true;
+    ui.box.scrollIntoView({ behavior: "smooth", block: "center" });
+    setStatus(`Added the generated image to ${f.label} on ${currentModel.label}.`, "ok");
+    return;
+  }
+
+  // Nowhere to put it here, so take it somewhere that can edit it. selectModel
+  // does the rest: the fields render, and the image is adopted as they do.
+  const target = MODELS.find((x) => x.id === REUSE_FALLBACK_MODEL);
+  if (!target) {
+    setStatus("No image field on this model, and no editing model to switch to.", "err");
+    return;
+  }
+  pendingAdopt = [file];
+  selectModel(target.id);
+  // Anything left over never found a slot; dropping it here keeps it from
+  // turning up unannounced at the next model switch.
+  pendingAdopt = [];
+
+  const landed = Object.values(uploads).some((list) => list.some((u) => u.file === file));
+  if (landed) {
+    const ui = Object.values(fieldUI)[0];
+    if (ui) {
+      if (optionsPanel && optionsPanel.contains(ui.box)) optionsPanel.open = true;
+      ui.box.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    setStatus(`Switched to ${target.label} with the generated image attached.`, "ok");
+  } else {
+    setStatus(`Switched to ${target.label}, but its image field was already full.`, "err");
+  }
 }
 
 function extFromType(type, kind) {
@@ -1764,7 +1961,7 @@ function extFromType(type, kind) {
 // a full-screen file viewer with no way back, which strands the app. Instead we
 // fetch the bytes, then hand them to the native share sheet ("Save Image" /
 // "Save to Files") when available, or trigger a blob download everywhere else.
-function downloadButton(proxiedUrl, kind, index, total) {
+function downloadButton(proxiedUrl, kind, index, total, blob) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "download";
@@ -1775,17 +1972,21 @@ function downloadButton(proxiedUrl, kind, index, total) {
     btn.disabled = true;
     btn.textContent = "Preparing…";
     try {
-      const res = await fetch(proxiedUrl);
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const blob = await res.blob();
-      const ext = extFromType(blob.type, kind);
+      // Already in hand for anything previewable; only a LoRA .zip, or a
+      // result whose fetch failed earlier, still has to be pulled down here.
+      const bytes = blob || (await (async () => {
+        const res = await fetch(proxiedUrl);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return await res.blob();
+      })());
+      const ext = extFromType(bytes.type, kind);
       const name = `pruna-${Date.now()}${total > 1 ? "-" + (index + 1) : ""}.${ext}`;
-      const file = new File([blob], name, { type: blob.type || "application/octet-stream" });
+      const file = new File([bytes], name, { type: bytes.type || "application/octet-stream" });
 
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file] });
       } else {
-        const url = URL.createObjectURL(blob);
+        const url = URL.createObjectURL(bytes);
         const a = document.createElement("a");
         a.href = url;
         a.download = name;

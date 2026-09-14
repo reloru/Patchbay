@@ -266,7 +266,12 @@ button.secondary:hover { border-color: var(--accent); }
   color: var(--muted); font-size: 14px;
 }
 .result img, .result video { max-width: 100%; border-radius: 10px; display: block; }
-.result .download { display: inline-block; margin-top: 12px; }
+.result .download { display: inline-block; }
+
+/* Save and the reuse action sit on one row and wrap together on a narrow
+   screen rather than stacking one per line. */
+.result-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.result-actions button { flex: 1 1 auto; }
 
 .prompt-lib {
   display: flex;
