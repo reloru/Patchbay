@@ -90,7 +90,7 @@ textarea.
 memory, and reopening it is a cold start. The current edit — attached files,
 prompt text, selected model, and every option including which were deliberately
 set — is kept in IndexedDB on the device and put back on the next load. Files are
-stored as Blobs (which is what rules localStorage out) and come back as real
+stored as binary (which is what rules localStorage out) and come back as real
 `File` objects, re-encoded for whichever provider the model uses, since last
 session's upload URL has expired. Writes are debounced rather than hung off
 `beforeunload`, which iOS does not fire for a page it is discarding. The file
@@ -98,10 +98,20 @@ half of the record is only rewritten when the set of attached files changes.
 Blocked site data, Lockdown Mode or a full quota costs the restore and nothing
 else.
 
+**Recent generations.** The last few finished images are kept on the device, so
+one you did not save in the moment is not gone: the strip under the output opens
+any of them full size, to save, to send back in as an input, or to put its
+prompt back in the box. Deliberately short-lived — twelve images, a day, and a
+byte ceiling — because this is a working set, not an archive, and Clear empties
+it immediately. Stored as `ArrayBuffer`s rather than Blobs: WebKit aborts an
+IndexedDB transaction outright for any value containing a Blob, which is how the
+session store shipped broken once. Thumbnails are generated at archive time so
+the strip decodes a dozen small images rather than a dozen full-size ones.
+
 **No server-side persistence.** Nothing is stored server-side. Generated media
-is served `no-store`, so neither the browser nor Cloudflare's edge keeps a copy.
-What the browser keeps — the session above, saved prompts, the running job's id —
-never leaves the device.
+is served `no-store`, so neither the browser nor Cloudflare's edge keeps a copy
+in transit. What the browser keeps — the session above, the recent images, saved
+prompts, the running job's id — never leaves the device.
 
 **Job recovery.** A phone can discard the tab mid-generation to reclaim memory,
 and the provider job keeps running and billing regardless. The running job's

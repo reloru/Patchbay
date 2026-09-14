@@ -48,13 +48,28 @@ Blobs would work — but run both engines anyway.
   anything, and must not fail because a provider is slow. Routes under `/__` are
   the test's own window into what the browser sent.
 - **`session.test.mjs`** is the suite: plain `check(name, condition)` calls, no
-  test framework, exit code 1 if anything fails.
+  test framework, exit code 1 if anything fails. Probes that open IndexedDB
+  directly call `indexedDB.open("patchbay")` with no version, so a schema bump
+  in the app does not turn every probe into a `VersionError`.
 - **`playwright.mjs`** finds Playwright locally or globally, or explains how to
   install it.
 
 Port 8788, so `wrangler dev` can stay up on 8787 alongside. Override with `PORT`.
 
 ## What it asserts
+
+Recent generations: a result reaching the strip, stored as an `ArrayBuffer` with
+its prompt and model, surviving a reopen, the lightbox's metadata and prompt
+restore, reuse from the lightbox, eviction by count and by age, Clear, and a
+version-1 database keeping its session through the upgrade that adds the gallery
+store. The byte ceiling is the one bound with no test: tripping it means
+allocating 150 MB inside a browser, and it shares its loop with the two bounds
+that are covered.
+
+Reuse as an input: the label for each target case, landing on the current model,
+switching to the editing model and carrying the image, a full slot falling
+through to that switch, the Options panel opening when the field lives there,
+and a reused image surviving a reopen.
 
 Session restore: model, prompt, numeric/enum/bool options, which options were
 deliberately set (that flag decides what `/api/generate` actually sends, so the

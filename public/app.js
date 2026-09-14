@@ -144,13 +144,17 @@ async function startApp() {
   initPromptLibrary();
   refreshNeurons();
   $("footer-note").textContent =
-    "Generations are proxied through a Cloudflare Worker. Nothing is stored server-side and no output " +
-    "is cached; your current edit — files, prompt, model and settings — is kept in this browser only, " +
-    "as is a running job's id, so a closed tab picks up where it left off.";
+    "Generations are proxied through a Cloudflare Worker. Nothing is stored server-side; your current " +
+    "edit — files, prompt, model and settings — the last few generated images, and a running job's id " +
+    "are kept in this browser only, so a closed tab picks up where it left off. Recent images are " +
+    "dropped after a day, and Clear removes them now.";
   // Puts the last session's files, prompt, model and settings back before any
   // of the listeners below can overwrite the saved snapshot.
   await restoreSession();
   initSessionPersistence();
+  initRecent();
+  // Anything that aged out while the app was closed goes before it is shown.
+  pruneGallery().then(renderRecent);
   // Last, so a recovered job cannot delay the UI becoming usable.
   resumeInFlightJob();
 }
@@ -1394,7 +1398,12 @@ async function resumeInFlightJob() {
 // and nothing else.
 // ---------------------------------------------------------------------------
 const DB_NAME = "patchbay";
+// Version 2 added GALLERY_STORE beside the session one. An upgrade that only
+// adds a store is safe for a client already holding a v1 database: the guard in
+// onupgradeneeded leaves the existing session untouched.
+const DB_VERSION = 2;
 const DB_STORE = "session";
+const GALLERY_STORE = "gallery";
 const META_KEY = "meta";
 const FILES_KEY = "files";
 
@@ -1428,13 +1437,16 @@ function openSessionDb() {
   dbPromise = new Promise((resolve) => {
     let req;
     try {
-      req = indexedDB.open(DB_NAME, 1);
+      req = indexedDB.open(DB_NAME, DB_VERSION);
     } catch {
       return resolve(null); // no indexedDB at all, or access throws outright
     }
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE);
+      // Keyed by a sortable id, so "newest first" and "drop the oldest" are
+      // both just cursor order.
+      if (!db.objectStoreNames.contains(GALLERY_STORE)) db.createObjectStore(GALLERY_STORE, { keyPath: "id" });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => resolve(null);
@@ -1447,13 +1459,13 @@ function openSessionDb() {
 // work", and an unhandled rejection here must not surface as an app error.
 // { ok } separates a failed transaction from one that succeeded and found
 // nothing, which a bare value cannot.
-async function idbRun(mode, work) {
+async function idbRun(storeName, mode, work) {
   const db = await openSessionDb();
   if (!db) return { ok: false, value: undefined };
   return new Promise((resolve) => {
     let tx;
     try {
-      tx = db.transaction(DB_STORE, mode);
+      tx = db.transaction(storeName, mode);
     } catch {
       return resolve({ ok: false, value: undefined });
     }
@@ -1462,7 +1474,7 @@ async function idbRun(mode, work) {
     tx.onerror = () => resolve({ ok: false, value: undefined });
     tx.oncomplete = () => resolve({ ok: true, value });
     try {
-      const req = work(tx.objectStore(DB_STORE));
+      const req = work(tx.objectStore(storeName));
       if (req) req.onsuccess = () => { value = req.result; };
     } catch {
       resolve({ ok: false, value: undefined });
@@ -1470,9 +1482,9 @@ async function idbRun(mode, work) {
   });
 }
 
-const idbGet = (key) => idbRun("readonly", (store) => store.get(key)).then((r) => r.value);
-const idbPut = (key, value) => idbRun("readwrite", (store) => store.put(value, key)).then((r) => r.ok);
-const idbDelete = (key) => idbRun("readwrite", (store) => store.delete(key)).then((r) => r.ok);
+const idbGet = (key) => idbRun(DB_STORE, "readonly", (store) => store.get(key)).then((r) => r.value);
+const idbPut = (key, value) => idbRun(DB_STORE, "readwrite", (store) => store.put(value, key)).then((r) => r.ok);
+const idbDelete = (key) => idbRun(DB_STORE, "readwrite", (store) => store.delete(key)).then((r) => r.ok);
 
 async function clearSession() {
   lastFilesSig = null;
@@ -1714,6 +1726,303 @@ function initSessionPersistence() {
   window.addEventListener("pagehide", flushSessionSave);
 }
 
+// ---------------------------------------------------------------------------
+// Recent generations
+//
+// A finished image used to survive exactly until the next Generate cleared the
+// panel, and the provider's delivery URL expires soon after, so anything not
+// saved in that moment was gone. The last few images are now kept on the device
+// so you can look back, save one later, or send it in as an input.
+//
+// Deliberately short-lived: a dozen images, a day, and a byte ceiling. This is
+// a working set, not an archive, and it is cleared by the Clear button, by any
+// of those three bounds, or by clearing site data.
+//
+// Stored as ArrayBuffers, never Blobs. WebKit aborts the whole transaction for
+// any value containing a Blob — a File, a slice of one, even a Blob built from
+// bytes already in memory — while Chromium takes all of them, which is how the
+// session store shipped broken once (#69). There is no reason for new code to
+// rediscover that: bytes go in as bytes.
+// ---------------------------------------------------------------------------
+const GALLERY_MAX_ITEMS = 12;
+const GALLERY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const GALLERY_MAX_BYTES = 150 * 1024 * 1024;
+// Long edge of the stored thumbnail. The strip decodes these rather than a
+// dozen full-size images, which is how a phone keeps the tab alive.
+const GALLERY_THUMB_PX = 320;
+
+let galleryBroken = false; // one hard failure is enough to stop trying
+
+const galleryGet = (id) => idbRun(GALLERY_STORE, "readonly", (st) => st.get(id)).then((r) => r.value);
+const galleryPut = (rec) => idbRun(GALLERY_STORE, "readwrite", (st) => st.put(rec)).then((r) => r.ok);
+const galleryDelete = (id) => idbRun(GALLERY_STORE, "readwrite", (st) => st.delete(id)).then((r) => r.ok);
+const galleryClear = () => idbRun(GALLERY_STORE, "readwrite", (st) => st.clear()).then((r) => r.ok);
+
+// Everything, newest first. The records carry their bytes, so this is only ever
+// called with a dozen small items behind it.
+async function galleryAll() {
+  const r = await idbRun(GALLERY_STORE, "readonly", (st) => st.getAll());
+  const list = r.ok && Array.isArray(r.value) ? r.value : [];
+  return list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+// Shrinks the image to something a strip can decode a dozen of. Resolves to
+// null on anything that will not decode, because a missing thumbnail is worth
+// far less than a failed archive.
+function makeThumb(blob) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    const done = (v) => {
+      URL.revokeObjectURL(url);
+      resolve(v);
+    };
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, GALLERY_THUMB_PX / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        canvas.toBlob(
+          (out) => {
+            if (!out) return done(null);
+            out.arrayBuffer().then((buf) => done({ buf, type: out.type, width: img.width, height: img.height })).catch(() => done(null));
+          },
+          "image/jpeg",
+          0.72
+        );
+      } catch {
+        done(null);
+      }
+    };
+    img.onerror = () => done(null);
+    img.src = url;
+  });
+}
+
+// Applies all three bounds. Runs after every insert and once at boot, so a
+// record that aged out while the app was closed goes on the next load.
+async function pruneGallery() {
+  const all = await galleryAll();
+  const cutoff = Date.now() - GALLERY_MAX_AGE_MS;
+  let kept = 0;
+  let bytes = 0;
+  for (const rec of all) {
+    const tooOld = !(rec.createdAt > cutoff);
+    const size = (rec.bytes && rec.bytes.byteLength) || 0;
+    if (tooOld || kept >= GALLERY_MAX_ITEMS || bytes + size > GALLERY_MAX_BYTES) {
+      await galleryDelete(rec.id);
+      continue;
+    }
+    kept++;
+    bytes += size;
+  }
+  return kept;
+}
+
+async function archiveGeneration(blob, modelId, prompt) {
+  if (galleryBroken) return;
+  try {
+    const bytes = await blob.arrayBuffer();
+    const thumb = await makeThumb(blob);
+    const rec = {
+      // Sortable and unique enough for one device: two results from the same
+      // generation land in the same millisecond otherwise.
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: Date.now(),
+      modelId: modelId || "",
+      prompt: prompt || "",
+      type: blob.type || "image/jpeg",
+      bytes,
+      thumb: thumb ? thumb.buf : null,
+      thumbType: thumb ? thumb.type : "",
+      width: thumb ? thumb.width : 0,
+      height: thumb ? thumb.height : 0,
+      size: bytes.byteLength,
+    };
+    if (!(await galleryPut(rec))) {
+      // Out of quota, or a store that will not take this. Make room once and
+      // try again before giving up on the feature for this load.
+      await pruneGallery();
+      if (!(await galleryPut(rec))) {
+        galleryBroken = true;
+        return;
+      }
+    }
+    await pruneGallery();
+  } catch {
+    // Archiving is a convenience layered on top of a generation that already
+    // succeeded; it never gets to report an error over the top of the result.
+    galleryBroken = true;
+  }
+}
+
+// --- the strip, and one item full size -------------------------------------
+
+// Object URLs the strip and the lightbox are holding, released together when
+// the strip is rebuilt or the lightbox closes.
+let galleryObjectUrls = [];
+
+function releaseGalleryUrls() {
+  for (const u of galleryObjectUrls) URL.revokeObjectURL(u);
+  galleryObjectUrls = [];
+}
+
+function galleryObjectUrl(buf, type) {
+  const url = URL.createObjectURL(new Blob([buf], { type: type || "image/jpeg" }));
+  galleryObjectUrls.push(url);
+  return url;
+}
+
+async function renderRecent() {
+  const wrap = $("recent");
+  const strip = $("recent-strip");
+  if (!wrap || !strip) return;
+  const items = await galleryAll();
+  releaseGalleryUrls();
+  strip.innerHTML = "";
+
+  if (!items.length) {
+    wrap.classList.add("hidden");
+    return;
+  }
+  wrap.classList.remove("hidden");
+  $("recent-count").textContent =
+    `${items.length} recent ${items.length === 1 ? "image" : "images"} · kept on this device for a day`;
+
+  for (const rec of items) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "thumb";
+    btn.title = rec.prompt || rec.modelId || "Generated image";
+    const img = document.createElement("img");
+    // The thumbnail when there is one; the full bytes only if there is not.
+    img.src = rec.thumb ? galleryObjectUrl(rec.thumb, rec.thumbType) : galleryObjectUrl(rec.bytes, rec.type);
+    img.alt = rec.prompt ? `Generated: ${rec.prompt}` : "Generated image";
+    btn.appendChild(img);
+    btn.addEventListener("click", () => openLightbox(rec.id));
+    strip.appendChild(btn);
+  }
+}
+
+function closeLightbox() {
+  $("lightbox").classList.add("hidden");
+  $("lightbox-img").src = "";
+  $("lightbox-actions").innerHTML = "";
+}
+
+async function openLightbox(id) {
+  const rec = await galleryGet(id);
+  if (!rec) return void renderRecent();
+
+  const blob = new Blob([rec.bytes], { type: rec.type || "image/jpeg" });
+  $("lightbox-img").src = galleryObjectUrl(rec.bytes, rec.type);
+  const model = MODELS.find((m) => m.id === rec.modelId);
+  const when = new Date(rec.createdAt);
+  $("lightbox-meta").textContent =
+    `${model ? model.label : rec.modelId || "unknown model"} · ${when.toLocaleString()} · ${Math.round(rec.size / 1024)} KB`;
+  $("lightbox-prompt").textContent = rec.prompt || "";
+
+  const actions = $("lightbox-actions");
+  actions.innerHTML = "";
+
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "download";
+  save.textContent = "⬇ Save";
+  save.addEventListener("click", () => saveBlob(blob, `generated-${rec.createdAt}.${extFromType(rec.type, "image")}`));
+  actions.appendChild(save);
+
+  const reuse = document.createElement("button");
+  reuse.type = "button";
+  reuse.className = "secondary";
+  reuse.textContent = reuseLabel(reuseTarget());
+  reuse.addEventListener("click", () => {
+    closeLightbox();
+    useGeneratedAsInput(blob, 0);
+  });
+  actions.appendChild(reuse);
+
+  if (rec.prompt) {
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.className = "secondary";
+    restore.textContent = "↩ Restore prompt";
+    restore.addEventListener("click", () => {
+      const el = primaryPromptEl();
+      if (!el) return void setStatus("This model has no prompt box.", "err");
+      el.value = rec.prompt;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      commitPromptHistory(); // one entry, so Undo reverses the whole restore
+      closeLightbox();
+      setStatus("Prompt restored — press Undo to put it back.", "ok");
+    });
+    actions.appendChild(restore);
+  }
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "secondary";
+  del.textContent = "Delete";
+  del.addEventListener("click", async () => {
+    await galleryDelete(rec.id);
+    closeLightbox();
+    renderRecent();
+  });
+  actions.appendChild(del);
+
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "secondary";
+  close.textContent = "Close";
+  close.addEventListener("click", closeLightbox);
+  actions.appendChild(close);
+
+  $("lightbox").classList.remove("hidden");
+}
+
+// The iOS-safe save: a plain <a download> sends Safari to a full-screen file
+// viewer with no way back. Shared by the result panel and the lightbox.
+async function saveBlob(blob, name) {
+  try {
+    const file = new File([blob], name, { type: blob.type || "application/octet-stream" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file] });
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (err) {
+    if (err && err.name !== "AbortError") setStatus("Save failed: " + err.message, "err");
+  }
+}
+
+function initRecent() {
+  $("recent-clear").addEventListener("click", async () => {
+    if (!window.confirm("Delete the recent images kept on this device?")) return;
+    await galleryClear();
+    releaseGalleryUrls();
+    renderRecent();
+    setStatus("Cleared the recent images.", "ok");
+  });
+  // Tapping the backdrop closes, the card itself does not.
+  $("lightbox").addEventListener("click", (e) => {
+    if (e.target === $("lightbox")) closeLightbox();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("lightbox").classList.contains("hidden")) closeLightbox();
+  });
+}
+
 // Pruna returns generation_url as a plain string for some models and as an
 // array for others (flux-2-klein-4b, wan-image-small with num_outputs > 1).
 function asUrlList(v) {
@@ -1766,6 +2075,7 @@ async function showResult(prunaUrls, kind) {
   box.innerHTML = "";
   lastResult = { urls: prunaUrls.slice(), kind, blobs: [] };
   updateJudgeNote();
+  const archived = [];
 
   for (let i = 0; i < prunaUrls.length; i++) {
     const prunaUrl = prunaUrls[i];
@@ -1789,6 +2099,10 @@ async function showResult(prunaUrls, kind) {
       }
     }
     lastResult.blobs.push(blob);
+    if (kind === "image" && blob) {
+      const promptEl = primaryPromptEl();
+      archived.push(archiveGeneration(blob, currentModel && currentModel.id, promptEl ? promptEl.value : ""));
+    }
 
     const item = document.createElement("div");
     item.className = "result-item";
@@ -1818,6 +2132,12 @@ async function showResult(prunaUrls, kind) {
     if (kind === "image" && blob) actions.appendChild(reuseButton(blob, i, prunaUrls.length));
     item.appendChild(actions);
     box.appendChild(item);
+  }
+
+  // The strip follows the archive, and only once every result has been stored.
+  if (archived.length) {
+    await Promise.all(archived);
+    await renderRecent();
   }
 }
 
@@ -1981,20 +2301,7 @@ function downloadButton(proxiedUrl, kind, index, total, blob) {
       })());
       const ext = extFromType(bytes.type, kind);
       const name = `pruna-${Date.now()}${total > 1 ? "-" + (index + 1) : ""}.${ext}`;
-      const file = new File([bytes], name, { type: bytes.type || "application/octet-stream" });
-
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file] });
-      } else {
-        const url = URL.createObjectURL(bytes);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 10000);
-      }
+      await saveBlob(bytes, name);
     } catch (err) {
       if (err && err.name !== "AbortError") setStatus("Save failed: " + err.message, "err");
     } finally {

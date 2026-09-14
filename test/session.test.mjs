@@ -217,7 +217,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   const shape = await page.evaluate(
     () =>
       new Promise((resolve) => {
-        const r = indexedDB.open("patchbay", 1);
+        const r = indexedDB.open("patchbay");
         r.onsuccess = () => {
           const tx = r.result.transaction("session", "readonly");
           const g = tx.objectStore("session").get("files");
@@ -415,7 +415,8 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   const imgPath2 = join(dir, "dog.png");
   writeFileSync(imgPath2, PNG);
   await page.setInputFiles(".file-input", [imgPath, imgPath2]);
-  await page.waitForFunction(() => document.querySelectorAll(".thumbs .thumb").length === 2);
+  // Three, not two: the clip carried over from the xAI model is still attached.
+  await page.waitForFunction(() => document.querySelectorAll(".thumbs .thumb").length === 3);
   await settle(page);
   await page.close();
 
@@ -437,7 +438,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.evaluate(
     () =>
       new Promise((resolve) => {
-        const r = indexedDB.open("patchbay", 1);
+        const r = indexedDB.open("patchbay");
         r.onsuccess = () => {
           const tx = r.result.transaction("session", "readwrite");
           tx.objectStore("session").put({ savedAt: Date.now(), modelId: "model-that-left", fields: { prompt: "x" }, touched: [] }, "meta");
@@ -454,7 +455,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   const wiped = await page.evaluate(
     () =>
       new Promise((resolve) => {
-        const r = indexedDB.open("patchbay", 1);
+        const r = indexedDB.open("patchbay");
         r.onsuccess = () => {
           const tx = r.result.transaction("session", "readonly");
           const g = tx.objectStore("session").get("meta");
@@ -621,6 +622,187 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   );
   check("the result renders from the local bytes", /^blob:/.test(await page.locator(".result img").getAttribute("src")));
   await page.close();
+  await context.close();
+}
+
+// ── Recent generations ─────────────────────────────────────────────────────
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+
+  const gen = async (prompt) => {
+    await page.fill(promptSel, prompt);
+    await page.waitForTimeout(700);
+    await page.locator("#generate-btn").click();
+    await page.waitForSelector("#status.ok");
+    await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length > 0);
+  };
+
+  await page.selectOption("#model-select", "p-image");
+  check("the strip is hidden before anything is generated", await page.locator("#recent").evaluate((el) => el.classList.contains("hidden")));
+
+  await gen("first picture");
+  check("a generation appears in the strip", (await page.locator(".recent-strip .thumb").count()) === 1);
+  const stored = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const r = indexedDB.open("patchbay");
+        r.onsuccess = () => {
+          const tx = r.result.transaction("gallery", "readonly");
+          const g = tx.objectStore("gallery").getAll();
+          tx.oncomplete = () =>
+            resolve(
+              (g.result || []).map((x) => ({
+                bytesIsBuffer: x.bytes instanceof ArrayBuffer,
+                thumbIsBuffer: x.thumb instanceof ArrayBuffer || x.thumb === null,
+                prompt: x.prompt,
+                modelId: x.modelId,
+                size: x.size,
+              }))
+            );
+          tx.onerror = () => resolve("read failed");
+        };
+        r.onerror = () => resolve("open failed");
+      })
+  );
+  check(
+    "stored as an ArrayBuffer, with its prompt and model",
+    Array.isArray(stored) &&
+      stored.length === 1 &&
+      stored[0].bytesIsBuffer &&
+      stored[0].thumbIsBuffer &&
+      stored[0].prompt === "first picture" &&
+      stored[0].modelId === "p-image" &&
+      stored[0].size > 0,
+    JSON.stringify(stored)
+  );
+
+  // Survives a reopen — the assertion that would have caught the WebKit bug.
+  await page.close();
+  page = await open(context);
+  await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length === 1);
+  check("the strip survives a reopen", (await page.locator(".recent-strip .thumb").count()) === 1);
+  check("the strip says what it is holding", (await page.locator("#recent-count").textContent()).includes("1 recent image"));
+
+  // The lightbox: metadata, prompt restore, reuse, delete.
+  await page.locator(".recent-strip .thumb").first().click();
+  await page.waitForSelector("#lightbox:not(.hidden)");
+  check("lightbox names the model", (await page.locator("#lightbox-meta").textContent()).includes("P-Image"));
+  check("lightbox shows the prompt", (await page.locator("#lightbox-prompt").textContent()) === "first picture");
+  await page.fill(promptSel, "something else entirely");
+  await page.waitForTimeout(700);
+  await page.locator("#lightbox-actions button", { hasText: "Restore prompt" }).click();
+  check("restoring the prompt puts it back", (await page.inputValue(promptSel)) === "first picture");
+  await page.locator("#prompt-undo").click();
+  check("a restored prompt is undoable in one press", (await page.inputValue(promptSel)) === "something else entirely");
+
+  // Reuse from the lightbox takes the same path as the result panel.
+  await page.locator(".recent-strip .thumb").first().click();
+  await page.waitForSelector("#lightbox:not(.hidden)");
+  await page.locator("#lightbox-actions button", { hasText: /Edit|reference/ }).click();
+  await page.waitForTimeout(400);
+  check("reuse from the lightbox switches and attaches", (await page.inputValue("#model-select")) === "p-image-edit");
+  check("the image landed", (await page.evaluate(() => (uploads.images || []).length)) === 1);
+
+  // Count eviction: generate past the cap and the oldest go.
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(200);
+  for (let i = 0; i < 13; i++) await gen("shot " + i);
+  const held = await page.locator(".recent-strip .thumb").count();
+  check("the strip is capped", held === 12, `held=${held}`);
+  const newest = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const r = indexedDB.open("patchbay");
+        r.onsuccess = () => {
+          const tx = r.result.transaction("gallery", "readonly");
+          const g = tx.objectStore("gallery").getAll();
+          tx.oncomplete = () => resolve((g.result || []).map((x) => x.prompt).sort());
+          tx.onerror = () => resolve([]);
+        };
+      })
+  );
+  check("the oldest were dropped, not the newest", !newest.includes("first picture") && newest.includes("shot 12"), JSON.stringify(newest));
+
+  // Age eviction: backdate everything and reopen.
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const r = indexedDB.open("patchbay");
+        r.onsuccess = () => {
+          const tx = r.result.transaction("gallery", "readwrite");
+          const st = tx.objectStore("gallery");
+          const g = st.getAll();
+          g.onsuccess = () => {
+            for (const rec of g.result || []) {
+              rec.createdAt = Date.now() - 48 * 60 * 60 * 1000;
+              st.put(rec);
+            }
+          };
+          tx.oncomplete = () => resolve();
+        };
+      })
+  );
+  await page.close();
+  page = await open(context);
+  await page.waitForTimeout(600);
+  check("anything older than a day is gone on the next load", (await page.locator(".recent-strip .thumb").count()) === 0);
+  check("and the strip hides itself again", await page.locator("#recent").evaluate((el) => el.classList.contains("hidden")));
+
+  // Clear removes the lot.
+  await page.selectOption("#model-select", "p-image");
+  await gen("to be cleared");
+  page.once("dialog", (d) => d.accept());
+  await page.locator("#recent-clear").click();
+  await page.waitForTimeout(400);
+  check("Clear empties the strip", (await page.locator(".recent-strip .thumb").count()) === 0);
+  await page.close();
+  await context.close();
+}
+
+// ── A v1 database keeps its session when the gallery store is added ────────
+{
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  // Build the v1 database from a page that is same-origin but is NOT the app —
+  // any unknown path answers 404 and runs no script — so nothing else is holding
+  // a connection while the version is set.
+  await page.goto(BASE + "__not-the-app");
+  await page.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const r = indexedDB.open("patchbay", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("session");
+        r.onerror = () => reject(new Error("could not create the v1 database"));
+        r.onsuccess = () => {
+          const db = r.result;
+          const tx = db.transaction("session", "readwrite");
+          tx.objectStore("session").put(
+            { savedAt: Date.now(), modelId: "p-image", fields: { prompt: "written under v1" }, touched: [] },
+            "meta"
+          );
+          tx.oncomplete = () => {
+            db.close(); // so the app's upgrade to v2 is not blocked
+            resolve();
+          };
+          tx.onerror = () => reject(new Error("could not write the v1 session"));
+        };
+      })
+  );
+  await page.close();
+
+  const page2 = await open(context);
+  check("a v1 session is restored after the upgrade to v2", (await page2.inputValue(promptSel)) === "written under v1");
+  const stores = await page2.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const r = indexedDB.open("patchbay");
+        r.onsuccess = () => resolve({ v: r.result.version, stores: [...r.result.objectStoreNames].sort() });
+        r.onerror = () => resolve(null);
+      })
+  );
+  check("the database is at v2 with both stores", stores && stores.v === 2 && stores.stores.join(",") === "gallery,session", JSON.stringify(stores));
+  await page2.close();
   await context.close();
 }
 

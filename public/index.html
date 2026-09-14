@@ -39,7 +39,7 @@
     <div id="app" class="app hidden">
       <header>
         <h1>🎛️ Patchbay</h1>
-        <p class="subtitle">Image &amp; video generation / editing across Pruna, xAI and Workers AI. Nothing is stored.</p>
+        <p class="subtitle">Image &amp; video generation / editing across Pruna, xAI and Workers AI. Nothing leaves your device except the generation itself.</p>
       </header>
 
       <main>
@@ -107,6 +107,15 @@
         <section class="panel output">
           <div id="status" class="status hidden"></div>
           <div id="result" class="result"></div>
+          <!-- The last few generations, kept on the device. Hidden entirely
+               when empty rather than showing a placeholder. -->
+          <div id="recent" class="recent hidden">
+            <div class="recent-head">
+              <span id="recent-count"></span>
+              <button id="recent-clear" type="button" class="linkish">Clear</button>
+            </div>
+            <div id="recent-strip" class="recent-strip"></div>
+          </div>
         </section>
       </main>
 
@@ -114,6 +123,17 @@
         <div id="spend" class="spend hidden"></div>
         <span id="footer-note"></span>
       </footer>
+    </div>
+
+    <!-- One generation, full size, over the app. Built empty; filled when a
+         thumbnail is tapped. -->
+    <div id="lightbox" class="lightbox hidden">
+      <div class="lightbox-card">
+        <img id="lightbox-img" alt="" />
+        <p id="lightbox-meta" class="lightbox-meta"></p>
+        <p id="lightbox-prompt" class="lightbox-prompt"></p>
+        <div id="lightbox-actions" class="lightbox-actions"></div>
+      </div>
     </div>
 
     <script src="/app.js"></script>
