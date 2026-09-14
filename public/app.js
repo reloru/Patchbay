@@ -1398,12 +1398,15 @@ async function resumeInFlightJob() {
 // and nothing else.
 // ---------------------------------------------------------------------------
 const DB_NAME = "patchbay";
-// Version 2 added GALLERY_STORE beside the session one. An upgrade that only
-// adds a store is safe for a client already holding a v1 database: the guard in
-// onupgradeneeded leaves the existing session untouched.
-const DB_VERSION = 2;
+// v2 added GALLERY_STORE beside the session one; v3 moved each gallery item's
+// full-size bytes out into GALLERY_BYTES_STORE. Both upgrades are safe for a
+// client holding an older database — the guards in onupgradeneeded leave an
+// existing session untouched, and v3 migrates the images rather than dropping
+// them.
+const DB_VERSION = 3;
 const DB_STORE = "session";
 const GALLERY_STORE = "gallery";
+const GALLERY_BYTES_STORE = "galleryBytes";
 const META_KEY = "meta";
 const FILES_KEY = "files";
 
@@ -1447,6 +1450,27 @@ function openSessionDb() {
       // Keyed by a sortable id, so "newest first" and "drop the oldest" are
       // both just cursor order.
       if (!db.objectStoreNames.contains(GALLERY_STORE)) db.createObjectStore(GALLERY_STORE, { keyPath: "id" });
+      if (!db.objectStoreNames.contains(GALLERY_BYTES_STORE)) db.createObjectStore(GALLERY_BYTES_STORE, { keyPath: "id" });
+
+      // Coming from v2, every gallery record still carries its full-size bytes
+      // inline. Move them rather than dropping them: they are the user's images,
+      // and an upgrade does not get to decide that for them. A plain cursor walk
+      // inside the versionchange transaction, so nothing is awaited outside it.
+      if (req.transaction && db.objectStoreNames.contains(GALLERY_STORE)) {
+        const light = req.transaction.objectStore(GALLERY_STORE);
+        const heavy = req.transaction.objectStore(GALLERY_BYTES_STORE);
+        light.openCursor().onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (!cursor) return;
+          const rec = cursor.value;
+          if (rec && rec.bytes) {
+            heavy.put({ id: rec.id, bytes: rec.bytes });
+            delete rec.bytes;
+            cursor.update(rec);
+          }
+          cursor.continue();
+        };
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => resolve(null);
@@ -1744,22 +1768,46 @@ function initSessionPersistence() {
 // session store shipped broken once (#69). There is no reason for new code to
 // rediscover that: bytes go in as bytes.
 // ---------------------------------------------------------------------------
-const GALLERY_MAX_ITEMS = 12;
+const GALLERY_MAX_ITEMS = 50;
 const GALLERY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const GALLERY_MAX_BYTES = 150 * 1024 * 1024;
-// Long edge of the stored thumbnail. The strip decodes these rather than a
-// dozen full-size images, which is how a phone keeps the tab alive.
+// Long edge of the stored thumbnail. The strip decodes these rather than
+// full-size images, which is how a phone keeps the tab alive.
 const GALLERY_THUMB_PX = 320;
 
 let galleryBroken = false; // one hard failure is enough to stop trying
 
+// An item is two records in two stores, for the same reason the session record
+// is split into a small half and a heavy one: the strip redraws on every
+// generation and must not pay for bytes it does not display. The light record
+// is the thumbnail and its metadata, about 20 KB; the full image is read only
+// to open, reuse or save it.
 const galleryGet = (id) => idbRun(GALLERY_STORE, "readonly", (st) => st.get(id)).then((r) => r.value);
-const galleryPut = (rec) => idbRun(GALLERY_STORE, "readwrite", (st) => st.put(rec)).then((r) => r.ok);
-const galleryDelete = (id) => idbRun(GALLERY_STORE, "readwrite", (st) => st.delete(id)).then((r) => r.ok);
-const galleryClear = () => idbRun(GALLERY_STORE, "readwrite", (st) => st.clear()).then((r) => r.ok);
+const galleryBytesGet = (id) =>
+  idbRun(GALLERY_BYTES_STORE, "readonly", (st) => st.get(id)).then((r) => (r.value ? r.value.bytes : undefined));
 
-// Everything, newest first. The records carry their bytes, so this is only ever
-// called with a dozen small items behind it.
+async function galleryPut(rec, bytes) {
+  if (!(await idbRun(GALLERY_BYTES_STORE, "readwrite", (st) => st.put({ id: rec.id, bytes })).then((r) => r.ok))) return false;
+  if (await idbRun(GALLERY_STORE, "readwrite", (st) => st.put(rec)).then((r) => r.ok)) return true;
+  // The light record is what everything else finds an item by, so bytes without
+  // one are unreachable. Drop them rather than leave them stranded.
+  await idbRun(GALLERY_BYTES_STORE, "readwrite", (st) => st.delete(rec.id));
+  return false;
+}
+
+async function galleryDelete(id) {
+  await idbRun(GALLERY_BYTES_STORE, "readwrite", (st) => st.delete(id));
+  return idbRun(GALLERY_STORE, "readwrite", (st) => st.delete(id)).then((r) => r.ok);
+}
+
+async function galleryClear() {
+  await idbRun(GALLERY_BYTES_STORE, "readwrite", (st) => st.clear());
+  return idbRun(GALLERY_STORE, "readwrite", (st) => st.clear()).then((r) => r.ok);
+}
+
+// Every item's thumbnail and metadata, newest first. Deliberately never touches
+// GALLERY_BYTES_STORE: this is what the strip redraws from, so its cost has to
+// scale with the number of thumbnails rather than with the size of the images.
 async function galleryAll() {
   const r = await idbRun(GALLERY_STORE, "readonly", (st) => st.getAll());
   const list = r.ok && Array.isArray(r.value) ? r.value : [];
@@ -1812,7 +1860,9 @@ async function pruneGallery() {
   let bytes = 0;
   for (const rec of all) {
     const tooOld = !(rec.createdAt > cutoff);
-    const size = (rec.bytes && rec.bytes.byteLength) || 0;
+    // From the light record's own `size`, so the byte ceiling costs no read of
+    // the images it is measuring.
+    const size = rec.size || 0;
     if (tooOld || kept >= GALLERY_MAX_ITEMS || bytes + size > GALLERY_MAX_BYTES) {
       await galleryDelete(rec.id);
       continue;
@@ -1836,18 +1886,19 @@ async function archiveGeneration(blob, modelId, prompt) {
       modelId: modelId || "",
       prompt: prompt || "",
       type: blob.type || "image/jpeg",
-      bytes,
       thumb: thumb ? thumb.buf : null,
       thumbType: thumb ? thumb.type : "",
       width: thumb ? thumb.width : 0,
       height: thumb ? thumb.height : 0,
+      // The one thing the light record keeps about the image itself, so the
+      // byte ceiling can be enforced without reading any of them.
       size: bytes.byteLength,
     };
-    if (!(await galleryPut(rec))) {
+    if (!(await galleryPut(rec, bytes))) {
       // Out of quota, or a store that will not take this. Make room once and
       // try again before giving up on the feature for this load.
       await pruneGallery();
-      if (!(await galleryPut(rec))) {
+      if (!(await galleryPut(rec, bytes))) {
         galleryBroken = true;
         return;
       }
@@ -1862,8 +1913,9 @@ async function archiveGeneration(blob, modelId, prompt) {
 
 // --- the strip, and one item full size -------------------------------------
 
-// Object URLs the strip and the lightbox are holding, released together when
-// the strip is rebuilt or the lightbox closes.
+// The strip's thumbnail URLs, released when it is rebuilt. The lightbox keeps
+// its own below: it holds a full-size image, and it opens and closes many times
+// between one strip rebuild and the next.
 let galleryObjectUrls = [];
 
 function releaseGalleryUrls() {
@@ -1899,8 +1951,15 @@ async function renderRecent() {
     btn.className = "thumb";
     btn.title = rec.prompt || rec.modelId || "Generated image";
     const img = document.createElement("img");
-    // The thumbnail when there is one; the full bytes only if there is not.
-    img.src = rec.thumb ? galleryObjectUrl(rec.thumb, rec.thumbType) : galleryObjectUrl(rec.bytes, rec.type);
+    // Thumbnails only. An item whose thumbnail failed to encode shows an empty
+    // tile rather than pulling its full-size bytes in here, which is exactly
+    // the cost this store was split to avoid.
+    if (rec.thumb) img.src = galleryObjectUrl(rec.thumb, rec.thumbType);
+    // The strip scrolls sideways, so most tiles are off-screen. Where these are
+    // honoured the browser skips decoding them until they are scrolled to;
+    // where they are not, behaviour is unchanged.
+    img.loading = "lazy";
+    img.decoding = "async";
     img.alt = rec.prompt ? `Generated: ${rec.prompt}` : "Generated image";
     btn.appendChild(img);
     btn.addEventListener("click", () => openLightbox(rec.id));
@@ -1908,18 +1967,41 @@ async function renderRecent() {
   }
 }
 
+// The full-size image on screen. Its own variable rather than the strip's list,
+// because it is replaced every time an item is opened and the strip may not be
+// rebuilt for a long time — leaving them to accumulate pinned a whole image in
+// memory per item viewed, the leak PR #33 fixed for upload previews.
+let lightboxObjectUrl = null;
+
+function releaseLightboxUrl() {
+  if (lightboxObjectUrl) URL.revokeObjectURL(lightboxObjectUrl);
+  lightboxObjectUrl = null;
+}
+
 function closeLightbox() {
   $("lightbox").classList.add("hidden");
   $("lightbox-img").src = "";
   $("lightbox-actions").innerHTML = "";
+  releaseLightboxUrl();
 }
 
 async function openLightbox(id) {
   const rec = await galleryGet(id);
   if (!rec) return void renderRecent();
+  // The only place the full-size bytes are read.
+  const bytes = await galleryBytesGet(id);
+  if (!bytes) {
+    // The light record outlived its image somehow; drop it rather than open an
+    // empty frame.
+    await galleryDelete(id);
+    renderRecent();
+    return void setStatus("That image is no longer stored on this device.", "err");
+  }
 
-  const blob = new Blob([rec.bytes], { type: rec.type || "image/jpeg" });
-  $("lightbox-img").src = galleryObjectUrl(rec.bytes, rec.type);
+  const blob = new Blob([bytes], { type: rec.type || "image/jpeg" });
+  releaseLightboxUrl();
+  lightboxObjectUrl = URL.createObjectURL(blob);
+  $("lightbox-img").src = lightboxObjectUrl;
   const model = MODELS.find((m) => m.id === rec.modelId);
   const when = new Date(rec.createdAt);
   $("lightbox-meta").textContent =
