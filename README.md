@@ -101,12 +101,19 @@ else.
 **Recent generations.** The last few finished images are kept on the device, so
 one you did not save in the moment is not gone: the strip under the output opens
 any of them full size, to save, to send back in as an input, or to put its
-prompt back in the box. Deliberately short-lived — twelve images, a day, and a
+prompt back in the box. Deliberately short-lived — fifty images, a day, and a
 byte ceiling — because this is a working set, not an archive, and Clear empties
 it immediately. Stored as `ArrayBuffer`s rather than Blobs: WebKit aborts an
 IndexedDB transaction outright for any value containing a Blob, which is how the
-session store shipped broken once. Thumbnails are generated at archive time so
-the strip decodes a dozen small images rather than a dozen full-size ones.
+session store shipped broken once.
+
+Each item is two records in two stores, for the same reason the session record
+is split: the strip redraws on every generation and must not pay for bytes it
+never displays. The light record is a thumbnail and its metadata, on the order
+of 20 KB; the full image lives in a second store and is read only to open, reuse
+or save it. Before that split, drawing the strip deserialised every stored image
+in full — the cost scaled with the size of the library rather than with the
+number of thumbnails, which is what kept the cap at twelve.
 
 **No server-side persistence.** Nothing is stored server-side. Generated media
 is served `no-store`, so neither the browser nor Cloudflare's edge keeps a copy

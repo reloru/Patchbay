@@ -58,13 +58,26 @@ Port 8788, so `wrangler dev` can stay up on 8787 alongside. Override with `PORT`
 
 ## What it asserts
 
-Recent generations: a result reaching the strip, stored as an `ArrayBuffer` with
-its prompt and model, surviving a reopen, the lightbox's metadata and prompt
-restore, reuse from the lightbox, eviction by count and by age, Clear, and a
-version-1 database keeping its session through the upgrade that adds the gallery
-store. The byte ceiling is the one bound with no test: tripping it means
-allocating 150 MB inside a browser, and it shares its loop with the two bounds
-that are covered.
+Recent generations: a result reaching the strip; the split across the two stores
+(a light record with the thumbnail and no image bytes, the image itself as an
+`ArrayBuffer` under the same id in the other store); surviving a reopen; the
+lightbox's metadata and prompt restore; reuse from the lightbox; eviction by
+count and by age, deleting both halves; Clear emptying both stores; and the two
+schema upgrades — a version-1 database keeping its session, and a version-2
+gallery item having its image moved out rather than dropped, then still opening.
+
+Eviction by count seeds sixty items straight into both stores rather than
+generating them: sixty round trips through the UI would dominate the runtime,
+and what is under test is the pruning that runs at boot.
+
+The lightbox leak test counts live object URLs through an instrumented
+`createObjectURL`/`revokeObjectURL` — the technique PR #33 used. It has been
+checked against the unfixed code, where it fails: without the revoke on close, a
+full-size image stays pinned after the lightbox is dismissed.
+
+The byte ceiling is the one bound with no test: tripping it means allocating
+150 MB inside a browser, and it shares its loop with the two bounds that are
+covered.
 
 Reuse as an input: the label for each target case, landing on the current model,
 switching to the editing model and carrying the image, a full slot falling

@@ -648,33 +648,44 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
       new Promise((resolve) => {
         const r = indexedDB.open("patchbay");
         r.onsuccess = () => {
-          const tx = r.result.transaction("gallery", "readonly");
-          const g = tx.objectStore("gallery").getAll();
+          const tx = r.result.transaction(["gallery", "galleryBytes"], "readonly");
+          const light = tx.objectStore("gallery").getAll();
+          const heavy = tx.objectStore("galleryBytes").getAll();
           tx.oncomplete = () =>
-            resolve(
-              (g.result || []).map((x) => ({
-                bytesIsBuffer: x.bytes instanceof ArrayBuffer,
+            resolve({
+              light: (light.result || []).map((x) => ({
+                id: x.id,
+                hasInlineBytes: "bytes" in x,
                 thumbIsBuffer: x.thumb instanceof ArrayBuffer || x.thumb === null,
                 prompt: x.prompt,
                 modelId: x.modelId,
                 size: x.size,
-              }))
-            );
+              })),
+              heavy: (heavy.result || []).map((x) => ({ id: x.id, bytesIsBuffer: x.bytes instanceof ArrayBuffer })),
+            });
           tx.onerror = () => resolve("read failed");
         };
         r.onerror = () => resolve("open failed");
       })
   );
   check(
-    "stored as an ArrayBuffer, with its prompt and model",
-    Array.isArray(stored) &&
-      stored.length === 1 &&
-      stored[0].bytesIsBuffer &&
-      stored[0].thumbIsBuffer &&
-      stored[0].prompt === "first picture" &&
-      stored[0].modelId === "p-image" &&
-      stored[0].size > 0,
-    JSON.stringify(stored)
+    "the light record carries the thumbnail and metadata, and no image bytes",
+    stored.light &&
+      stored.light.length === 1 &&
+      stored.light[0].hasInlineBytes === false &&
+      stored.light[0].thumbIsBuffer &&
+      stored.light[0].prompt === "first picture" &&
+      stored.light[0].modelId === "p-image" &&
+      stored.light[0].size > 0,
+    JSON.stringify(stored.light)
+  );
+  check(
+    "the image itself is an ArrayBuffer in the other store, under the same id",
+    stored.heavy &&
+      stored.heavy.length === 1 &&
+      stored.heavy[0].bytesIsBuffer &&
+      stored.heavy[0].id === stored.light[0].id,
+    JSON.stringify(stored.heavy)
   );
 
   // Survives a reopen — the assertion that would have caught the WebKit bug.
@@ -704,25 +715,75 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("reuse from the lightbox switches and attaches", (await page.inputValue("#model-select")) === "p-image-edit");
   check("the image landed", (await page.evaluate(() => (uploads.images || []).length)) === 1);
 
-  // Count eviction: generate past the cap and the oldest go.
+  // Count eviction. Seeded straight into both stores rather than generated:
+  // sixty round trips through the UI would dominate the suite's runtime, and
+  // what is under test is pruneGallery, which runs at boot.
   await page.selectOption("#model-select", "p-image");
   await page.waitForTimeout(200);
-  for (let i = 0; i < 13; i++) await gen("shot " + i);
-  const held = await page.locator(".recent-strip .thumb").count();
-  check("the strip is capped", held === 12, `held=${held}`);
-  const newest = await page.evaluate(
+  await page.evaluate(
     () =>
       new Promise((resolve) => {
         const r = indexedDB.open("patchbay");
         r.onsuccess = () => {
-          const tx = r.result.transaction("gallery", "readonly");
-          const g = tx.objectStore("gallery").getAll();
-          tx.oncomplete = () => resolve((g.result || []).map((x) => x.prompt).sort());
-          tx.onerror = () => resolve([]);
+          const tx = r.result.transaction(["gallery", "galleryBytes"], "readwrite");
+          const light = tx.objectStore("gallery");
+          const heavy = tx.objectStore("galleryBytes");
+          // Start from empty: the real generations earlier in this block carry
+          // their own timestamps and would otherwise displace seeds at the
+          // eviction boundary, making the assertion depend on how long the
+          // suite took to get here.
+          light.clear();
+          heavy.clear();
+          const now = Date.now();
+          for (let i = 0; i < 60; i++) {
+            const id = `seed-${String(i).padStart(3, "0")}`;
+            light.put({
+              id,
+              createdAt: now - i * 1000, // seed-000 newest
+              modelId: "p-image",
+              prompt: "seed " + i,
+              type: "image/png",
+              thumb: new ArrayBuffer(8),
+              thumbType: "image/jpeg",
+              width: 10,
+              height: 10,
+              size: 1024,
+            });
+            heavy.put({ id, bytes: new ArrayBuffer(1024) });
+          }
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
         };
       })
   );
-  check("the oldest were dropped, not the newest", !newest.includes("first picture") && newest.includes("shot 12"), JSON.stringify(newest));
+  await page.close();
+  page = await open(context);
+  await page.waitForTimeout(800);
+  const counts = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const r = indexedDB.open("patchbay");
+        r.onsuccess = () => {
+          const tx = r.result.transaction(["gallery", "galleryBytes"], "readonly");
+          const light = tx.objectStore("gallery").getAll();
+          const heavy = tx.objectStore("galleryBytes").count();
+          tx.oncomplete = () =>
+            resolve({
+              kept: (light.result || []).map((x) => x.prompt),
+              heavy: heavy.result,
+            });
+          tx.onerror = () => resolve(null);
+        };
+      })
+  );
+  check("the store is capped at fifty", counts && counts.kept.length === 50, counts && String(counts.kept.length));
+  check(
+    "the newest were kept and the oldest dropped",
+    counts && counts.kept.includes("seed 0") && counts.kept.includes("seed 49") && !counts.kept.includes("seed 50"),
+    counts && counts.kept.length + " items"
+  );
+  check("both halves were pruned together", counts && counts.heavy === 50, counts && String(counts.heavy));
+  check("the strip shows them all", (await page.locator(".recent-strip .thumb").count()) === 50);
 
   // Age eviction: backdate everything and reopen.
   await page.evaluate(
@@ -792,7 +853,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.close();
 
   const page2 = await open(context);
-  check("a v1 session is restored after the upgrade to v2", (await page2.inputValue(promptSel)) === "written under v1");
+  check("a v1 session is restored after the upgrade", (await page2.inputValue(promptSel)) === "written under v1");
   const stores = await page2.evaluate(
     () =>
       new Promise((resolve) => {
@@ -801,8 +862,137 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
         r.onerror = () => resolve(null);
       })
   );
-  check("the database is at v2 with both stores", stores && stores.v === 2 && stores.stores.join(",") === "gallery,session", JSON.stringify(stores));
+  check(
+    "the database is at v3 with all three stores",
+    stores && stores.v === 3 && stores.stores.join(",") === "gallery,galleryBytes,session",
+    JSON.stringify(stores)
+  );
   await page2.close();
+  await context.close();
+}
+
+// ── A v2 gallery item is split across both stores, not dropped ─────────────
+{
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  // Same trick as above: a same-origin page that is not the app, so nothing
+  // holds a connection while the v2 database is built.
+  await page.goto(BASE + "__not-the-app");
+  await page.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const r = indexedDB.open("patchbay", 2);
+        r.onupgradeneeded = () => {
+          const db = r.result;
+          db.createObjectStore("session");
+          db.createObjectStore("gallery", { keyPath: "id" });
+        };
+        r.onerror = () => reject(new Error("could not create the v2 database"));
+        r.onsuccess = () => {
+          const db = r.result;
+          const tx = db.transaction("gallery", "readwrite");
+          // A v2 record: the image sits inline, which is what v3 has to move.
+          tx.objectStore("gallery").put({
+            id: "legacy-1",
+            createdAt: Date.now(),
+            modelId: "p-image",
+            prompt: "made under v2",
+            type: "image/png",
+            bytes: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]).buffer,
+            thumb: new Uint8Array([9, 9, 9, 9]).buffer,
+            thumbType: "image/jpeg",
+            width: 4,
+            height: 4,
+            size: 8,
+          });
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => reject(new Error("could not write the v2 item"));
+        };
+      })
+  );
+  await page.close();
+
+  const page2 = await open(context);
+  await page2.waitForTimeout(500);
+  const split = await page2.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const r = indexedDB.open("patchbay");
+        r.onsuccess = () => {
+          const tx = r.result.transaction(["gallery", "galleryBytes"], "readonly");
+          const light = tx.objectStore("gallery").get("legacy-1");
+          const heavy = tx.objectStore("galleryBytes").get("legacy-1");
+          tx.oncomplete = () =>
+            resolve({
+              version: r.result.version,
+              lightHasBytes: light.result ? "bytes" in light.result : null,
+              prompt: light.result ? light.result.prompt : null,
+              thumbKept: light.result ? light.result.thumb instanceof ArrayBuffer : null,
+              heavyLen: heavy.result && heavy.result.bytes ? heavy.result.bytes.byteLength : null,
+            });
+          tx.onerror = () => resolve(null);
+        };
+        r.onerror = () => resolve(null);
+      })
+  );
+  check(
+    "the v2 item's image moved to the bytes store, and nothing was dropped",
+    split && split.version === 3 && split.lightHasBytes === false && split.heavyLen === 8 && split.prompt === "made under v2" && split.thumbKept,
+    JSON.stringify(split)
+  );
+  check("the migrated item still shows in the strip", (await page2.locator(".recent-strip .thumb").count()) === 1);
+  // And it still opens, which is the only thing that proves the two halves
+  // still find each other.
+  await page2.locator(".recent-strip .thumb").first().click();
+  await page2.waitForSelector("#lightbox:not(.hidden)");
+  check("the migrated item still opens", (await page2.locator("#lightbox-prompt").textContent()) === "made under v2");
+  await page2.close();
+  await context.close();
+}
+
+// ── The lightbox does not leak its full-size image ─────────────────────────
+{
+  const context = await browser.newContext();
+  // Count object URLs the way PR #33's leak test did: instrument the two calls
+  // and watch the live total.
+  const page = await open(context, () => {
+    window.__liveUrls = 0;
+    const create = URL.createObjectURL.bind(URL);
+    const revoke = URL.revokeObjectURL.bind(URL);
+    URL.createObjectURL = (b) => {
+      window.__liveUrls++;
+      return create(b);
+    };
+    URL.revokeObjectURL = (u) => {
+      window.__liveUrls--;
+      return revoke(u);
+    };
+  });
+
+  await page.selectOption("#model-select", "p-image");
+  await page.fill(promptSel, "leak check");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#status.ok");
+  await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length > 0);
+
+  const before = await page.evaluate(() => window.__liveUrls);
+  // Open and close the same item several times. Each open mints a full-size
+  // url; without the revoke on close they accumulate until the strip is next
+  // rebuilt, which may be a long time.
+  for (let i = 0; i < 4; i++) {
+    await page.locator(".recent-strip .thumb").first().click();
+    await page.waitForSelector("#lightbox:not(.hidden)");
+    await page.locator("#lightbox-actions button", { hasText: "Close" }).click();
+    // Not waitForSelector: .hidden is display:none, so it never becomes visible.
+    await page.waitForFunction(() => document.getElementById("lightbox").classList.contains("hidden"));
+  }
+  const after = await page.evaluate(() => window.__liveUrls);
+  check("opening and closing the lightbox leaves no url behind", after === before, `${before} -> ${after}`);
+  await page.close();
   await context.close();
 }
 
