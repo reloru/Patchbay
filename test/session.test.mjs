@@ -509,6 +509,121 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
+// ── Sending a generated image back in as an input ──────────────────────────
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+
+  const generate = async () => {
+    await page.locator("#generate-btn").click();
+    await page.waitForSelector("#status.ok");
+    await page.waitForSelector(".result-actions .reuse");
+  };
+
+  // A generation model with no image field at all: the button names the model
+  // it will switch to, and switching carries the image in.
+  await page.selectOption("#model-select", "p-image");
+  await page.fill(promptSel, "a lighthouse");
+  await page.waitForTimeout(700);
+  await generate();
+  check(
+    "reuse button names the fallback model when there is nowhere to put it",
+    (await page.locator(".reuse").textContent()) === "✏️ Edit in P-Image-Edit",
+    await page.locator(".reuse").textContent()
+  );
+  await page.locator(".reuse").click();
+  await page.waitForTimeout(400);
+  check("switched to the editing model", (await page.inputValue("#model-select")) === "p-image-edit");
+  const carried = await page.evaluate(() =>
+    (uploads.images || []).map((u) => ({ isFile: u.file instanceof File, name: u.file && u.file.name, type: u.file && u.file.type }))
+  );
+  check(
+    "the generated image landed in the editing model's field",
+    carried.length === 1 && carried[0].isFile && /^generated-\d+\./.test(carried[0].name) && carried[0].type === "image/png",
+    JSON.stringify(carried)
+  );
+  check("thumbnail rendered for it", (await page.locator(".thumbs .thumb").count()) === 1);
+  check("prompt survived the switch", (await page.inputValue(promptSel)) === "a lighthouse");
+
+  // On an editing model whose image field is its required subject, the label
+  // says so rather than calling it a reference.
+  await generate();
+  check("label reads Edit this on an editing model", (await page.locator(".reuse").first().textContent()) === "✏️ Edit this");
+  await page.locator(".reuse").first().click();
+  await page.waitForTimeout(300);
+  check("adds to the same field rather than switching", (await page.inputValue("#model-select")) === "p-image-edit");
+  check("two images attached now", (await page.locator(".thumbs .thumb").count()) === 2);
+
+  // A generation model whose image field is a reference gets the other label.
+  await page.selectOption("#model-select", "xai-imagine-image");
+  await page.waitForTimeout(200);
+  await page.fill(promptSel, "a harbour at dusk");
+  await page.waitForTimeout(700);
+  // This model's image field is optional, so it sits inside the Options panel;
+  // open it to clear what carried over and make room.
+  await page.locator(".options > summary").click();
+  while ((await page.locator(".thumbs .thumb .rm").count()) > 0) {
+    await page.locator(".thumbs .thumb .rm").first().click();
+  }
+  await generate();
+  check(
+    "label reads Use as reference on a generation model",
+    (await page.locator(".reuse").first().textContent()) === "🖼 Use as reference",
+    await page.locator(".reuse").first().textContent()
+  );
+  await page.locator(".reuse").first().click();
+  await page.waitForTimeout(300);
+  const ref = await page.evaluate(() => (uploads.images || []).length);
+  check("landed in the reference field", ref === 1, String(ref));
+  check("the Options panel was opened so the landing is visible", await page.locator(".options").evaluate((d) => d.open));
+
+  // The reused image is an ordinary upload, so the session store keeps it.
+  await settle(page);
+  await page.close();
+  page = await open(context);
+  check("a reused image survives a reopen", (await page.locator(".thumbs .thumb").count()) === 1);
+  check("still on the same model", (await page.inputValue("#model-select")) === "xai-imagine-image");
+
+  // A full field is skipped rather than overwritten.
+  await page.selectOption("#model-select", "p-image-rmbg");
+  await page.waitForTimeout(300);
+  const held = await page.evaluate(() => (uploads.image || []).length);
+  check("single-slot field took the carried image", held === 1, String(held));
+  // p-image-rmbg has no prompt field at all, and its one image slot is now
+  // full, so there is nowhere on this model for another image to go.
+  await generate();
+  check(
+    "a full single-slot field sends it to the editing model instead",
+    (await page.locator(".reuse").first().textContent()) === "✏️ Edit in P-Image-Edit",
+    await page.locator(".reuse").first().textContent()
+  );
+  await page.close();
+  await context.close();
+}
+
+// ── Judge still reads the provider urls, not the local blobs ───────────────
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  await page.selectOption("#model-select", "p-image");
+  await page.fill(promptSel, "score me");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#status.ok");
+  const urls = await page.evaluate(() => ({
+    urls: lastResult.urls.slice(),
+    blobs: lastResult.blobs.map((b) => (b ? b.size : null)),
+  }));
+  check(
+    "lastResult keeps provider urls and holds the bytes alongside",
+    urls.urls.length === 1 && /^https:\/\/files\.pruna\.ai\//.test(urls.urls[0]) && urls.blobs[0] > 0,
+    JSON.stringify(urls)
+  );
+  check("the result renders from the local bytes", /^blob:/.test(await page.locator(".result img").getAttribute("src")));
+  await page.close();
+  await context.close();
+}
+
 // ── Every model in the catalogue renders ───────────────────────────────────
 //
 // Breadth rather than depth: selecting each of the 48 models in turn catches a

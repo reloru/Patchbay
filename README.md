@@ -55,6 +55,17 @@ panel, so scoring a generation does not clear the generation.
 **Uploads.** Init images, edit references, start and end frames, masks, and
 source video or audio are proxied to the provider and referenced by URL.
 
+**Reuse an output as an input.** A finished image can go straight back in as
+the thing to edit or as a reference, without a trip through the camera roll.
+The button names its target before you press it — Edit this when the image
+becomes an editing model's subject, Use as reference when it joins a prompt,
+and Edit in P-Image-Edit when the current model has nowhere to put it, which
+switches and carries the image across. The receiving field is scrolled into
+view and named in the status line, and the Options panel opens if that is where
+the field lives, so the tap never reads as having done nothing. A reused image
+is an ordinary upload from there on: it gets the provider encoding that model
+needs, and the saved session keeps it.
+
 **Cost visibility.** List prices per model, live estimates that follow your
 settings, and Workers AI neuron consumption against the free daily allowance.
 
