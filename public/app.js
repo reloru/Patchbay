@@ -135,6 +135,9 @@ $("gate-form").addEventListener("submit", (e) => {
 
 async function startApp() {
   $("app").classList.remove("hidden");
+  // Before anything can build a media URL, and before the gallery is touched.
+  await refreshResultToken();
+  requestPersistentStorage();
   buildModelSelect();
   // Fall back to whatever the picker lists first if the named default ever
   // leaves the catalogue, so startup cannot break on a stale id.
@@ -142,12 +145,13 @@ async function startApp() {
   const wanted = MODELS.some((m) => m.id === defaultModel) ? defaultModel : first && first.value;
   selectModel(wanted || MODELS[0].id);
   initPromptLibrary();
+  initStopButton();
   refreshNeurons();
   $("footer-note").textContent =
     "Generations are proxied through a Cloudflare Worker. Nothing is stored server-side; your current " +
-    "edit — files, prompt, model and settings — the last few generated images, and a running job's id " +
-    "are kept in this browser only, so a closed tab picks up where it left off. Recent images are " +
-    "dropped after a day, and Clear removes them now.";
+    "edit — files, prompt, model and settings — the recent images and videos with the settings that " +
+    "made them, and a running job's id are kept in this browser only, so a closed tab picks up where " +
+    "it left off. Recent results are dropped after a week, and Clear removes them now.";
   // Puts the last session's files, prompt, model and settings back before any
   // of the listeners below can overwrite the saved snapshot.
   await restoreSession();
@@ -624,8 +628,10 @@ let fieldUI = {};
 
 // Files handed over by "use this output as input" for the model being switched
 // to. Separate from carryFiles because selectModel overwrites that one with the
-// outgoing model's own uploads.
+// outgoing model's own uploads. The kind rides alongside so the file lands in a
+// field that takes it — a clip must not be adopted into a picture slot.
 let pendingAdopt = [];
+let pendingAdoptKind = "image";
 
 // Takes File objects the user did not just pick — carried across a model switch,
 // or restored from the last session — into one image field. The thumbnail is
@@ -768,7 +774,7 @@ function imageControl(f) {
   // A generation being sent into this model claims its slot before the outgoing
   // model's own uploads do: "edit this image" is a request about that image, so
   // it must not be crowded out by files that merely came along for the ride.
-  if (pendingAdopt.length && fieldVisible(f) && takesImages(f) && uploads[f.name].length < maxItems) {
+  if (pendingAdopt.length && fieldVisible(f) && fieldTakes(f, pendingAdoptKind) && uploads[f.name].length < maxItems) {
     adoptFiles(f, pendingAdopt.splice(0, maxItems - uploads[f.name].length), redraw, "Could not use that image");
   }
 
@@ -1094,13 +1100,62 @@ function buildInput() {
 // Generate
 // ---------------------------------------------------------------------------
 // A bare "Processing… 200s elapsed" is indistinguishable from a hang, which is
-// exactly how a correct run of a multi-minute model reads. Where a model
-// carries a measured typical runtime, say it while the job is in flight — the
-// blurb was read once before pressing Generate and is no help four minutes in.
+// exactly how a correct run of a multi-minute model reads. So say what is
+// normal while the job is in flight — the blurb was read once before pressing
+// Generate and is no help four minutes in.
+//
+// The catalogue carries `typicalSeconds` on one model out of forty-eight, which
+// left the hint inert for every other slow one. Rather than guess the rest, the
+// app measures: every run it watches start to finish is timed, and the median
+// of the last few is a better number than a hand-set one anyway — it is this
+// account, this device and this connection. The two read differently on
+// purpose, because they are different claims.
+const RUNTIME_KEY = "patchbay_runtimes";
+const RUNTIME_SAMPLES = 5;
+// Below this a run is over before the status line can be read, so a hint is
+// noise rather than reassurance.
+const RUNTIME_HINT_FLOOR_S = 15;
+
+function loadRuntimes() {
+  try {
+    const v = JSON.parse(localStorage.getItem(RUNTIME_KEY));
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+function recordRuntime(modelId, secs) {
+  if (!modelId || !(secs > 0)) return;
+  try {
+    const all = loadRuntimes();
+    const list = Array.isArray(all[modelId]) ? all[modelId].filter((n) => typeof n === "number") : [];
+    list.push(Math.round(secs));
+    all[modelId] = list.slice(-RUNTIME_SAMPLES);
+    localStorage.setItem(RUNTIME_KEY, JSON.stringify(all));
+  } catch {
+    /* storage unavailable — the hint is a convenience, not a requirement */
+  }
+}
+
+// Median rather than mean: one run that hit a cold model or a bad connection
+// should not drag the number it is meant to describe.
+function measuredSeconds(modelId) {
+  const list = loadRuntimes()[modelId];
+  if (!Array.isArray(list) || !list.length) return null;
+  const sorted = list.slice().sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+const fmtDuration = (s) => (s >= 90 ? `${Math.round(s / 60)} min` : `${s}s`);
+
 function slowHint(model) {
-  const t = model && model.typicalSeconds;
+  if (!model) return "";
+  const mine = measuredSeconds(model.id);
+  if (mine != null && mine >= RUNTIME_HINT_FLOOR_S) return ` · your last runs took about ${fmtDuration(mine)}`;
+  const t = model.typicalSeconds;
   if (!t) return "";
-  return t >= 90 ? ` · usually about ${Math.round(t / 60)} min` : ` · usually about ${t}s`;
+  return ` · usually about ${fmtDuration(t)}`;
 }
 
 $("gen-form").addEventListener("submit", async (e) => {
@@ -1116,27 +1171,42 @@ $("gen-form").addEventListener("submit", async (e) => {
   $("result").innerHTML = "";
   // The old output is gone from the panel, so it is no longer something Judge
   // can offer to score.
-  lastResult = { urls: [], kind: null };
+  lastResult = { urls: [], kind: null, blobs: [] };
   clearJudgeResult();
   const kind = currentModel.kind;
+  const model = currentModel;
   const started = Date.now();
+  // Taken now rather than when the result lands: the point is the settings that
+  // produced this run, and Improve or a model switch could move them meanwhile.
+  const promptEl = primaryPromptEl();
+  const meta = {
+    modelId: model.id,
+    prompt: promptEl ? promptEl.value : "",
+    setup: currentSetupSnapshot(),
+  };
   setStatus("Submitting…", "load");
+  showStopButton(true);
 
   try {
-    const urls = await runGeneration(currentModel.id, input, kind, (state, secs) => {
-      setStatus(`${cap(state)}… ${secs}s elapsed${slowHint(currentModel)}`, "load");
+    const urls = await runGeneration(model.id, input, kind, (state, secs) => {
+      setStatus(`${cap(state)}… ${secs}s elapsed${slowHint(model)}`, "load");
     });
     if (!urls.length) throw new Error("No output URL returned.");
-    await showResult(urls, kind);
+    await showResult(urls, kind, meta);
     const secs = Math.round((Date.now() - started) / 1000);
-    const cost = addSpend(currentModel, input, urls.length);
+    // A run this tab watched start to finish, so it is a measurement of the
+    // model rather than of when someone happened to reopen the app.
+    recordRuntime(model.id, secs);
+    const cost = addSpend(model, input, urls.length);
     // Analytics lag inference slightly, so give it a moment before re-reading.
     setTimeout(refreshNeurons, 4000);
     setStatus(`Done in ${secs}s.${cost ? " " + cost : ""}`, "ok");
   } catch (err) {
-    setStatus("Error: " + err.message, "err");
+    setStatus(err.message === STOPPED ? stoppedMessage(kind) : "Error: " + err.message, err.message === STOPPED ? "ok" : "err");
   } finally {
     btn.disabled = false;
+    showStopButton(false);
+    stopWatching = false;
   }
 });
 
@@ -1217,6 +1287,45 @@ async function runGeneration(model, input, kind, onProgress) {
   return await pollJob(id, kind, onProgress);
 }
 
+// ---------------------------------------------------------------------------
+// Stopping
+//
+// A generation held the whole UI for as long as it ran — up to 45 minutes for a
+// training run — with no way out but closing the tab, which lost nothing but
+// told you nothing either. Pruna documents no cancel endpoint, so this does not
+// pretend to stop the job: it stops *watching* it. The job record was written
+// before the first poll, so the next load reattaches through the path that
+// already exists for a tab the phone discarded.
+//
+// The record is deliberately left in place — clearing it is what would turn a
+// stop into a loss.
+// ---------------------------------------------------------------------------
+const STOPPED = "__stopped__";
+let stopWatching = false;
+
+function stoppedMessage(kind) {
+  const what = kind === "file" ? "training run" : "job";
+  return `Stopped watching. The ${what} is still running and still billed — reopen the app to collect it.`;
+}
+
+function showStopButton(on) {
+  const b = $("stop-btn");
+  if (!b) return;
+  b.classList.toggle("hidden", !on);
+  b.disabled = false;
+  b.textContent = "Stop waiting";
+}
+
+function initStopButton() {
+  const b = $("stop-btn");
+  if (!b) return;
+  b.addEventListener("click", () => {
+    stopWatching = true;
+    b.disabled = true;
+    b.textContent = "Stopping…";
+  });
+}
+
 const POLL_MS = 2500;
 // Removing Try-Sync above traded away its main benefit: a fast image used to
 // come back in a single round trip, and now always pays for at least one poll
@@ -1236,6 +1345,11 @@ async function pollJob(id, kind, onProgress) {
   // budget this tab is willing to wait on.
   const maxMs = (kind === "file" ? 45 : kind === "video" ? 30 : 10) * 60 * 1000;
   while (true) {
+    // Checked before each poll rather than mid-sleep, so the wait to act on a
+    // Stop is one poll interval at worst. Thrown rather than returned, because
+    // every caller already distinguishes a result from a throw — and this one
+    // must not reach clearJob() below.
+    if (stopWatching) throw new Error(STOPPED);
     const sRes = await api("/api/status?id=" + encodeURIComponent(id), {
       // Same (state, seconds) shape the caller already formats, so a dropped
       // poll reads as "Reconnecting (1/3)… 12s elapsed" rather than stalling
@@ -1351,21 +1465,28 @@ async function resumeInFlightJob() {
   const mins = Math.floor(age / 60000);
   const ago = mins < 1 ? "less than a minute ago" : `${mins} min ago`;
   setStatus(`Picking up the ${rec.model || "job"} you left running ${ago}…`, "load");
+  showStopButton(true);
   try {
     const urls = await pollJob(rec.id, rec.kind, (state, secs) => {
       setStatus(`${cap(state)}… ${secs}s since reattaching`, "load");
     });
     if (!urls.length) throw new Error("No output URL returned.");
-    await showResult(urls, rec.kind);
+    // The model comes from the job record; the prompt and the settings do not
+    // exist to recover, since the record deliberately never held the input.
+    await showResult(urls, rec.kind, { modelId: rec.model || "", prompt: "", setup: null });
     // No spend is added: the estimate needs the original input, which is not
     // stored, and this run was already paid for before the tab went away.
+    // No runtime is recorded either — the elapsed time here is measured from
+    // reattaching, which says nothing about how long the model takes.
     setStatus(`Recovered the ${rec.model || "job"} you left running.`, "ok");
   } catch (e) {
     // The record is left in place unless pollJob cleared it on a terminal
     // outcome, so another reload can try again.
-    setStatus("Could not finish the earlier job: " + e.message, "err");
+    setStatus(e.message === STOPPED ? stoppedMessage(rec.kind) : "Could not finish the earlier job: " + e.message, e.message === STOPPED ? "ok" : "err");
   } finally {
     btn.disabled = false;
+    showStopButton(false);
+    stopWatching = false;
   }
 }
 
@@ -1434,6 +1555,22 @@ let persistBroken = false; // one hard failure is enough to stop trying
 let lastFilesSig = null;
 // fieldName -> [File], consumed by the image controls as renderFields builds them.
 let restoreFiles = {};
+
+// Both stores below are best-effort by default, and WebKit evicts a best-effort
+// origin least-recently-used under storage pressure and after a period without
+// user interaction — only persistent mode is exempt, and it has to be asked for.
+// That matters more now that a kept video is measured in hundreds of megabytes.
+// https://webkit.org/blog/14403/updates-to-storage-policy/
+//
+// Deliberately not awaited by anything: a refusal costs durability, not
+// function, and the caps below still apply either way.
+async function requestPersistentStorage() {
+  try {
+    if (navigator.storage && navigator.storage.persist) await navigator.storage.persist();
+  } catch {
+    /* unavailable or refused — the stores still work, they are just evictable */
+  }
+}
 
 function openSessionDb() {
   if (dbPromise) return dbPromise;
@@ -1531,6 +1668,20 @@ function snapshotFieldValues() {
   return out;
 }
 
+// The form as it currently stands: its own values, plus which options were
+// deliberately set, plus whether the panel was open. Shared by the session
+// snapshot and by each gallery record, because both have to put the form back
+// exactly as it was — and buildInput()'s payload cannot, since it inverts
+// bools, omits defaults and wraps singles in arrays.
+function currentSetupSnapshot() {
+  if (!currentModel) return null;
+  return {
+    fields: snapshotFieldValues(),
+    touched: optionRows.filter((r) => r.touched).map((r) => r.f.name),
+    optionsOpen: Boolean(optionsPanel && optionsPanel.open),
+  };
+}
+
 // Identifies the current set of attached files well enough to tell whether the
 // stored copy is still the right one.
 function uploadsSignature() {
@@ -1584,15 +1735,9 @@ async function collectFilesForPersist(asBuffers) {
 
 async function saveSessionNow() {
   if (!persistenceReady || restoringSession || persistBroken || !currentModel) return;
-  const meta = {
-    savedAt: Date.now(),
-    modelId: currentModel.id,
-    fields: snapshotFieldValues(),
-    // Which options were deliberately set, since that alone decides whether a
-    // value equal to the default is still sent (see buildInput).
-    touched: optionRows.filter((r) => r.touched).map((r) => r.f.name),
-    optionsOpen: Boolean(optionsPanel && optionsPanel.open),
-  };
+  // `touched` matters as much as the values: it alone decides whether a value
+  // equal to the default is still sent (see buildInput).
+  const meta = { savedAt: Date.now(), modelId: currentModel.id, ...currentSetupSnapshot() };
   if (!(await idbPut(META_KEY, meta))) {
     persistBroken = true;
     return;
@@ -1753,14 +1898,15 @@ function initSessionPersistence() {
 // ---------------------------------------------------------------------------
 // Recent generations
 //
-// A finished image used to survive exactly until the next Generate cleared the
+// A finished result used to survive exactly until the next Generate cleared the
 // panel, and the provider's delivery URL expires soon after, so anything not
-// saved in that moment was gone. The last few images are now kept on the device
-// so you can look back, save one later, or send it in as an input.
+// saved in that moment was gone. Finished images and videos are now kept on the
+// device so you can look back, save one later, send it in as an input, or put
+// the whole setup that produced it back on screen.
 //
-// Deliberately short-lived: a dozen images, a day, and a byte ceiling. This is
-// a working set, not an archive, and it is cleared by the Clear button, by any
-// of those three bounds, or by clearing site data.
+// Bounded by count, age and bytes — but per kind, because the two are nothing
+// alike: one clip outweighs a hundred images, and under a single shared ceiling
+// it would evict them. Clear empties both, as does clearing site data.
 //
 // Stored as ArrayBuffers, never Blobs. WebKit aborts the whole transaction for
 // any value containing a Blob — a File, a slice of one, even a Blob built from
@@ -1768,9 +1914,20 @@ function initSessionPersistence() {
 // session store shipped broken once (#69). There is no reason for new code to
 // rediscover that: bytes go in as bytes.
 // ---------------------------------------------------------------------------
-const GALLERY_MAX_ITEMS = 50;
-const GALLERY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const GALLERY_MAX_BYTES = 150 * 1024 * 1024;
+const GALLERY_LIMITS = {
+  image: { items: 200, bytes: 1024 * 1024 * 1024, ageMs: 7 * 24 * 60 * 60 * 1000 },
+  video: { items: 25, bytes: 4 * 1024 * 1024 * 1024, ageMs: 7 * 24 * 60 * 60 * 1000 },
+};
+// Seven days matches SESSION_MAX_AGE_MS, so everything this app keeps on the
+// device expires on one clock. The byte ceilings are far inside what the engine
+// allows — a Home Screen web app gets the same per-origin allowance as the
+// browser, up to 60% of the disk — so the binding risk is eviction, which
+// requestPersistentStorage() above is what actually answers.
+
+// Records written before video was archivable carry no `kind` at all, and every
+// one of them is an image.
+const recordKind = (rec) => (rec && rec.kind === "video" ? "video" : "image");
+
 // Long edge of the stored thumbnail. The strip decodes these rather than
 // full-size images, which is how a phone keeps the tab alive.
 const GALLERY_THUMB_PX = 320;
@@ -1814,10 +1971,39 @@ async function galleryAll() {
   return list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
-// Shrinks the image to something a strip can decode a dozen of. Resolves to
-// null on anything that will not decode, because a missing thumbnail is worth
-// far less than a failed archive.
-function makeThumb(blob) {
+// Shrinks a decoded frame to something a strip can hold a lot of. Resolves to
+// null on anything that will not encode, because a missing thumbnail is worth
+// far less than a failed archive. Shared tail of both paths below.
+function encodeThumb(source, srcW, srcH) {
+  return new Promise((resolve) => {
+    try {
+      if (!srcW || !srcH) return resolve(null);
+      const scale = Math.min(1, GALLERY_THUMB_PX / Math.max(srcW, srcH));
+      const w = Math.max(1, Math.round(srcW * scale));
+      const h = Math.max(1, Math.round(srcH * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext("2d").drawImage(source, 0, 0, w, h);
+      canvas.toBlob(
+        (out) => {
+          if (!out) return resolve(null);
+          out.arrayBuffer().then((buf) => resolve({ buf, type: out.type, width: srcW, height: srcH })).catch(() => resolve(null));
+        },
+        "image/jpeg",
+        0.72
+      );
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+function makeThumb(blob, kind) {
+  return kind === "video" ? videoThumb(blob) : imageThumb(blob);
+}
+
+function imageThumb(blob) {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(blob);
     const img = new Image();
@@ -1825,59 +2011,90 @@ function makeThumb(blob) {
       URL.revokeObjectURL(url);
       resolve(v);
     };
-    img.onload = () => {
-      try {
-        const scale = Math.min(1, GALLERY_THUMB_PX / Math.max(img.width, img.height));
-        const w = Math.max(1, Math.round(img.width * scale));
-        const h = Math.max(1, Math.round(img.height * scale));
-        const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
-        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-        canvas.toBlob(
-          (out) => {
-            if (!out) return done(null);
-            out.arrayBuffer().then((buf) => done({ buf, type: out.type, width: img.width, height: img.height })).catch(() => done(null));
-          },
-          "image/jpeg",
-          0.72
-        );
-      } catch {
-        done(null);
-      }
-    };
+    img.onload = () => encodeThumb(img, img.width, img.height).then(done);
     img.onerror = () => done(null);
     img.src = url;
   });
 }
 
-// Applies all three bounds. Runs after every insert and once at boot, so a
-// record that aged out while the app was closed goes on the next load.
+// A poster frame, so a kept clip gets a tile like everything else. The element
+// is built from a literal tag name for the same reason probeMediaMeta's is: an
+// element built from a computed string cannot be resolved statically, and the
+// blob: URL below then reads to analysis as a possible script-injection sink.
+function videoThumb(blob) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const v = document.createElement("video");
+    let settled = false;
+    const done = (value) => {
+      if (settled) return; // seeked and the timeout below can both arrive
+      settled = true;
+      URL.revokeObjectURL(url);
+      resolve(value);
+    };
+    const grab = () => encodeThumb(v, v.videoWidth, v.videoHeight).then(done);
+    // "auto", not "metadata" as probeMediaMeta uses: that one only needs the
+    // duration, this needs a decoded frame, and "metadata" is an explicit
+    // instruction to stop before one is available. The bytes are already in
+    // memory behind a blob: URL, so there is nothing extra to fetch.
+    v.preload = "auto";
+    v.muted = true;
+    v.playsInline = true;
+    v.onloadeddata = () => {
+      // A frame in from the start: the first is very often black.
+      const target = Number.isFinite(v.duration) && v.duration > 2 ? Math.min(1, v.duration / 2) : 0;
+      if (!target) return void grab();
+      v.onseeked = grab;
+      try {
+        v.currentTime = target;
+      } catch {
+        grab();
+      }
+    };
+    v.onerror = () => done(null);
+    // A clip that decodes but never fires either event must not leave the
+    // archive — and with it the strip — waiting on it.
+    setTimeout(() => done(null), 8000);
+    v.src = url;
+  });
+}
+
+// Applies all three bounds, separately per kind. Runs after every insert and
+// once at boot, so a record that aged out while the app was closed goes on the
+// next load. Counting per kind is what stops one long clip evicting the images.
 async function pruneGallery() {
   const all = await galleryAll();
-  const cutoff = Date.now() - GALLERY_MAX_AGE_MS;
+  const now = Date.now();
+  const tally = { image: { items: 0, bytes: 0 }, video: { items: 0, bytes: 0 } };
   let kept = 0;
-  let bytes = 0;
   for (const rec of all) {
-    const tooOld = !(rec.createdAt > cutoff);
+    const kind = recordKind(rec);
+    const limit = GALLERY_LIMITS[kind];
+    const seen = tally[kind];
     // From the light record's own `size`, so the byte ceiling costs no read of
-    // the images it is measuring.
+    // the media it is measuring.
     const size = rec.size || 0;
-    if (tooOld || kept >= GALLERY_MAX_ITEMS || bytes + size > GALLERY_MAX_BYTES) {
+    const tooOld = !(rec.createdAt > now - limit.ageMs);
+    if (tooOld || seen.items >= limit.items || seen.bytes + size > limit.bytes) {
       await galleryDelete(rec.id);
       continue;
     }
+    seen.items++;
+    seen.bytes += size;
     kept++;
-    bytes += size;
   }
   return kept;
 }
 
-async function archiveGeneration(blob, modelId, prompt) {
+// `setup` is the form as it stood when this ran — what makes the result
+// repeatable rather than merely viewable. Null for a job collected on reload,
+// where the form on screen belongs to whatever is selected now and says nothing
+// about the run that produced this.
+async function archiveGeneration(blob, modelId, prompt, kind, setup) {
   if (galleryBroken) return;
   try {
     const bytes = await blob.arrayBuffer();
-    const thumb = await makeThumb(blob);
+    const thumb = await makeThumb(blob, kind);
     const rec = {
       // Sortable and unique enough for one device: two results from the same
       // generation land in the same millisecond otherwise.
@@ -1885,13 +2102,15 @@ async function archiveGeneration(blob, modelId, prompt) {
       createdAt: Date.now(),
       modelId: modelId || "",
       prompt: prompt || "",
-      type: blob.type || "image/jpeg",
+      kind: kind === "video" ? "video" : "image",
+      setup: setup || null,
+      type: blob.type || (kind === "video" ? "video/mp4" : "image/jpeg"),
       thumb: thumb ? thumb.buf : null,
       thumbType: thumb ? thumb.type : "",
       width: thumb ? thumb.width : 0,
       height: thumb ? thumb.height : 0,
-      // The one thing the light record keeps about the image itself, so the
-      // byte ceiling can be enforced without reading any of them.
+      // The one thing the light record keeps about the media itself, so the
+      // byte ceiling can be enforced without reading any of it.
       size: bytes.byteLength,
     };
     if (!(await galleryPut(rec, bytes))) {
@@ -1942,26 +2161,49 @@ async function renderRecent() {
     return;
   }
   wrap.classList.remove("hidden");
+  const clips = items.filter((r) => recordKind(r) === "video").length;
   $("recent-count").textContent =
-    `${items.length} recent ${items.length === 1 ? "image" : "images"} · kept on this device for a day`;
+    `${items.length} recent ${items.length === 1 ? "item" : "items"}` +
+    (clips ? ` · ${clips} video${clips === 1 ? "" : "s"}` : "") +
+    " · kept on this device for a week";
 
   for (const rec of items) {
+    const kind = recordKind(rec);
+    const noun = kind === "video" ? "video" : "image";
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "thumb";
-    btn.title = rec.prompt || rec.modelId || "Generated image";
-    const img = document.createElement("img");
-    // Thumbnails only. An item whose thumbnail failed to encode shows an empty
-    // tile rather than pulling its full-size bytes in here, which is exactly
-    // the cost this store was split to avoid.
-    if (rec.thumb) img.src = galleryObjectUrl(rec.thumb, rec.thumbType);
-    // The strip scrolls sideways, so most tiles are off-screen. Where these are
-    // honoured the browser skips decoding them until they are scrolled to;
-    // where they are not, behaviour is unchanged.
-    img.loading = "lazy";
-    img.decoding = "async";
-    img.alt = rec.prompt ? `Generated: ${rec.prompt}` : "Generated image";
-    btn.appendChild(img);
+    btn.title = rec.prompt || rec.modelId || `Generated ${noun}`;
+    // Thumbnails only — a poster frame for a clip. An item whose thumbnail
+    // failed to encode never pulls its full-size bytes in here, which is
+    // exactly the cost this store was split to avoid. It gets a plain tile
+    // instead of an <img> with no src, which browsers draw as a broken image
+    // with the alt text spilling out of it — more likely now that a clip can
+    // fail to yield a frame where a still would not.
+    if (rec.thumb) {
+      const img = document.createElement("img");
+      img.src = galleryObjectUrl(rec.thumb, rec.thumbType);
+      // The strip scrolls sideways, so most tiles are off-screen. Where these
+      // are honoured the browser skips decoding them until they are scrolled
+      // to; where they are not, behaviour is unchanged.
+      img.loading = "lazy";
+      img.decoding = "async";
+      img.alt = rec.prompt ? `Generated ${noun}: ${rec.prompt}` : `Generated ${noun}`;
+      btn.appendChild(img);
+    } else {
+      const blank = document.createElement("span");
+      blank.className = "thumb-blank";
+      blank.textContent = kind === "video" ? "🎬" : "🖼";
+      btn.appendChild(blank);
+    }
+    // Otherwise a clip and a still are the same tile, and which one opens a
+    // player is a surprise.
+    if (kind === "video") {
+      const badge = document.createElement("span");
+      badge.className = "thumb-kind";
+      badge.textContent = "▶";
+      btn.appendChild(badge);
+    }
     btn.addEventListener("click", () => openLightbox(rec.id));
     strip.appendChild(btn);
   }
@@ -1980,7 +2222,9 @@ function releaseLightboxUrl() {
 
 function closeLightbox() {
   $("lightbox").classList.add("hidden");
-  $("lightbox-img").src = "";
+  // Emptied rather than blanked: a <video> left in the DOM with a revoked src
+  // keeps decoding against nothing.
+  $("lightbox-media").innerHTML = "";
   $("lightbox-actions").innerHTML = "";
   releaseLightboxUrl();
 }
@@ -1998,14 +2242,37 @@ async function openLightbox(id) {
     return void setStatus("That image is no longer stored on this device.", "err");
   }
 
-  const blob = new Blob([bytes], { type: rec.type || "image/jpeg" });
+  const kind = recordKind(rec);
+  const blob = new Blob([bytes], { type: rec.type || (kind === "video" ? "video/mp4" : "image/jpeg") });
   releaseLightboxUrl();
   lightboxObjectUrl = URL.createObjectURL(blob);
-  $("lightbox-img").src = lightboxObjectUrl;
+
+  const media = $("lightbox-media");
+  media.innerHTML = "";
+  if (kind === "video") {
+    const v = document.createElement("video");
+    v.src = lightboxObjectUrl;
+    v.controls = true;
+    v.loop = true;
+    v.playsInline = true;
+    media.appendChild(v);
+  } else {
+    const img = document.createElement("img");
+    img.src = lightboxObjectUrl;
+    img.alt = rec.prompt ? `Generated image: ${rec.prompt}` : "Generated image";
+    media.appendChild(img);
+  }
+
   const model = MODELS.find((m) => m.id === rec.modelId);
   const when = new Date(rec.createdAt);
+  const size =
+    rec.size >= 1024 * 1024
+      ? `${(rec.size / 1024 / 1024).toFixed(1)} MB`
+      : rec.size >= 1024
+        ? `${Math.round(rec.size / 1024)} KB`
+        : `${rec.size} bytes`;
   $("lightbox-meta").textContent =
-    `${model ? model.label : rec.modelId || "unknown model"} · ${when.toLocaleString()} · ${Math.round(rec.size / 1024)} KB`;
+    `${model ? model.label : rec.modelId || "unknown model"} · ${when.toLocaleString()} · ${size}`;
   $("lightbox-prompt").textContent = rec.prompt || "";
 
   const actions = $("lightbox-actions");
@@ -2015,33 +2282,35 @@ async function openLightbox(id) {
   save.type = "button";
   save.className = "download";
   save.textContent = "⬇ Save";
-  save.addEventListener("click", () => saveBlob(blob, `generated-${rec.createdAt}.${extFromType(rec.type, "image")}`));
+  save.addEventListener("click", () => saveBlob(blob, `generated-${rec.createdAt}.${extFromType(rec.type, kind)}`));
   actions.appendChild(save);
 
-  const reuse = document.createElement("button");
-  reuse.type = "button";
-  reuse.className = "secondary";
-  reuse.textContent = reuseLabel(reuseTarget());
-  reuse.addEventListener("click", () => {
-    closeLightbox();
-    useGeneratedAsInput(blob, 0);
-  });
-  actions.appendChild(reuse);
+  // Hidden rather than inert where nothing on this model, and no model at all,
+  // can take this kind of file back in.
+  const reuseText = reuseLabel(reuseTarget(kind), kind);
+  if (reuseText) {
+    const reuse = document.createElement("button");
+    reuse.type = "button";
+    reuse.className = "secondary";
+    reuse.textContent = reuseText;
+    reuse.addEventListener("click", () => {
+      closeLightbox();
+      useGeneratedAsInput(blob, 0, kind);
+    });
+    actions.appendChild(reuse);
+  }
 
-  if (rec.prompt) {
+  // Records written before the setup was stored fall back to the prompt alone
+  // rather than offering a button that would restore nothing.
+  if (rec.setup || rec.prompt) {
     const restore = document.createElement("button");
     restore.type = "button";
     restore.className = "secondary";
-    restore.textContent = "↩ Restore prompt";
-    restore.addEventListener("click", () => {
-      const el = primaryPromptEl();
-      if (!el) return void setStatus("This model has no prompt box.", "err");
-      el.value = rec.prompt;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      commitPromptHistory(); // one entry, so Undo reverses the whole restore
-      closeLightbox();
-      setStatus("Prompt restored — press Undo to put it back.", "ok");
-    });
+    restore.textContent = rec.setup ? "↩ Restore setup" : "↩ Restore prompt";
+    restore.title = rec.setup
+      ? `Put ${model ? model.label : rec.modelId} back with the settings that made this`
+      : "Put this prompt back in the box";
+    restore.addEventListener("click", () => restoreFromRecord(rec));
     actions.appendChild(restore);
   }
 
@@ -2064,6 +2333,66 @@ async function openLightbox(id) {
   actions.appendChild(close);
 
   $("lightbox").classList.remove("hidden");
+}
+
+// Puts a past run back on screen: the model, the prompt, and every option as it
+// stood. Two ordering constraints, both load-bearing. The model switch goes
+// first, because applyRestoredFields writes into whatever fields are currently
+// rendered. And `restoringSession` has to be held across the pair, or
+// selectModel carries the outgoing model's text in over the top of the snapshot
+// it is about to apply — the same reason restoreSession sets it.
+function restoreFromRecord(rec) {
+  const known = Boolean(rec.modelId) && MODELS.some((m) => m.id === rec.modelId);
+  const model = MODELS.find((m) => m.id === rec.modelId);
+
+  // No stored setup (a record from before this shipped), or a model that has
+  // since left the catalogue: the prompt is all there is to give back.
+  if (!rec.setup || !known) {
+    if (!rec.prompt) return void setStatus("Nothing stored for that one to restore.", "err");
+    const el = primaryPromptEl();
+    if (!el) return void setStatus("This model has no prompt box.", "err");
+    el.value = rec.prompt;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    commitPromptHistory(); // one entry, so Undo reverses the whole restore
+    closeLightbox();
+    setStatus(
+      known
+        ? "Prompt restored — press Undo to put it back."
+        : "Prompt restored. The model that made it is no longer in the catalogue.",
+      "ok"
+    );
+    return;
+  }
+
+  // Restoring onto the model already selected keeps whatever is attached.
+  // Switching cannot: selectModel clears the uploads, and the files that made
+  // the original are not stored, so say so rather than let them vanish quietly.
+  const sameModel = Boolean(currentModel) && currentModel.id === rec.modelId;
+  const hadUploads = Object.values(uploads).some((list) => list.length);
+
+  commitPromptHistory(); // what is in the box now stays reachable by Undo
+  restoringSession = true;
+  try {
+    if (!sameModel) selectModel(rec.modelId);
+    applyRestoredFields(rec.setup);
+  } catch (e) {
+    setStatus("Could not restore that setup: " + e.message, "err");
+    return;
+  } finally {
+    restoringSession = false;
+  }
+  // The restored text arrived wholesale, so it is one entry rather than a burst
+  // of typing — Undo reverses the whole thing.
+  commitPromptHistory();
+  scheduleSessionSave();
+  closeLightbox();
+
+  const what = recordKind(rec) === "video" ? "video" : "image";
+  setStatus(
+    `Restored ${model ? model.label : rec.modelId} with the settings that made that ${what}.` +
+      (!sameModel && hadUploads ? " The files you had attached were cleared by the model switch." : ""),
+    "ok"
+  );
 }
 
 // The iOS-safe save: a plain <a download> sends Safari to a full-screen file
@@ -2112,13 +2441,48 @@ function asUrlList(v) {
   return (Array.isArray(v) ? v : [v]).filter(Boolean);
 }
 
+// A short-lived token for media URLs. <img>, <video> and <a download> cannot
+// send a header, and this used to be solved by putting the password itself in
+// the query string — which Workers observability then recorded, writing the
+// shared secret into log storage on every image the app loaded. The Worker
+// signs an expiry instead; the password never leaves the header.
+let resultToken = "";
+let resultTokenExp = 0;
+let resultTokenInFlight = null;
+
+// Refreshed a minute before it lapses, so a URL built right after this resolves
+// is good for the whole of the request it is about to make.
+async function refreshResultToken() {
+  if (!authRequired) return "";
+  if (resultToken && Date.now() < resultTokenExp - 60000) return resultToken;
+  if (!resultTokenInFlight) {
+    resultTokenInFlight = (async () => {
+      try {
+        const res = await api("/api/token");
+        const d = await res.json();
+        if (res.ok && d.token) {
+          resultToken = d.token;
+          resultTokenExp = Number(d.expiresAt) || 0;
+        }
+      } catch {
+        /* keep whatever we have — it may still be inside its window */
+      } finally {
+        resultTokenInFlight = null;
+      }
+      return resultToken;
+    })();
+  }
+  return resultTokenInFlight;
+}
+
+// Sync, because it feeds `img.src`. Callers that are about to fetch await
+// refreshResultToken() first; a token that lapses while an already-loaded
+// element sits on screen costs nothing, since the bytes are in hand.
 function resultUrl(prunaUrl) {
   // Workers AI results are already inline data URIs — nothing to proxy.
   if (prunaUrl.startsWith("data:")) return prunaUrl;
-  // <img>/<video>/<a download> can't send headers, so pass the password as a
-  // query param when the gate is on.
   let u = "/api/result?url=" + encodeURIComponent(prunaUrl);
-  if (authRequired && getPw()) u += "&pw=" + encodeURIComponent(getPw());
+  if (authRequired && resultToken) u += "&t=" + encodeURIComponent(resultToken);
   return u;
 }
 
@@ -2151,13 +2515,20 @@ async function fetchResultBlob(prunaUrl) {
   return await res.blob();
 }
 
-async function showResult(prunaUrls, kind) {
+// `meta` describes the run that produced these, not the form as it stands:
+// a job collected on reload belongs to whatever model the record names, and the
+// settings on screen then say nothing about it.
+async function showResult(prunaUrls, kind, meta) {
   const box = $("result");
+  // Every URL below is built by resultUrl(), which needs a live token when the
+  // gate is on.
+  await refreshResultToken();
   releaseResultUrls();
   box.innerHTML = "";
   lastResult = { urls: prunaUrls.slice(), kind, blobs: [] };
   updateJudgeNote();
   const archived = [];
+  const info = meta || { modelId: "", prompt: "", setup: null };
 
   for (let i = 0; i < prunaUrls.length; i++) {
     const prunaUrl = prunaUrls[i];
@@ -2181,9 +2552,12 @@ async function showResult(prunaUrls, kind) {
       }
     }
     lastResult.blobs.push(blob);
-    if (kind === "image" && blob) {
-      const promptEl = primaryPromptEl();
-      archived.push(archiveGeneration(blob, currentModel && currentModel.id, promptEl ? promptEl.value : ""));
+    // Video is kept for the same reason an image is, and more so: it is the
+    // most expensive thing this app produces. A trained LoRA .zip is not —
+    // it is not previewable, is never fetched into a Blob above, and its link
+    // expires about half an hour after the run either way.
+    if (blob && (kind === "image" || kind === "video")) {
+      archived.push(archiveGeneration(blob, info.modelId, info.prompt, kind, info.setup));
     }
 
     const item = document.createElement("div");
@@ -2210,8 +2584,10 @@ async function showResult(prunaUrls, kind) {
     }
     const actions = document.createElement("div");
     actions.className = "result-actions";
-    actions.appendChild(downloadButton(proxied, kind, i, prunaUrls.length, blob));
-    if (kind === "image" && blob) actions.appendChild(reuseButton(blob, i, prunaUrls.length));
+    actions.appendChild(downloadButton(prunaUrl, kind, i, prunaUrls.length, blob));
+    if (blob && (kind === "image" || kind === "video")) {
+      actions.appendChild(reuseButton(blob, i, prunaUrls.length, kind));
+    }
     item.appendChild(actions);
     box.appendChild(item);
   }
@@ -2235,27 +2611,29 @@ async function showResult(prunaUrls, kind) {
 // saved session for free.
 // ---------------------------------------------------------------------------
 
-// The model an image goes to when the current one has nowhere to put it.
-const REUSE_FALLBACK_MODEL = "p-image-edit";
+// Where a result goes when the current model has nowhere to put it — one model
+// per kind, each of which takes that kind as its required subject.
+const REUSE_FALLBACK_MODEL = { image: "p-image-edit", video: "p-video-edit" };
 
 // The "image" field type is reused for audio, video and .zip slots via accept,
-// so a picture only belongs in the ones that actually take pictures.
-function takesImages(f) {
-  return (f.accept || "image/*").startsWith("image/");
+// so a result only belongs in a field that takes its own kind.
+function fieldTakes(f, kind) {
+  const accept = f.accept || "image/*";
+  return kind === "video" ? accept.startsWith("video/") : accept.startsWith("image/");
 }
 
-// Where a generated image would land if it were reused right now: the first
-// image field with room. "First image field in model order" is the convention
+// Where a generated result would land if it were reused right now: the first
+// matching field with room. "First field in model order" is the convention
 // attachedImageFile() and attachedImageBatch() already follow — model
 // definitions put the subject before masks, end frames and garments.
 //
-// A field that is full is skipped rather than overwritten: replacing a picture
+// A field that is full is skipped rather than overwritten: replacing a file
 // the user chose, to make room for one the app chose, is not a trade it gets to
 // make on their behalf.
-function reuseTarget() {
+function reuseTarget(kind = "image") {
   if (!currentModel) return null;
   for (const f of currentModel.fields) {
-    if (f.type !== "image" || !takesImages(f)) continue;
+    if (f.type !== "image" || !fieldTakes(f, kind)) continue;
     if (!fieldVisible(f)) continue;
     if ((uploads[f.name] || []).length >= (f.maxItems || 1)) continue;
     return f;
@@ -2264,12 +2642,18 @@ function reuseTarget() {
 }
 
 // Says what the button will do before it is pressed, the way Judge's and
-// Describe's note lines do. The distinction that matters is whether the image
-// becomes the thing being edited or a reference alongside a prompt.
-function reuseLabel(f) {
+// Describe's note lines do. The distinction that matters is whether the result
+// becomes the thing being edited or a reference alongside a prompt. Empty means
+// there is nowhere for it to go at all, and the caller shows no button.
+function reuseLabel(f, kind = "image") {
   if (!f) {
-    const m = MODELS.find((x) => x.id === REUSE_FALLBACK_MODEL);
-    return `✏️ Edit in ${m ? m.label : REUSE_FALLBACK_MODEL}`;
+    const fallback = REUSE_FALLBACK_MODEL[kind];
+    const m = MODELS.find((x) => x.id === fallback);
+    if (!m) return "";
+    return kind === "video" ? `🎬 Edit in ${m.label}` : `✏️ Edit in ${m.label}`;
+  }
+  if (kind === "video") {
+    return currentModel.group === "Video" && f.required ? "🎬 Edit this clip" : "🎬 Use as source";
   }
   return currentModel.group === "Image editing" && f.required ? "✏️ Edit this" : "🖼 Use as reference";
 }
@@ -2277,17 +2661,22 @@ function reuseLabel(f) {
 // Every reuse button on screen, so their labels can follow the current target.
 let reuseButtons = [];
 
-function reuseButton(blob, index, total) {
+function reuseButton(blob, index, total, kind) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "secondary reuse";
-  const label = () => reuseLabel(reuseTarget()) + (total > 1 ? ` #${index + 1}` : "");
-  btn.textContent = label();
-  btn.title = "Send this image into the model's input";
-  btn.addEventListener("click", () => useGeneratedAsInput(blob, index));
+  const label = () => reuseLabel(reuseTarget(kind), kind) + (total > 1 ? ` #${index + 1}` : "");
+  btn.title = `Send this ${kind === "video" ? "clip" : "image"} into the model's input`;
+  btn.addEventListener("click", () => useGeneratedAsInput(blob, index, kind));
   // The target moves as fields fill up or the mode changes, so the label is
-  // re-read rather than frozen at render time.
-  btn.refreshLabel = () => { btn.textContent = label(); };
+  // re-read rather than frozen at render time. An empty label means the current
+  // model has nowhere to put this, so the button hides rather than lying.
+  btn.refreshLabel = () => {
+    const text = label();
+    btn.textContent = text;
+    btn.classList.toggle("hidden", !text.trim());
+  };
+  btn.refreshLabel();
   reuseButtons.push(btn);
   return btn;
 }
@@ -2297,40 +2686,45 @@ function refreshReuseLabels() {
   for (const b of reuseButtons) b.refreshLabel();
 }
 
-function generatedFileName(blob, index) {
-  return `generated-${Date.now()}${index ? "-" + (index + 1) : ""}.${extFromType(blob.type, "image")}`;
+function generatedFileName(blob, index, kind) {
+  return `generated-${Date.now()}${index ? "-" + (index + 1) : ""}.${extFromType(blob.type, kind)}`;
 }
 
-function useGeneratedAsInput(blob, index) {
-  const file = new File([blob], generatedFileName(blob, index), { type: blob.type || "image/jpeg" });
-  const f = reuseTarget();
+function useGeneratedAsInput(blob, index, kind = "image") {
+  const noun = kind === "video" ? "video" : "image";
+  const file = new File([blob], generatedFileName(blob, index, kind), {
+    type: blob.type || (kind === "video" ? "video/mp4" : "image/jpeg"),
+  });
+  const f = reuseTarget(kind);
 
   if (f) {
     const ui = fieldUI[f.name];
     if (!ui) return;
-    adoptFiles(f, [file], ui.redraw, "Could not use that image");
+    adoptFiles(f, [file], ui.redraw, `Could not use that ${noun}`);
     ui.redraw();
     // An optional field lives inside the collapsed Options panel, so without
-    // this the image lands somewhere the user cannot see and the tap reads as
+    // this the file lands somewhere the user cannot see and the tap reads as
     // having done nothing.
     if (optionsPanel && optionsPanel.contains(ui.box)) optionsPanel.open = true;
     ui.box.scrollIntoView({ behavior: "smooth", block: "center" });
-    setStatus(`Added the generated image to ${f.label} on ${currentModel.label}.`, "ok");
+    setStatus(`Added the generated ${noun} to ${f.label} on ${currentModel.label}.`, "ok");
     return;
   }
 
   // Nowhere to put it here, so take it somewhere that can edit it. selectModel
-  // does the rest: the fields render, and the image is adopted as they do.
-  const target = MODELS.find((x) => x.id === REUSE_FALLBACK_MODEL);
+  // does the rest: the fields render, and the file is adopted as they do.
+  const target = MODELS.find((x) => x.id === REUSE_FALLBACK_MODEL[kind]);
   if (!target) {
-    setStatus("No image field on this model, and no editing model to switch to.", "err");
+    setStatus(`No ${noun} field on this model, and no editing model to switch to.`, "err");
     return;
   }
   pendingAdopt = [file];
+  pendingAdoptKind = kind;
   selectModel(target.id);
   // Anything left over never found a slot; dropping it here keeps it from
   // turning up unannounced at the next model switch.
   pendingAdopt = [];
+  pendingAdoptKind = "image";
 
   const landed = Object.values(uploads).some((list) => list.some((u) => u.file === file));
   if (landed) {
@@ -2339,9 +2733,9 @@ function useGeneratedAsInput(blob, index) {
       if (optionsPanel && optionsPanel.contains(ui.box)) optionsPanel.open = true;
       ui.box.scrollIntoView({ behavior: "smooth", block: "center" });
     }
-    setStatus(`Switched to ${target.label} with the generated image attached.`, "ok");
+    setStatus(`Switched to ${target.label} with the generated ${noun} attached.`, "ok");
   } else {
-    setStatus(`Switched to ${target.label}, but its image field was already full.`, "err");
+    setStatus(`Switched to ${target.label}, but its ${noun} field was already full.`, "err");
   }
 }
 
@@ -2363,7 +2757,10 @@ function extFromType(type, kind) {
 // a full-screen file viewer with no way back, which strands the app. Instead we
 // fetch the bytes, then hand them to the native share sheet ("Save Image" /
 // "Save to Files") when available, or trigger a blob download everywhere else.
-function downloadButton(proxiedUrl, kind, index, total, blob) {
+// Takes the provider URL rather than a proxied one: the proxied form carries a
+// token that can lapse between render and tap, so it is rebuilt at the moment
+// it is used.
+function downloadButton(prunaUrl, kind, index, total, blob) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "download";
@@ -2375,9 +2772,11 @@ function downloadButton(proxiedUrl, kind, index, total, blob) {
     btn.textContent = "Preparing…";
     try {
       // Already in hand for anything previewable; only a LoRA .zip, or a
-      // result whose fetch failed earlier, still has to be pulled down here.
+      // result whose fetch failed earlier, still has to be pulled down here —
+      // and that URL was built long enough ago that its token may have lapsed.
       const bytes = blob || (await (async () => {
-        const res = await fetch(proxiedUrl);
+        await refreshResultToken();
+        const res = await fetch(resultUrl(prunaUrl));
         if (!res.ok) throw new Error("HTTP " + res.status);
         return await res.blob();
       })());
@@ -2517,15 +2916,25 @@ function attachedImageFile() {
   return null;
 }
 
+const DESCRIBE_QUESTION_KEY = "patchbay_describe_question";
+
+// What is typed in the question box, or "" for a plain caption. The Worker
+// supplies its own captioning instruction when nothing is sent.
+function describeQuestion() {
+  const el = $("describe-question");
+  return el ? el.value.trim() : "";
+}
+
 function updateDescribeNote() {
   const noteEl = $("describe-note");
   if (!noteEl) return; // called from refreshOptionState before the toolbar exists
   const m = describeModels.find((x) => x.id === $("describe-model").value);
   if (!m) return void (noteEl.textContent = "");
   const attached = attachedImageFile();
-  noteEl.textContent = attached
-    ? `🔍 Reads ${attached.name || "the attached image"}`
-    : "🔍 Attach an image below";
+  const q = describeQuestion();
+  noteEl.textContent =
+    (attached ? `🔍 Reads ${attached.name || "the attached image"}` : "🔍 Attach an image below") +
+    (q ? ` · asks: “${q}”` : "");
 }
 
 function initDescribe() {
@@ -2537,6 +2946,25 @@ function initDescribe() {
 
   const btn = $("prompt-describe");
   const file = $("describe-file");
+
+  // The Worker has always accepted a question and applied it; nothing ever sent
+  // one, so the models could only ever caption. Left empty this changes nothing.
+  const question = $("describe-question");
+  if (question) {
+    try {
+      question.value = localStorage.getItem(DESCRIBE_QUESTION_KEY) || "";
+    } catch {
+      /* storage unavailable — the box just starts empty */
+    }
+    question.addEventListener("input", () => {
+      try {
+        localStorage.setItem(DESCRIBE_QUESTION_KEY, question.value);
+      } catch {
+        /* not worth failing a keystroke over */
+      }
+      updateDescribeNote();
+    });
+  }
 
   // Prefer whatever is already attached; only fall back to the file picker
   // when nothing is.
@@ -2556,24 +2984,29 @@ function initDescribe() {
     const el = primaryPromptEl();
     if (!el) return;
 
+    const q = describeQuestion();
     btn.disabled = true;
     const idle = btn.textContent;
     btn.textContent = "Reading…";
-    setStatus(`Describing ${f.name || "image"}…`, "load");
+    setStatus(q ? `Asking about ${f.name || "image"}…` : `Describing ${f.name || "image"}…`, "load");
     try {
       const b64 = await fileToBase64(f);
+      const body = { image_b64: b64, mime: f.type || "image/jpeg", model: sel.value };
+      // Omitted rather than sent empty, so the Worker's own captioning
+      // instruction stays the default.
+      if (q) body.question = q;
       const res = await api("/api/describe", {
         method: "POST",
         retry: true,
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ image_b64: b64, mime: f.type || "image/jpeg", model: sel.value }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok || !data.description) throw new Error(data.error || `HTTP ${res.status}`);
       el.value = data.description;
       el.dispatchEvent(new Event("input", { bubbles: true }));
-      commitPromptHistory(); // the caption is one entry, so Undo puts back what you had
-      setStatus("Prompt filled from the image.", "ok");
+      commitPromptHistory(); // the answer is one entry, so Undo puts back what you had
+      setStatus(q ? "Answer put in the prompt box." : "Prompt filled from the image.", "ok");
     } catch (e) {
       setStatus("Describe failed: " + e.message, "err");
     } finally {
@@ -2679,16 +3112,29 @@ async function uploadForJudge(blob, name) {
   return data.url;
 }
 
-// Pulls a finished generation back through the Worker (which attaches the
-// provider credentials) and re-uploads it, so what gets scored is the image
-// actually on screen.
+// The generated images, as URLs p-judger will accept, so what gets scored is
+// what is actually on screen.
+//
+// showResult already holds every result's bytes, so the usual path costs no
+// download at all. It used to re-fetch each one through /api/result regardless:
+// a second full transfer per scoring, and an outright failure once the
+// provider's delivery URL had expired on an image still sitting in the panel.
+// The fetch survives only for the case showResult itself falls back to, where
+// that first read failed and there are no bytes in hand.
 async function generatedImageUrls() {
   const out = [];
-  for (const u of lastResult.urls.slice(0, judgeMaxImages)) {
+  for (let i = 0; i < lastResult.urls.length && out.length < judgeMaxImages; i++) {
+    const u = lastResult.urls[i];
     if (PRUNA_URL.test(u)) {
-      out.push(u);
+      out.push(u); // already a Pruna file URL — nothing to upload
       continue;
     }
+    const held = lastResult.blobs[i];
+    if (held instanceof Blob) {
+      out.push(await uploadForJudge(held, "generated"));
+      continue;
+    }
+    await refreshResultToken();
     const res = await fetch(resultUrl(u));
     if (!res.ok) throw new Error(`Could not read the generated image (HTTP ${res.status}).`);
     out.push(await uploadForJudge(await res.blob(), "generated"));

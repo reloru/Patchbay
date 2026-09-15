@@ -45,15 +45,60 @@ function safeEqual(a, b) {
   return out === 0;
 }
 
-function authOk(request, env, url) {
+function authOk(request, env) {
   if (!env.APP_PASSWORD) return true; // gate disabled
-  // Header is used by fetch() calls; the `pw` query param is used by <img>,
-  // <video> and download links, which cannot set custom headers.
-  const provided =
-    request.headers.get("x-app-password") ||
-    (url && url.searchParams.get("pw")) ||
-    "";
-  return safeEqual(provided, env.APP_PASSWORD);
+  return safeEqual(request.headers.get("x-app-password") || "", env.APP_PASSWORD);
+}
+
+// Media URLs used to carry the password itself as a `pw` query param, because
+// <img>, <video> and download links cannot set a header. Workers observability
+// records request URLs, so that wrote the shared secret into log storage on
+// every image the app loaded. A short-lived signed token carries the same
+// permission without being the secret: it expires, and it is worth nothing to
+// anyone who cannot also reach /api/token behind the header.
+const RESULT_TOKEN_TTL_MS = 10 * 60 * 1000;
+
+const TOKEN_ENC = new TextEncoder();
+// Key import is the expensive part, so it is cached per isolate. Keyed by the
+// secret itself so a rotated APP_PASSWORD cannot be served by a stale key.
+let cachedHmac = null;
+
+function hmacKey(secret) {
+  if (!cachedHmac || cachedHmac.secret !== secret) {
+    cachedHmac = {
+      secret,
+      key: crypto.subtle.importKey("raw", TOKEN_ENC.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
+    };
+  }
+  return cachedHmac.key;
+}
+
+function b64url(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function signExpiry(exp, env) {
+  const sig = await crypto.subtle.sign("HMAC", await hmacKey(env.APP_PASSWORD), TOKEN_ENC.encode(String(exp)));
+  return b64url(sig);
+}
+
+async function mintResultToken(env) {
+  const expiresAt = Date.now() + RESULT_TOKEN_TTL_MS;
+  return { token: `${expiresAt}.${await signExpiry(expiresAt, env)}`, expiresAt };
+}
+
+async function resultTokenOk(token, env) {
+  if (typeof token !== "string") return false;
+  const dot = token.indexOf(".");
+  if (dot <= 0) return false;
+  const exp = Number(token.slice(0, dot));
+  if (!Number.isFinite(exp) || exp < Date.now()) return false;
+  // Recomputed rather than stored: there is no token list to keep, and an
+  // expiry that has been edited no longer matches its own signature.
+  return safeEqual(token.slice(dot + 1), await signExpiry(exp, env));
 }
 
 export default {
@@ -83,9 +128,21 @@ export default {
         });
       }
 
-      // Everything below is gated.
-      if (!authOk(request, env, url)) {
-        return json({ error: "Unauthorized. Wrong or missing app password." }, 401);
+      // Everything below is gated. /api/result is the one route that also
+      // accepts a signed token, since the elements that load media cannot send
+      // a header; every other route is reached by fetch(), which can.
+      if (!authOk(request, env)) {
+        const viaToken = path === "/api/result" && (await resultTokenOk(url.searchParams.get("t"), env));
+        if (!viaToken) {
+          return json({ error: "Unauthorized. Wrong or missing app password." }, 401);
+        }
+      }
+
+      // Mints the token above. Behind the header, so only a client that already
+      // holds the password can get one.
+      if (path === "/api/token" && request.method === "GET") {
+        // Nothing to sign without a gate, and nothing to protect either.
+        return json(env.APP_PASSWORD ? await mintResultToken(env) : { token: null, expiresAt: 0 });
       }
 
       if (path === "/api/generate" && request.method === "POST") {
@@ -124,7 +181,7 @@ async function handleGenerate(request, env) {
   const body = await request.json().catch(() => null);
   if (!body || typeof body !== "object") return json({ error: "Invalid JSON body." }, 400);
 
-  const { model, input, sync } = body;
+  const { model, input } = body;
   if (!MODEL_IDS.has(model)) return json({ error: `Unknown model: ${model}` }, 400);
   if (!input || typeof input !== "object") return json({ error: "Missing input object." }, 400);
 
@@ -134,12 +191,14 @@ async function handleGenerate(request, env) {
     return spec.xaiAsync ? await runXaiVideoStart(spec, input, env) : await runXai(spec, input, env);
   }
 
+  // No Try-Sync: every generation is submitted async and polled. See the comment
+  // above runGeneration in public/app.js for why — a synchronous success never
+  // yields a job id, so closing the app mid-run lost the job outright.
   const headers = {
     apikey: env.PRUNA_API_KEY,
     Model: model,
     "content-type": "application/json",
   };
-  if (sync) headers["Try-Sync"] = "true";
 
   const res = await fetch(`${PRUNA_BASE}/predictions`, {
     method: "POST",
