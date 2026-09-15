@@ -43,6 +43,9 @@ the button stays Improve rather than turning into a one-shot undo of its own.
 **Image description.** Describe captions an image with one of 3 Workers AI
 vision models and drops the caption in as a starting prompt. It reads whatever
 image is already attached and only opens a file picker when there is none.
+Leave the box under the toolbar empty for a caption, or type a question in it to
+ask about the image instead — the answer lands in the prompt box the same way.
+The note line always says which of the two it will do.
 
 **Prompt-match scoring.** Judge runs Pruna's `p-judger` over an image and
 returns how well it matches the prompt. It scores the image you just generated
@@ -68,6 +71,15 @@ needs, and the saved session keeps it.
 
 **Cost visibility.** List prices per model, live estimates that follow your
 settings, and Workers AI neuron consumption against the free daily allowance.
+
+**How long this normally takes.** A bare "Processing… 200s elapsed" is
+indistinguishable from a hang, which is exactly how a correct run of a
+multi-minute model reads. Every run the app watches start to finish is timed,
+and the median of the last few for that model is shown alongside the elapsed
+count. Measured rather than catalogued, because a hand-set figure existed for
+one model out of 48 and a measured one describes this account, this device and
+this connection. A run collected on reload is not counted — its elapsed time is
+measured from reattaching and says nothing about the model.
 
 **Resilient requests.** Dropped connections are retried, except where a retry
 could bill twice — a generation that may already have reached the provider is
@@ -98,27 +110,56 @@ half of the record is only rewritten when the set of attached files changes.
 Blocked site data, Lockdown Mode or a full quota costs the restore and nothing
 else.
 
-**Recent generations.** The last few finished images are kept on the device, so
+**Recent generations.** Finished images *and videos* are kept on the device, so
 one you did not save in the moment is not gone: the strip under the output opens
-any of them full size, to save, to send back in as an input, or to put its
-prompt back in the box. Deliberately short-lived — fifty images, a day, and a
-byte ceiling — because this is a working set, not an archive, and Clear empties
-it immediately. Stored as `ArrayBuffer`s rather than Blobs: WebKit aborts an
-IndexedDB transaction outright for any value containing a Blob, which is how the
-session store shipped broken once.
+any of them full size — a clip in a player, with its own poster frame in the
+strip — to save, to send back in as an input, or to put the whole setup that
+produced it back on screen. Clear empties it immediately.
+
+Bounded by count, age and bytes, but **per kind**, because the two are nothing
+alike: one clip outweighs a hundred stills, and under a single shared ceiling it
+would evict them. Images get 200 items and 1 GB, video 25 clips and 4 GB, both
+for seven days — the same clock as the saved session. Those ceilings are far
+inside what the engine allows, so the real risk is eviction rather than quota,
+and the app asks for [persistent
+storage](https://webkit.org/blog/14403/updates-to-storage-policy/) on load:
+WebKit evicts a best-effort origin under storage pressure and after a spell
+without interaction, and only persistent mode is exempt.
+
+A trained LoRA `.zip` is not kept. It is not previewable, and its link expires
+about half an hour after the run either way.
+
+Stored as `ArrayBuffer`s rather than Blobs: WebKit aborts an IndexedDB
+transaction outright for any value containing a Blob, which is how the session
+store shipped broken once.
 
 Each item is two records in two stores, for the same reason the session record
 is split: the strip redraws on every generation and must not pay for bytes it
-never displays. The light record is a thumbnail and its metadata, on the order
-of 20 KB; the full image lives in a second store and is read only to open, reuse
-or save it. Before that split, drawing the strip deserialised every stored image
-in full — the cost scaled with the size of the library rather than with the
-number of thumbnails, which is what kept the cap at twelve.
+never displays. The light record is a thumbnail, the settings, and the rest of
+the metadata, on the order of 20 KB; the media itself lives in a second store
+and is read only to open, reuse or save it. Before that split, drawing the strip
+deserialised every stored image in full — the cost scaled with the size of the
+library rather than with the number of thumbnails, which is what kept the cap at
+twelve.
+
+**Repeat a past run.** Each stored result carries the settings that made it —
+the model, the prompt, every option, and which options were deliberately set,
+since that last flag alone decides whether a value equal to the default is still
+sent. Restore puts all of it back. Restoring onto the model already selected
+keeps whatever is attached; switching cannot, and says so, because the input
+files are not stored alongside the output.
+
+**Stop waiting.** A generation used to hold the UI for as long as it ran — up to
+45 minutes for a training run — with no way out but closing the tab. Stop ends
+the waiting, not the job: Pruna documents no cancel endpoint, so the run
+continues and is billed either way, and the job record is deliberately kept so
+the next load reattaches through the path a discarded tab already uses.
 
 **No server-side persistence.** Nothing is stored server-side. Generated media
 is served `no-store`, so neither the browser nor Cloudflare's edge keeps a copy
-in transit. What the browser keeps — the session above, the recent images, saved
-prompts, the running job's id — never leaves the device.
+in transit. What the browser keeps — the session above, the recent results and
+their settings, saved prompts, measured runtimes, the running job's id — never
+leaves the device.
 
 **Job recovery.** A phone can discard the tab mid-generation to reclaim memory,
 and the provider job keeps running and billing regardless. The running job's
@@ -134,7 +175,13 @@ runs, which legitimately take that long).
 the browser. Every provider call is made by the Worker.
 
 **Optional password gate.** With `APP_PASSWORD` set, every route except
-`/api/config` requires the matching header.
+`/api/config` requires the matching header. `<img>`, `<video>` and download
+links cannot send a header, and the answer is a short-lived token rather than
+the password: `/api/token` signs a ten-minute expiry with HMAC-SHA256 keyed by
+`APP_PASSWORD`, and `/api/result` takes that. The password itself used to travel
+in the query string, which meant Cloudflare's observability recorded it on every
+image the app loaded. The token is good for `/api/result` alone, and moving its
+expiry breaks its own signature.
 
 ## Architecture
 
@@ -144,6 +191,7 @@ Browser (public/)  ──►  Cloudflare Worker (src/worker.js)  ──┬──
                                                              └──►  Workers AI (env.AI)
 
    /api/config          catalog + auth flag                 (public)
+   /api/token           short-lived signed token for /api/result
    /api/generate        dispatches on the model's provider
    /api/status          polls async jobs (Pruna, xAI video)
    /api/upload          proxies file uploads
@@ -305,9 +353,18 @@ normally.
 
 ## Tests
 
-`npm test` drives the session restore and the prompt undo history in real
+`npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 86 assertions per engine.
+are needed and nothing is billed. 15 Worker tests, then 159 assertions per
+engine.
+
+The Worker tests need no browser and take under a second, so they run first: a
+broken password gate should not cost a full Playwright run to discover. They are
+`node --test` over `src/worker.js` directly, driving its fetch handler with a
+fake `env` — which is the only place the real token signing can be exercised,
+since the browser suite runs against a stub of exactly that file.
+
+    npm run test:worker   # just those, no Playwright needed
 
 Run both engines. These features are about what a browser keeps, and a
 Chromium-only run once reported the session restore working while Safari's engine

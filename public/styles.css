@@ -338,6 +338,12 @@ button.tiny { padding: 4px 10px; font-size: 12px; }
 
 .actions { margin-top: 14px; }
 .actions #generate-btn { flex: 1; padding: 12px 18px; font-size: 16px; }
+/* Sits beside Generate only while something is running. Sized so it cannot be
+   mistaken for the primary action, but stays a comfortable tap target. */
+.actions #stop-btn { flex: 0 0 auto; padding: 12px 16px; font-size: 15px; }
+
+/* Describe's question box: full width on its own row under the toolbar. */
+.tool-input { width: 100%; margin-bottom: 12px; }
 
 /* Styled file picker: the native control kept showing "no file selected"
    after a choice and gave no way to swap an image. */
@@ -445,6 +451,31 @@ button.tiny { padding: 4px 10px; font-size: 12px; }
 }
 .recent-strip .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .recent-strip .thumb:hover { border-color: var(--accent); }
+/* Stands in where the thumbnail would not encode, so the tile still reads as an
+   item rather than as a broken picture. */
+.thumb-blank {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  font-size: 24px;
+  opacity: .5;
+}
+
+/* A clip's tile is a still frame, so without this it is indistinguishable from
+   an image and which one opens a player is a surprise. */
+.thumb-kind {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, .68);
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+  pointer-events: none;
+}
 
 /* ── Lightbox ─────────────────────────────────────────────────────────────
    Same fixed-overlay shape as the password gate. */
@@ -466,7 +497,10 @@ button.tiny { padding: 4px 10px; font-size: 12px; }
   max-height: 92vh;
   overflow-y: auto;
 }
-.lightbox-card img { width: 100%; border-radius: 10px; display: block; }
+.lightbox-media img,
+.lightbox-media video { width: 100%; border-radius: 10px; display: block; background: #000; }
+/* A tall portrait clip must not push the buttons under it off the card. */
+.lightbox-media video { max-height: 60vh; }
 .lightbox-meta { margin: 10px 2px 0; font-size: 12px; color: var(--muted); }
 .lightbox-prompt {
   margin: 6px 2px 0;

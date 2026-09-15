@@ -1,11 +1,14 @@
-// Runs the browser suite against the stub Worker, once per engine.
+// Runs the Worker's own tests, then the browser suite against the stub Worker
+// once per engine.
 //
-//   node test/run.mjs           both engines
-//   node test/run.mjs webkit    one engine
+//   node test/run.mjs           worker tests, then both engines
+//   node test/run.mjs webkit    worker tests, then one engine
 //
-// Each engine runs in its own child process so a crash in one still reports the
-// other, and the stub server is started and stopped here so no one has to
-// remember to do it.
+// The Worker tests go first because they need no browser and take under a
+// second: a broken gate should not cost a full Playwright run to discover.
+// Each engine then runs in its own child process so a crash in one still
+// reports the other, and the stub server is started and stopped here so no one
+// has to remember to do it.
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,8 +58,18 @@ const run = (engine) =>
     child.on("exit", (code) => resolve(code === 0));
   });
 
+// node --test, so it reports itself; only the exit code matters here.
+const runWorkerTests = () =>
+  new Promise((resolve) => {
+    const child = spawn(process.execPath, ["--test", join(HERE, "worker.test.mjs")], { stdio: "inherit" });
+    child.on("exit", (code) => resolve(code === 0));
+  });
+
 let allPassed = true;
 try {
+  console.log("\n──── worker ────");
+  if (!(await runWorkerTests())) allPassed = false;
+
   if (!(await waitForServer())) {
     console.error(`the stub worker never answered on ${BASE} — is the port taken?`);
     process.exit(1);
