@@ -83,6 +83,17 @@
                 <button id="prompt-redo" type="button" class="secondary" title="Redo the last undone prompt change" disabled>↷ Redo</button>
               </span>
             </div>
+            <!-- Describe captions by default. The Worker has always accepted a
+                 question instead; this is what reaches it. Its own row rather
+                 than a third control inside the tool wrapper, which would leave
+                 all three unreadably narrow on a phone. -->
+            <input
+              id="describe-question"
+              type="text"
+              class="tool-input"
+              placeholder="Describe: caption it, or ask something about it…"
+              aria-label="What Describe should ask about the image"
+            />
             <!-- What the pickers and buttons above will actually do, kept out of
                  the option names so those stay scannable. -->
             <p class="tool-notes">
@@ -100,6 +111,11 @@
             <div id="fields"></div>
             <div class="actions">
               <button id="generate-btn" type="submit">Generate</button>
+              <!-- Shown only while a job is being watched. It stops the waiting,
+                   not the job: the provider keeps running and billing, and the
+                   next load reattaches through the same path a discarded tab
+                   already uses. -->
+              <button id="stop-btn" type="button" class="secondary hidden">Stop waiting</button>
             </div>
           </form>
         </section>
@@ -129,7 +145,9 @@
          thumbnail is tapped. -->
     <div id="lightbox" class="lightbox hidden">
       <div class="lightbox-card">
-        <img id="lightbox-img" alt="" />
+        <!-- Filled with an <img> or a <video> depending on what was opened,
+             rather than a fixed element that only one of the two can use. -->
+        <div id="lightbox-media" class="lightbox-media"></div>
         <p id="lightbox-meta" class="lightbox-meta"></p>
         <p id="lightbox-prompt" class="lightbox-prompt"></p>
         <div id="lightbox-actions" class="lightbox-actions"></div>

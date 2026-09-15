@@ -1,13 +1,18 @@
-# Browser tests
+# Tests
 
-Covers the two features that live entirely in the browser: the on-device editing
-session (IndexedDB) and the prompt undo history. Both are about what a browser
-keeps, so both are tested by driving real browsers.
+Two suites. The Worker's own routes, driven directly in Node; and the features
+that live entirely in the browser — the on-device editing session and gallery
+(IndexedDB) and the prompt undo history — driven in real browsers, because they
+are about what a browser keeps.
 
 ```
-npm test              # chromium, then webkit
-npm run test:webkit   # one engine
+npm test              # worker, then chromium, then webkit
+npm run test:webkit   # worker, then one engine
+npm run test:worker   # worker only — no Playwright needed
 ```
+
+The Worker suite runs first. It needs no browser and finishes in under a second,
+so a broken password gate does not cost a full Playwright run to discover.
 
 Playwright is needed and is **not** a dependency of this repo:
 
@@ -39,8 +44,13 @@ Blobs would work — but run both engines anyway.
 
 ## Shape
 
-- **`run.mjs`** starts the stub server, runs `session.test.mjs` once per engine in
-  its own process, and stops the server.
+- **`worker.test.mjs`** imports `src/worker.js` and calls its fetch handler with
+  a fake `env`. No browser, no network, no keys: the Workers globals these routes
+  need — `Request`, `Response`, `crypto.subtle`, `btoa` — are all in Node 18+.
+  This is the only place the real media-token signing can be tested, because the
+  browser suite runs against a stub of that same file.
+- **`run.mjs`** runs the Worker suite, starts the stub server, runs
+  `session.test.mjs` once per engine in its own process, and stops the server.
 - **`server.mjs`** stands in for the Worker: serves the real `public/` files and
   the real catalogue from `src/models.js`, and answers the API routes with fixed
   replies. A stub rather than `wrangler dev` because these tests are about what
@@ -58,17 +68,55 @@ Port 8788, so `wrangler dev` can stay up on 8787 alongside. Override with `PORT`
 
 ## What it asserts
 
+The Worker: `/api/config` answering ahead of the gate; the gate refusing a
+missing or wrong password; a token minted only behind the header; the token
+accepted on `/api/result` and rejected once expired, when its expiry is pushed
+out, when it was signed under a different password, when it is malformed, and on
+every other route; the old `?pw=` query param no longer being accepted at all;
+and an unknown model id refused by `/api/generate`.
+
 Recent generations: a result reaching the strip; the split across the two stores
-(a light record with the thumbnail and no image bytes, the image itself as an
+(a light record with the thumbnail and no media bytes, the media itself as an
 `ArrayBuffer` under the same id in the other store); surviving a reopen; the
-lightbox's metadata and prompt restore; reuse from the lightbox; eviction by
+lightbox's metadata and setup restore; reuse from the lightbox; eviction by
 count and by age, deleting both halves; Clear emptying both stores; and the two
 schema upgrades — a version-1 database keeping its session, and a version-2
 gallery item having its image moved out rather than dropped, then still opening.
 
-Eviction by count seeds sixty items straight into both stores rather than
-generating them: sixty round trips through the UI would dominate the runtime,
-and what is under test is the pruning that runs at boot.
+Video: a video result rendering as a player and being archived with `kind` set;
+its bytes landing in the other store; the settings riding along; the strip
+counting and badging it; and the lightbox opening it as a `<video>` rather than
+an `<img>`. Also that the per-kind caps hold — forty seeded clips prune to
+twenty-five without costing the images beside them anything, which is the whole
+reason the budgets are separate.
+
+The stub answers a video model with PNG bytes under a video content type: it has
+no encoder, and that is enough for everything above. It also puts the poster
+frame through `videoThumb`'s "will not decode" branch, which has to leave the
+archive intact rather than fail it — worth covering in its own right.
+
+Restore setup: switching back to the model that produced a result, restoring the
+prompt and a changed option, keeping that option's deliberately-set flag, and
+then sending the same payload the original run did. The flag is the point — it
+alone decides whether a value equal to the default is still sent.
+
+Stop: the button appearing only while a job is in flight, Generate held and then
+released, the status saying the job is still running, and — the assertion that
+matters — the job record surviving, so the next load picks the result up. A stop
+that cleared the record would be a loss, not a stop.
+
+Judge: that scoring a generation re-reads nothing through `/api/result`. The
+bytes were captured when the result rendered and then never used, so every
+scoring paid for a second transfer and failed outright once the delivery URL had
+expired.
+
+Describe: no `question` key sent when the box is empty, so the Worker's own
+captioning instruction stands; a typed question reaching the Worker and being
+named in the note line first.
+
+Eviction by count seeds items straight into both stores rather than generating
+them: two hundred round trips through the UI would dominate the runtime, and
+what is under test is the pruning that runs at boot.
 
 The lightbox leak test counts live object URLs through an instrumented
 `createObjectURL`/`revokeObjectURL` — the technique PR #33 used. It has been

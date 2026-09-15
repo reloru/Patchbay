@@ -31,8 +31,13 @@ const TYPES = {
   ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
   ".png": "image/png", ".webmanifest": "application/manifest+json",
 };
+const MODELS_BY_ID = new Map(MODELS.map((m) => [m.id, m]));
 let uploadCount = 0;
 let lastGenerate = null;
+// Flipped by the test through /__slow, so a job can be caught mid-flight.
+// Without it every generation here finishes on its first poll, and there is no
+// window in which Stop means anything.
+let slowJob = false;
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
   "base64"
@@ -70,11 +75,27 @@ const server = createServer(async (req, res) => {
     lastGenerate = JSON.parse(Buffer.concat(chunks).toString());
     return json(res, { id: "stub-job-1" });
   }
-  if (path === "/api/status") return json(res, { status: "succeeded", generation_url: "https://files.pruna.ai/stub/out.png" });
+  if (path === "/api/status") {
+    if (slowJob) return json(res, { status: "processing" });
+    // A video model's job has to deliver something the app will treat as video,
+    // or the archive path for the expensive half of the catalogue is untestable.
+    const spec = lastGenerate && MODELS_BY_ID.get(lastGenerate.model);
+    const ext = spec && spec.kind === "video" ? "mp4" : "png";
+    return json(res, { status: "succeeded", generation_url: `https://files.pruna.ai/stub/out.${ext}` });
+  }
   if (path === "/api/result") {
-    res.writeHead(200, { "content-type": "image/png" });
+    // Deliberately the same PNG bytes under a video content type: there is no
+    // encoder here, and what these tests are about is the archive — the record,
+    // the split across the two stores, the strip, the lightbox. The poster
+    // frame then takes videoThumb's documented "will not decode" branch, which
+    // is a path worth covering in its own right.
+    const isVideo = (url.searchParams.get("url") || "").endsWith(".mp4");
+    res.writeHead(200, { "content-type": isVideo ? "video/mp4" : "image/png" });
     return res.end(PNG);
   }
+  // The real Worker signs these; nothing here verifies one, because the browser
+  // suite stubs the Worker. The signing itself is covered by worker.test.mjs.
+  if (path === "/api/token") return json(res, { token: "stub-token", expiresAt: Date.now() + 600000 });
   if (path === "/api/improve-prompt") return json(res, { prompt: "IMPROVED PROMPT TEXT" });
   if (path === "/api/describe") return json(res, { description: "STUB CAPTION TEXT" });
   // Not configured in the stub, which is a case the app has to tolerate.
@@ -84,6 +105,10 @@ const server = createServer(async (req, res) => {
   // the app never calls them.
   if (path === "/__generate") return json(res, lastGenerate || {});
   if (path === "/__uploads") return json(res, { uploadCount });
+  if (path === "/__slow") {
+    slowJob = url.searchParams.get("on") === "1";
+    return json(res, { slowJob });
+  }
 
   // Anything else is a static file, exactly as Workers Assets serves it.
   const file = path === "/" ? "index.html" : path.slice(1);

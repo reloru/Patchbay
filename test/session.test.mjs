@@ -693,19 +693,19 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   page = await open(context);
   await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length === 1);
   check("the strip survives a reopen", (await page.locator(".recent-strip .thumb").count()) === 1);
-  check("the strip says what it is holding", (await page.locator("#recent-count").textContent()).includes("1 recent image"));
+  check("the strip says what it is holding", (await page.locator("#recent-count").textContent()).includes("1 recent item"));
 
-  // The lightbox: metadata, prompt restore, reuse, delete.
+  // The lightbox: metadata, setup restore, reuse, delete.
   await page.locator(".recent-strip .thumb").first().click();
   await page.waitForSelector("#lightbox:not(.hidden)");
   check("lightbox names the model", (await page.locator("#lightbox-meta").textContent()).includes("P-Image"));
   check("lightbox shows the prompt", (await page.locator("#lightbox-prompt").textContent()) === "first picture");
   await page.fill(promptSel, "something else entirely");
   await page.waitForTimeout(700);
-  await page.locator("#lightbox-actions button", { hasText: "Restore prompt" }).click();
-  check("restoring the prompt puts it back", (await page.inputValue(promptSel)) === "first picture");
+  await page.locator("#lightbox-actions button", { hasText: "Restore setup" }).click();
+  check("restoring the setup puts the prompt back", (await page.inputValue(promptSel)) === "first picture");
   await page.locator("#prompt-undo").click();
-  check("a restored prompt is undoable in one press", (await page.inputValue(promptSel)) === "something else entirely");
+  check("a restored setup is undoable in one press", (await page.inputValue(promptSel)) === "something else entirely");
 
   // Reuse from the lightbox takes the same path as the result panel.
   await page.locator(".recent-strip .thumb").first().click();
@@ -716,8 +716,8 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("the image landed", (await page.evaluate(() => (uploads.images || []).length)) === 1);
 
   // Count eviction. Seeded straight into both stores rather than generated:
-  // sixty round trips through the UI would dominate the suite's runtime, and
-  // what is under test is pruneGallery, which runs at boot.
+  // two hundred round trips through the UI would dominate the suite's runtime,
+  // and what is under test is pruneGallery, which runs at boot.
   await page.selectOption("#model-select", "p-image");
   await page.waitForTimeout(200);
   await page.evaluate(
@@ -735,13 +735,14 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
           light.clear();
           heavy.clear();
           const now = Date.now();
-          for (let i = 0; i < 60; i++) {
+          for (let i = 0; i < 210; i++) {
             const id = `seed-${String(i).padStart(3, "0")}`;
             light.put({
               id,
               createdAt: now - i * 1000, // seed-000 newest
               modelId: "p-image",
               prompt: "seed " + i,
+              kind: "image",
               type: "image/png",
               thumb: new ArrayBuffer(8),
               thumbType: "image/jpeg",
@@ -776,14 +777,14 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
         };
       })
   );
-  check("the store is capped at fifty", counts && counts.kept.length === 50, counts && String(counts.kept.length));
+  check("the image store is capped at two hundred", counts && counts.kept.length === 200, counts && String(counts.kept.length));
   check(
     "the newest were kept and the oldest dropped",
-    counts && counts.kept.includes("seed 0") && counts.kept.includes("seed 49") && !counts.kept.includes("seed 50"),
+    counts && counts.kept.includes("seed 0") && counts.kept.includes("seed 199") && !counts.kept.includes("seed 200"),
     counts && counts.kept.length + " items"
   );
-  check("both halves were pruned together", counts && counts.heavy === 50, counts && String(counts.heavy));
-  check("the strip shows them all", (await page.locator(".recent-strip .thumb").count()) === 50);
+  check("both halves were pruned together", counts && counts.heavy === 200, counts && String(counts.heavy));
+  check("the strip shows them all", (await page.locator(".recent-strip .thumb").count()) === 200);
 
   // Age eviction: backdate everything and reopen.
   await page.evaluate(
@@ -796,7 +797,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
           const g = st.getAll();
           g.onsuccess = () => {
             for (const rec of g.result || []) {
-              rec.createdAt = Date.now() - 48 * 60 * 60 * 1000;
+              rec.createdAt = Date.now() - 8 * 24 * 60 * 60 * 1000;
               st.put(rec);
             }
           };
@@ -807,7 +808,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.close();
   page = await open(context);
   await page.waitForTimeout(600);
-  check("anything older than a day is gone on the next load", (await page.locator(".recent-strip .thumb").count()) === 0);
+  check("anything older than a week is gone on the next load", (await page.locator(".recent-strip .thumb").count()) === 0);
   check("and the strip hides itself again", await page.locator("#recent").evaluate((el) => el.classList.contains("hidden")));
 
   // Clear removes the lot.
@@ -1045,6 +1046,318 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("no horizontal overflow at 390px", overflow <= 0, `overflow=${overflow}px`);
   const box = await page.locator("#prompt-undo").boundingBox();
   check("undo is a usable tap target", box.height >= 36 && box.width >= 60, JSON.stringify(box));
+  await page.close();
+  await context.close();
+}
+
+// ── Video results are kept too ─────────────────────────────────────────────
+// The expensive half of the catalogue used to be the half that was thrown away:
+// only images were archived, so a clip was gone the moment Generate was pressed
+// again and the provider's link expired behind it.
+//
+// The stub answers a video model with PNG bytes under a video content type (it
+// has no encoder). That is enough for everything under test here — the record,
+// the split across the two stores, the strip, the lightbox — and it puts the
+// poster frame through videoThumb's "will not decode" branch, which has to
+// leave the archive intact rather than fail it.
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+
+  await page.selectOption("#model-select", "p-video-edit");
+  await page.waitForTimeout(200);
+  // p-video-edit needs its source clip before it will submit.
+  const clipPath = join(dir, "clip.mp4");
+  writeFileSync(clipPath, PNG);
+  await page.setInputFiles(".file-input", clipPath);
+  await page.fill(promptSel, "make it rain");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#status.ok", { timeout: 20000 });
+
+  check("a video result renders as a player", (await page.locator(".result video").count()) === 1);
+  await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length > 0, null, { timeout: 15000 });
+
+  const stored = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const r = indexedDB.open("patchbay");
+        r.onsuccess = () => {
+          const tx = r.result.transaction(["gallery", "galleryBytes"], "readonly");
+          const light = tx.objectStore("gallery").getAll();
+          const heavy = tx.objectStore("galleryBytes").getAll();
+          tx.oncomplete = () =>
+            resolve({
+              light: (light.result || []).map((x) => ({
+                id: x.id,
+                kind: x.kind,
+                prompt: x.prompt,
+                modelId: x.modelId,
+                hasInlineBytes: "bytes" in x,
+                setupFields: x.setup && x.setup.fields ? Object.keys(x.setup.fields).length : 0,
+                setupPrompt: x.setup && x.setup.fields ? x.setup.fields.prompt : null,
+              })),
+              heavy: (heavy.result || []).map((x) => ({ id: x.id, bytesIsBuffer: x.bytes instanceof ArrayBuffer })),
+            });
+          tx.onerror = () => resolve(null);
+        };
+        r.onerror = () => resolve(null);
+      })
+  );
+  check(
+    "the video is archived, tagged as video, with no bytes in the light record",
+    stored &&
+      stored.light.length === 1 &&
+      stored.light[0].kind === "video" &&
+      stored.light[0].modelId === "p-video-edit" &&
+      stored.light[0].prompt === "make it rain" &&
+      stored.light[0].hasInlineBytes === false,
+    JSON.stringify(stored && stored.light)
+  );
+  check(
+    "its bytes are an ArrayBuffer in the other store, under the same id",
+    stored && stored.heavy.length === 1 && stored.heavy[0].bytesIsBuffer && stored.heavy[0].id === stored.light[0].id,
+    JSON.stringify(stored && stored.heavy)
+  );
+  check(
+    "the settings that produced it ride along",
+    stored && stored.light[0].setupFields > 0 && stored.light[0].setupPrompt === "make it rain",
+    JSON.stringify(stored && stored.light[0])
+  );
+  check("the strip counts it as a video", (await page.locator("#recent-count").textContent()).includes("1 video"));
+  check("and marks the tile", (await page.locator(".recent-strip .thumb-kind").count()) === 1);
+
+  // Survives a reopen, and opens as a player rather than a broken image.
+  await page.close();
+  page = await open(context);
+  await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length === 1);
+  await page.locator(".recent-strip .thumb").first().click();
+  await page.waitForSelector("#lightbox:not(.hidden)");
+  check("the lightbox opens a kept clip as a video", (await page.locator("#lightbox-media video").count()) === 1);
+  check("and not as an image", (await page.locator("#lightbox-media img").count()) === 0);
+  await page.locator("#lightbox-actions button", { hasText: "Close" }).click();
+  await page.waitForFunction(() => document.getElementById("lightbox").classList.contains("hidden"));
+  await page.close();
+  await context.close();
+}
+
+// ── Each kind is capped on its own ─────────────────────────────────────────
+// One clip outweighs a hundred images, so under a single shared ceiling the
+// clips would evict the stills. Seeded rather than generated, for the same
+// reason the count-eviction test above seeds.
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const r = indexedDB.open("patchbay");
+        r.onsuccess = () => {
+          const tx = r.result.transaction(["gallery", "galleryBytes"], "readwrite");
+          const light = tx.objectStore("gallery");
+          const heavy = tx.objectStore("galleryBytes");
+          light.clear();
+          heavy.clear();
+          const now = Date.now();
+          const put = (id, kind, createdAt) => {
+            light.put({
+              id,
+              createdAt,
+              kind,
+              modelId: kind === "video" ? "p-video-edit" : "p-image",
+              prompt: id,
+              type: kind === "video" ? "video/mp4" : "image/png",
+              thumb: new ArrayBuffer(8),
+              thumbType: "image/jpeg",
+              width: 10,
+              height: 10,
+              size: 1024,
+            });
+            heavy.put({ id, bytes: new ArrayBuffer(1024) });
+          };
+          // 40 clips against a cap of 25, and 10 images that must all survive.
+          for (let i = 0; i < 40; i++) put(`vid-${String(i).padStart(3, "0")}`, "video", now - i * 1000);
+          for (let i = 0; i < 10; i++) put(`img-${String(i).padStart(3, "0")}`, "image", now - i * 1000);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        };
+      })
+  );
+  await page.close();
+  page = await open(context);
+  await page.waitForTimeout(800);
+  const kept = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const r = indexedDB.open("patchbay");
+        r.onsuccess = () => {
+          const tx = r.result.transaction("gallery", "readonly");
+          const all = tx.objectStore("gallery").getAll();
+          tx.oncomplete = () => {
+            const rows = all.result || [];
+            resolve({
+              videos: rows.filter((x) => x.kind === "video").length,
+              images: rows.filter((x) => x.kind !== "video").length,
+            });
+          };
+          tx.onerror = () => resolve(null);
+        };
+      })
+  );
+  check("videos are capped at their own limit", kept && kept.videos === 25, JSON.stringify(kept));
+  check("and evicting them costs the images nothing", kept && kept.images === 10, JSON.stringify(kept));
+  await page.close();
+  await context.close();
+}
+
+// ── Restore setup puts the options back, not just the prompt ───────────────
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(200);
+  await page.fill(promptSel, "the original run");
+  // A non-default option, so there is something to restore beyond the text.
+  // It lives in the Options panel, which starts collapsed.
+  await page.locator(".options > summary").click();
+  const seedSel = '[data-field="seed"]';
+  await page.fill(seedSel, "4242");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#status.ok");
+  await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length > 0);
+
+  // Move everything away from what produced it — a different model, a different
+  // prompt, a different seed.
+  await page.selectOption("#model-select", "flux-dev");
+  await page.waitForTimeout(300);
+  await page.fill(promptSel, "something unrelated");
+  await page.waitForTimeout(700);
+
+  await page.locator(".recent-strip .thumb").first().click();
+  await page.waitForSelector("#lightbox:not(.hidden)");
+  await page.locator("#lightbox-actions button", { hasText: "Restore setup" }).click();
+  await page.waitForTimeout(500);
+
+  check("restoring switches back to the model that made it", (await page.inputValue("#model-select")) === "p-image");
+  check("the prompt comes back", (await page.inputValue(promptSel)) === "the original run");
+  check("and so does the option that was set", (await page.inputValue(seedSel)) === "4242");
+  check(
+    "the option is still marked as deliberately set",
+    await page.evaluate(() => optionRows.some((r) => r.f.name === "seed" && r.touched))
+  );
+  // The flag is what decides whether a value equal to the default is still
+  // sent, so a restore that loses it changes the request.
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#status.ok");
+  const sent = await (await page.request.get(BASE + "__generate")).json();
+  check("and the restored run sends what the original would have", sent.input && sent.input.seed === 4242, JSON.stringify(sent.input));
+  await page.close();
+  await context.close();
+}
+
+// ── Stop stops the waiting, not the job ────────────────────────────────────
+// There is no cancel endpoint to call, so this must leave the job record alone:
+// clearing it is what would turn a stop into a loss.
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+  await page.request.get(BASE + "__slow?on=1");
+
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(200);
+  await page.fill(promptSel, "a job worth abandoning");
+  await page.waitForTimeout(700);
+  check("no Stop button before anything is running", await page.locator("#stop-btn").isHidden());
+
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#stop-btn:not(.hidden)", { timeout: 10000 });
+  check("Stop appears once a job is in flight", await page.locator("#stop-btn").isVisible());
+  check("and Generate is held while it runs", await page.locator("#generate-btn").isDisabled());
+
+  await page.locator("#stop-btn").click();
+  await page.waitForSelector("#status.ok", { timeout: 15000 });
+  check("stopping reports the job as still running", (await page.locator("#status").textContent()).includes("still running"));
+  check("Generate comes back", await page.locator("#generate-btn").isEnabled());
+  check("and Stop goes away", await page.locator("#stop-btn").isHidden());
+
+  const job = await page.evaluate(() => localStorage.getItem("pruna_inflight_job"));
+  check("the job record is kept, so the run is not lost", Boolean(job) && JSON.parse(job).id === "stub-job-1", String(job));
+
+  // The point of keeping it: the next load collects the result.
+  await page.request.get(BASE + "__slow?on=0");
+  await page.close();
+  page = await open(context);
+  await page.waitForSelector("#status.ok", { timeout: 15000 });
+  check("a stopped job is picked up on the next load", (await page.locator("#status").textContent()).includes("Recovered"));
+  check("and its result lands in the panel", (await page.locator(".result img").count()) === 1);
+  check("the record is cleared once collected", (await page.evaluate(() => localStorage.getItem("pruna_inflight_job"))) === null);
+  await page.close();
+  await context.close();
+}
+
+// ── Judge scores the bytes it already holds ────────────────────────────────
+// The blobs were captured when the result rendered and then never read: every
+// scoring re-downloaded them, which cost a second transfer and failed outright
+// once the delivery URL had expired.
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  await page.selectOption("#model-select", "cf-flux-1-schnell");
+  await page.waitForTimeout(200);
+  await page.fill(promptSel, "score this without fetching it again");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#status.ok");
+  // A Workers AI result is a data: URI, so it is never a Pruna file URL and
+  // always has to be uploaded — which is the path that used to re-fetch first.
+  const held = await page.evaluate(() => lastResult.blobs.filter(Boolean).length);
+  check("the result's bytes are held after rendering", held === 1, String(held));
+
+  const fetches = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/api/result")) fetches.push(r.url());
+  });
+  await page.locator("#prompt-judge").click();
+  await page.waitForTimeout(1500);
+  check("scoring re-reads nothing through /api/result", fetches.length === 0, fetches.join(", "));
+  await page.close();
+  await context.close();
+}
+
+// ── Describe can ask a question instead of captioning ──────────────────────
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  await page.selectOption("#model-select", "p-image-edit");
+  await page.waitForTimeout(200);
+  await page.setInputFiles(".file-input", imgPath);
+  await page.waitForSelector(".thumbs .thumb img");
+
+  // Empty box: the Worker's own captioning instruction stands, so nothing is
+  // sent and the behaviour is exactly what it was.
+  const posted = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/api/describe") && r.method() === "POST") posted.push(JSON.parse(r.postData() || "{}"));
+  });
+  await page.locator("#prompt-describe").click();
+  await page.waitForTimeout(900);
+  check("with no question, none is sent", posted.length === 1 && !("question" in posted[0]), JSON.stringify(posted[0] && Object.keys(posted[0])));
+
+  await page.fill("#describe-question", "what colour is the background?");
+  await page.waitForTimeout(200);
+  check(
+    "the note says what it will ask",
+    (await page.locator("#describe-note").textContent()).includes("what colour is the background?")
+  );
+  await page.locator("#prompt-describe").click();
+  await page.waitForTimeout(900);
+  check(
+    "a typed question reaches the Worker",
+    posted.length === 2 && posted[1].question === "what colour is the background?",
+    JSON.stringify(posted[1])
+  );
+  check("and the answer lands in the prompt box", (await page.inputValue(promptSel)) === "STUB CAPTION TEXT");
   await page.close();
   await context.close();
 }
