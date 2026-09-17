@@ -1186,6 +1186,7 @@ $("gen-form").addEventListener("submit", async (e) => {
   };
   setStatus("Submitting…", "load");
   showStopButton(true);
+  generationInFlight = true;
 
   try {
     const urls = await runGeneration(model.id, input, kind, (state, secs) => {
@@ -1207,6 +1208,7 @@ $("gen-form").addEventListener("submit", async (e) => {
     btn.disabled = false;
     showStopButton(false);
     stopWatching = false;
+    generationInFlight = false;
   }
 });
 
@@ -1368,6 +1370,10 @@ async function runGeneration(model, input, kind, onProgress) {
 // ---------------------------------------------------------------------------
 const STOPPED = "__stopped__";
 let stopWatching = false;
+// True from pressing Generate (or reattaching on load) until the result is on
+// screen. The status line belongs to the run while this holds, so nothing
+// incidental gets to write over it.
+let generationInFlight = false;
 
 function stoppedMessage(kind) {
   const what = kind === "file" ? "training run" : "job";
@@ -1536,6 +1542,7 @@ async function resumeInFlightJob() {
   const ago = mins < 1 ? "less than a minute ago" : `${mins} min ago`;
   setStatus(`Picking up the ${rec.model || "job"} you left running ${ago}…`, "load");
   showStopButton(true);
+  generationInFlight = true;
   // Same clock discipline as a fresh run: a reattached job polls just as slowly
   // and freezes just as readily. Counts from reattaching rather than from the
   // original submit, which is what the wording says — the record's own
@@ -1571,6 +1578,7 @@ async function resumeInFlightJob() {
     btn.disabled = false;
     showStopButton(false);
     stopWatching = false;
+    generationInFlight = false;
   }
 }
 
@@ -2041,7 +2049,14 @@ async function galleryDelete(id) {
   return idbRun(GALLERY_STORE, "readwrite", (st) => st.delete(id)).then((r) => r.ok);
 }
 
+// Bumped by every Clear. An archive write can be seconds in flight — reading a
+// video's bytes, then seeking it for a poster frame — so one that started
+// before a Clear would otherwise land after it, leaving a stray item in a strip
+// the user just emptied.
+let galleryEpoch = 0;
+
 async function galleryClear() {
+  galleryEpoch++;
   await idbRun(GALLERY_BYTES_STORE, "readwrite", (st) => st.clear());
   return idbRun(GALLERY_STORE, "readwrite", (st) => st.clear()).then((r) => r.ok);
 }
@@ -2176,9 +2191,13 @@ async function pruneGallery() {
 // about the run that produced this.
 async function archiveGeneration(blob, modelId, prompt, kind, setup) {
   if (galleryBroken) return;
+  const epoch = galleryEpoch;
   try {
     const bytes = await blob.arrayBuffer();
     const thumb = await makeThumb(blob, kind);
+    // Cleared while this was being prepared. The user asked for an empty strip;
+    // writing into it now would put back the one item they were watching.
+    if (epoch !== galleryEpoch) return;
     const rec = {
       // Sortable and unique enough for one device: two results from the same
       // generation land in the same millisecond otherwise.
@@ -2503,11 +2522,14 @@ async function saveBlob(blob, name) {
 
 function initRecent() {
   $("recent-clear").addEventListener("click", async () => {
-    if (!window.confirm("Delete the recent images kept on this device?")) return;
+    if (!window.confirm("Delete the recent images and videos kept on this device?")) return;
     await galleryClear();
     releaseGalleryUrls();
     renderRecent();
-    setStatus("Cleared the recent images.", "ok");
+    // The status line belongs to a run while one is going: writing "Cleared…"
+    // over "Processing… 2m 10s elapsed" reads as the generation having stopped.
+    // The strip emptying is the confirmation either way.
+    if (!generationInFlight) setStatus("Cleared the recent images and videos.", "ok");
   });
   // Tapping the backdrop closes, the card itself does not.
   $("lightbox").addEventListener("click", (e) => {
@@ -2593,8 +2615,14 @@ function releaseResultUrls() {
 // costs no request; anything else comes through /api/result, which answers
 // no-store, so this is the only copy we get without paying for the download
 // twice — once for the <img> and again for saving or reuse.
+// Through api() rather than a bare fetch, so a dropped connection is retried.
+// This is the largest transfer the app makes — a video is tens of megabytes on
+// a phone connection — and it was the one GET with no retry at all: a single
+// blip lost the bytes, which cost the archive (nothing is stored without them),
+// left the player streaming from a URL that dies mid-playback, and made Save
+// fail with the browser's bare "Load failed".
 async function fetchResultBlob(prunaUrl) {
-  const res = await fetch(resultUrl(prunaUrl));
+  const res = await api(resultUrl(prunaUrl));
   if (!res.ok) throw new Error("HTTP " + res.status);
   return await res.blob();
 }
@@ -2860,7 +2888,7 @@ function downloadButton(prunaUrl, kind, index, total, blob) {
       // and that URL was built long enough ago that its token may have lapsed.
       const bytes = blob || (await (async () => {
         await refreshResultToken();
-        const res = await fetch(resultUrl(prunaUrl));
+        const res = await api(resultUrl(prunaUrl));
         if (!res.ok) throw new Error("HTTP " + res.status);
         return await res.blob();
       })());
@@ -3048,6 +3076,15 @@ function initDescribe() {
       }
       updateDescribeNote();
     });
+    // This box belongs to Describe, but it sits inside the generate form, so
+    // the browser's implicit submission made Enter start a generation — a paid
+    // one, from the return key, while typing a question. Enter now runs the
+    // thing the box is actually for.
+    question.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      btn.click();
+    });
   }
 
   // Prefer whatever is already attached; only fall back to the file picker
@@ -3219,7 +3256,7 @@ async function generatedImageUrls() {
       continue;
     }
     await refreshResultToken();
-    const res = await fetch(resultUrl(u));
+    const res = await api(resultUrl(u));
     if (!res.ok) throw new Error(`Could not read the generated image (HTTP ${res.status}).`);
     out.push(await uploadForJudge(await res.blob(), "generated"));
   }
