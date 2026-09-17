@@ -100,7 +100,9 @@ does not restart at the handover.
 
 **Resilient requests.** Dropped connections are retried, except where a retry
 could bill twice — a generation that may already have reached the provider is
-reported rather than repeated.
+reported rather than repeated. That includes pulling the finished result down,
+which is the largest transfer the app makes: losing those bytes costs the
+archive too, since nothing is kept without them.
 
 **Prompt undo/redo.** Undo and Redo buttons in the prompt toolbar cover the main
 prompt box and nothing else. Typing is grouped into one entry per burst rather
@@ -145,6 +147,11 @@ without interaction, and only persistent mode is exempt.
 
 A trained LoRA `.zip` is not kept. It is not previewable, and its link expires
 about half an hour after the run either way.
+
+Clear does not disturb a generation in progress. It leaves the status line to
+the run rather than writing over it, and an archive write already under way
+when you clear is dropped rather than landing afterwards in the strip you just
+emptied — while a result that finishes later is still kept.
 
 Stored as `ArrayBuffer`s rather than Blobs: WebKit aborts an IndexedDB
 transaction outright for any value containing a Blob, which is how the session
@@ -372,7 +379,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 15 Worker tests, then 167 assertions per
+are needed and nothing is billed. 15 Worker tests, then 173 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a

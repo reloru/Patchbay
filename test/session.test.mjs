@@ -818,6 +818,37 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.locator("#recent-clear").click();
   await page.waitForTimeout(400);
   check("Clear empties the strip", (await page.locator(".recent-strip .thumb").count()) === 0);
+
+  // Clearing while a job runs must not look like it stopped the job. The
+  // status line belonged to the run and was being written over with
+  // "Cleared…", and an archive write already in flight could land afterwards
+  // and put an item back into the strip the user had just emptied.
+  await gen("something to clear later");
+  await page.request.get(BASE + "__slow?on=1");
+  await page.fill(promptSel, "a run that must survive a Clear");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#stop-btn:not(.hidden)", { timeout: 10000 });
+  await page.waitForTimeout(2200);
+  page.once("dialog", (d) => d.accept());
+  await page.locator("#recent-clear").click();
+  await page.waitForTimeout(1500);
+  check(
+    "clearing does not write over a running job's status",
+    /elapsed/.test(await page.locator("#status").textContent()),
+    await page.locator("#status").textContent()
+  );
+  check("the run is still going", await page.locator("#stop-btn").isVisible());
+  check("and the strip did empty", (await page.locator(".recent-strip .thumb").count()) === 0);
+
+  await page.request.get(BASE + "__slow?on=0");
+  await page.waitForSelector("#status.ok", { timeout: 20000 });
+  await page.waitForTimeout(600);
+  check(
+    "a result finishing after the Clear is still kept",
+    (await page.locator(".recent-strip .thumb").count()) === 1,
+    String(await page.locator(".recent-strip .thumb").count())
+  );
   await page.close();
   await context.close();
 }
@@ -1358,6 +1389,26 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     JSON.stringify(posted[1])
   );
   check("and the answer lands in the prompt box", (await page.inputValue(promptSel)) === "STUB CAPTION TEXT");
+
+  // The box sits inside the generate form, so the browser's implicit
+  // submission made Enter start a generation — a paid one, on the key iOS
+  // labels "Go" and puts under your thumb the moment you finish a question.
+  let generates = 0;
+  page.on("request", (r) => {
+    if (r.url().includes("/api/generate")) generates++;
+  });
+  await page.fill(promptSel, "a prompt worth not spending");
+  await page.waitForTimeout(700);
+  await page.click("#describe-question");
+  await page.fill("#describe-question", "how many of them are there?");
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(1200);
+  check("Enter in the question box does not start a generation", generates === 0, `${generates} generate call(s)`);
+  check(
+    "it runs Describe instead",
+    posted.length === 3 && posted[2].question === "how many of them are there?",
+    JSON.stringify(posted[2])
+  );
   await page.close();
   await context.close();
 }
