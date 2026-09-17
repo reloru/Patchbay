@@ -114,6 +114,15 @@ Describe: no `question` key sent when the box is empty, so the Worker's own
 captioning instruction stands; a typed question reaching the Worker and being
 named in the note line first.
 
+Progress: a synchronous model reporting a rising elapsed count *while* it runs
+rather than only at the end, worded as Generating; the ticker stopping once the
+run settles; and, on a polled model, the count never restarting when polling
+takes over from submitting. `/__delay` holds `/api/generate` open to make that
+window exist — a synchronous model has no other, since the run *is* that one
+request. The stub also answers Workers AI and xAI image models with a finished
+image rather than a job id, because returning an id for them would let the
+polling loop cover a path production does not have.
+
 Eviction by count seeds items straight into both stores rather than generating
 them: two hundred round trips through the UI would dominate the runtime, and
 what is under test is the pruning that runs at boot.

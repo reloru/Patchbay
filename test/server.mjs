@@ -38,6 +38,9 @@ let lastGenerate = null;
 // Without it every generation here finishes on its first poll, and there is no
 // window in which Stop means anything.
 let slowJob = false;
+// Set by the test through /__delay, to hold /api/generate open. A synchronous
+// model has no other window: the whole run is that one request.
+let generateDelayMs = 0;
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
   "base64"
@@ -73,6 +76,17 @@ const server = createServer(async (req, res) => {
     const chunks = [];
     for await (const c of req) chunks.push(c);
     lastGenerate = JSON.parse(Buffer.concat(chunks).toString());
+    // Held open by /__delay, to stand in for a model whose whole run happens
+    // inside this one request.
+    if (generateDelayMs) await new Promise((r) => setTimeout(r, generateDelayMs));
+    // Fourteen of the models never get a job id: Workers AI and xAI's image
+    // endpoints run the whole generation inside this request and answer with
+    // the finished image. Returning an id for them too would let the polling
+    // loop cover a path that does not exist in production.
+    const spec = MODELS_BY_ID.get(lastGenerate.model);
+    if (spec && (spec.provider === "workers-ai" || (spec.provider === "xai" && !spec.xaiAsync))) {
+      return json(res, { status: "succeeded", images: ["data:image/png;base64," + PNG.toString("base64")] });
+    }
     return json(res, { id: "stub-job-1" });
   }
   if (path === "/api/status") {
@@ -108,6 +122,10 @@ const server = createServer(async (req, res) => {
   if (path === "/__slow") {
     slowJob = url.searchParams.get("on") === "1";
     return json(res, { slowJob });
+  }
+  if (path === "/__delay") {
+    generateDelayMs = Number(url.searchParams.get("ms")) || 0;
+    return json(res, { generateDelayMs });
   }
 
   // Anything else is a static file, exactly as Workers Assets serves it.

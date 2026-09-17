@@ -1362,6 +1362,83 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
+// ── The elapsed count runs during the generation, not after it ─────────────
+// Fourteen models have no job to poll: Workers AI and xAI's image endpoints run
+// the whole generation inside /api/generate and answer with the finished
+// picture. Nothing drove the status line for that entire window, so it held
+// "Submitting…" — no count at all — and then jumped straight to the finished
+// time, which on a slow model is indistinguishable from a hang.
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  const sample = async (n, everyMs) => {
+    const seen = [];
+    for (let i = 0; i < n; i++) {
+      await page.waitForTimeout(everyMs);
+      seen.push((await page.locator("#status").textContent()).trim());
+    }
+    return seen;
+  };
+  const elapsed = (lines) =>
+    lines.map((s) => (s.match(/(\d+)s elapsed/) || [])[1]).filter((v) => v !== undefined).map(Number);
+
+  await page.request.get(BASE + "__delay?ms=4000");
+  await page.selectOption("#model-select", "cf-flux-1-schnell");
+  await page.waitForTimeout(250);
+  await page.fill(promptSel, "count while you work");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+
+  const during = await sample(6, 500);
+  const ticks = elapsed(during);
+  check("a synchronous model reports progress while it runs", ticks.length >= 4, JSON.stringify(during));
+  check("and the count actually advances", ticks.length > 0 && ticks[ticks.length - 1] > ticks[0], ticks.join(","));
+  check(
+    "named as generating rather than submitting, because that is what it is doing",
+    during.every((s) => s.startsWith("Generating")),
+    JSON.stringify(during[0])
+  );
+
+  await page.waitForSelector("#status.ok", { timeout: 15000 });
+  const settled = (await page.locator("#status").textContent()).trim();
+  await page.waitForTimeout(2500);
+  check(
+    "the ticker stops once the run finishes",
+    (await page.locator("#status").textContent()).trim() === settled,
+    settled
+  );
+
+  // Continuity: a polled model spends a moment submitting and the rest being
+  // polled. Two clocks would send the count back to zero at the handover.
+  await page.request.get(BASE + "__slow?on=1");
+  await page.request.get(BASE + "__delay?ms=2500");
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(250);
+  await page.fill(promptSel, "one clock, not two");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+
+  const across = await sample(12, 600);
+  const run = elapsed(across);
+  check(
+    "the count never restarts when polling takes over",
+    run.length > 2 && run.every((n, i) => i === 0 || n >= run[i - 1]),
+    run.join(",")
+  );
+  check(
+    "and the wording follows the stage",
+    across.some((s) => s.startsWith("Submitting")) && across.some((s) => s.startsWith("Processing")),
+    JSON.stringify(across)
+  );
+
+  // Leave the stub as the other blocks expect to find it.
+  await page.request.get(BASE + "__delay?ms=0");
+  await page.request.get(BASE + "__slow?on=0");
+  await page.waitForSelector("#status.ok", { timeout: 15000 });
+  await page.close();
+  await context.close();
+}
+
 // ── Real disk persistence (separate browser process, same profile) ──────────
 {
   const profile = mkdtempSync(join(tmpdir(), "pb-profile-"));

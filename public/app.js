@@ -1257,13 +1257,46 @@ function providerErrorText(data, status, fallback) {
 // already used successfully. `forceAsync` in models.js is consequently inert —
 // left in place as documentation of which models are known to run especially
 // long, not because anything still reads it.
+// Fourteen of the forty-eight models never get a job id: Workers AI and xAI's
+// image endpoints run the whole generation inside the /api/generate request and
+// answer with the finished picture. Same fact handleGenerate dispatches on.
+function isSynchronous(spec) {
+  if (!spec) return false;
+  return spec.provider === "workers-ai" || (spec.provider === "xai" && !spec.xaiAsync);
+}
+
 async function runGeneration(model, input, kind, onProgress) {
   lastActualCostUsd = null;
-  const startRes = await api("/api/generate", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model, input }),
-  });
+  const spec = MODELS.find((m) => m.id === model);
+  // One clock for the whole run, handed to pollJob below so the count carries
+  // straight on rather than restarting when polling takes over.
+  const started = Date.now();
+
+  // Nothing polls a synchronous model, so without this the status line holds
+  // whatever it said at submit for the entire generation and then jumps to the
+  // finished time — which reads exactly like a hang on a model that takes a
+  // minute. The request itself is the progress, so the count comes from here.
+  // Async models get the same treatment for the submit leg, which is brief.
+  const label = isSynchronous(spec) ? "generating" : "submitting";
+  let ticker = null;
+  if (onProgress) {
+    const tick = () => onProgress(label, Math.round((Date.now() - started) / 1000));
+    tick();
+    ticker = setInterval(tick, 1000);
+  }
+
+  let startRes;
+  try {
+    startRes = await api("/api/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model, input }),
+    });
+  } finally {
+    // Cleared on the error path too, or a failed run leaves a timer rewriting
+    // the status line over the top of the message saying what went wrong.
+    clearInterval(ticker);
+  }
   const data = await startRes.json();
   if (!startRes.ok) throw new Error(providerErrorText(data, startRes.status));
 
@@ -1284,7 +1317,7 @@ async function runGeneration(model, input, kind, onProgress) {
   // The job now exists on the provider and will run to completion whether or
   // not this tab survives, so record it before the first poll.
   saveJob({ id, model, kind, startedAt: Date.now() });
-  return await pollJob(id, kind, onProgress);
+  return await pollJob(id, kind, onProgress, started);
 }
 
 // ---------------------------------------------------------------------------
@@ -1338,8 +1371,12 @@ const IMAGE_POLL_MS = 900;
 
 // Polls one provider job to a terminal state. Split out of runGeneration so a
 // reload can reattach to a job this tab never saw start.
-async function pollJob(id, kind, onProgress) {
-  const started = Date.now();
+// `startedAt` carries runGeneration's clock in, so the elapsed count runs
+// continuously from Generate rather than restarting at zero once an id comes
+// back. A job picked up on reload passes nothing and counts from reattaching,
+// which is what its own wording says.
+async function pollJob(id, kind, onProgress, startedAt) {
+  const started = startedAt || Date.now();
   // Heavy video jobs (VACE especially) can run well past 10 minutes. LoRA
   // training is documented as "minutes to hours", so it gets the longest
   // budget this tab is willing to wait on.
@@ -3802,9 +3839,22 @@ function setStatus(msg, mode) {
   if (mode === "hide" || !msg) {
     el.classList.add("hidden");
     el.innerHTML = "";
+    el.dataset.mode = "";
     return;
   }
-  el.className = "status" + (mode === "err" ? " err" : mode === "ok" ? " ok" : "");
+  const cls = "status" + (mode === "err" ? " err" : mode === "ok" ? " ok" : "");
+  // A progress line is rewritten every second now. Rebuilding the spinner on
+  // each one restarts its CSS animation, so it twitches at the top of every
+  // rotation instead of turning — keep the element and swap only the text
+  // while the mode is unchanged.
+  if (el.dataset.mode === mode && el.lastChild) {
+    el.className = cls;
+    el.lastChild.textContent = msg;
+    el.classList.remove("hidden");
+    return;
+  }
+  el.className = cls;
+  el.dataset.mode = mode;
   el.innerHTML = "";
   if (mode === "load") {
     const sp = document.createElement("span");
