@@ -81,8 +81,15 @@ one model out of 48 and a measured one describes this account, this device and
 this connection. A run collected on reload is not counted — its elapsed time is
 measured from reattaching and says nothing about the model.
 
-The count runs from the moment you press Generate, on one clock, whatever the
-model does underneath. Fourteen of them never get a job id — Workers AI and
+The count is driven by its own clock rather than by the polling, and repaints
+the moment the tab comes back. The status line used to be written only when a
+poll returned, so a slow provider, a stalled connection or an iOS tab suspended
+in the background left it frozen at whatever it last said — reading eight
+seconds after three real minutes, which is worse than no count at all, since it
+says the job has barely started.
+
+It runs from the moment you press Generate, on one clock, whatever the model
+does underneath. Fourteen of them never get a job id — Workers AI and
 xAI's image endpoints run the whole generation inside a single request and
 answer with the finished picture — so there is nothing to poll and nothing was
 driving the status line: it held "Submitting…" for the entire run and then
@@ -365,7 +372,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 15 Worker tests, then 165 assertions per
+are needed and nothing is billed. 15 Worker tests, then 167 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a

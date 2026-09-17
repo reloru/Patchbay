@@ -1431,10 +1431,46 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     JSON.stringify(across)
   );
 
-  // Leave the stub as the other blocks expect to find it.
+  // Let that run finish before starting another — Generate is held until it does.
   await page.request.get(BASE + "__delay?ms=0");
   await page.request.get(BASE + "__slow?on=0");
-  await page.waitForSelector("#status.ok", { timeout: 15000 });
+  await page.waitForSelector("#status.ok", { timeout: 20000 });
+
+  // A stalled poll must not stall the clock. The line used to be written only
+  // when a poll came back, so a slow provider, a hung connection or a suspended
+  // iOS tab left it frozen at whatever it last said — reading eight seconds
+  // after three real minutes, which says the job has barely started.
+  await page.request.get(BASE + "__statusdelay?ms=9000");
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(250);
+  await page.fill(promptSel, "a poll that hangs");
+  await page.waitForTimeout(700);
+  const t0 = Date.now();
+  await page.locator("#generate-btn").click();
+
+  const drifts = [];
+  for (let i = 0; i < 7; i++) {
+    await page.waitForTimeout(1000);
+    const shown = elapsed([(await page.locator("#status").textContent()).trim()])[0];
+    if (shown !== undefined) drifts.push(Math.round((Date.now() - t0) / 1000) - shown);
+  }
+  check(
+    "the count keeps up while a poll hangs",
+    drifts.length >= 5 && Math.max(...drifts) <= 2,
+    `worst drift ${drifts.length ? Math.max(...drifts) : "n/a"}s from ${JSON.stringify(drifts)}`
+  );
+
+  // Leave the stub as the other blocks expect to find it.
+  await page.request.get(BASE + "__statusdelay?ms=0");
+  await page.waitForSelector("#status.ok", { timeout: 25000 });
+  check(
+    "and the finished message is not overwritten by a late tick",
+    await (async () => {
+      const done = (await page.locator("#status").textContent()).trim();
+      await page.waitForTimeout(2200);
+      return (await page.locator("#status").textContent()).trim() === done;
+    })()
+  );
   await page.close();
   await context.close();
 }
