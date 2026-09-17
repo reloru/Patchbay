@@ -113,10 +113,16 @@ expired.
 Clear during a run: the status line left alone, the run continuing, the strip
 emptying, and a result that finishes after the Clear still being kept.
 
-Describe: no `question` key sent when the box is empty, so the Worker's own
-captioning instruction stands; a typed question reaching the Worker and being
-named in the note line first; and Enter in that box running Describe rather
+Describe: a caption seeding the prompt and never being given the prompt; a
+question reaching the Worker with the prompt alongside it, named in the note
+line first, answered in its own panel with the prompt box left untouched;
+`Use as prompt` and `Dismiss`; and Enter in that box running Describe rather
 than submitting the form, which was starting a paid generation.
+
+The per-model payloads are checked in the Worker suite instead, against a fake
+AI binding that records what the model was handed — Moondream taking a question
+through its `query` task rather than `caption`, which ignores one outright, and
+the prompt being composed in for a question but never for a caption.
 
 Progress: a synchronous model reporting a rising elapsed count *while* it runs
 rather than only at the end, worded as Generating; the ticker stopping once the

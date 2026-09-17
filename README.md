@@ -40,12 +40,22 @@ reaches the prompt box exactly as the model produced it — the Worker does not
 rewrite it afterwards. Reverting a rewrite is the prompt Undo button's job, so
 the button stays Improve rather than turning into a one-shot undo of its own.
 
-**Image description.** Describe captions an image with one of 3 Workers AI
-vision models and drops the caption in as a starting prompt. It reads whatever
-image is already attached and only opens a file picker when there is none.
-Leave the box under the toolbar empty for a caption, or type a question in it to
-ask about the image instead — the answer lands in the prompt box the same way.
-The note line always says which of the two it will do.
+**Image description, and asking about one.** Describe reads whatever image is
+already attached, with one of 3 Workers AI vision models, and only opens a file
+picker when there is none. It has two modes, and the note line always says which
+one is about to run.
+
+Leave the box under the toolbar empty and it *captions*: the description drops
+into the prompt box as a starting prompt, which is what captioning is for.
+
+Type a question in that box and it *answers*. The question goes to the model
+along with your prompt, so it can be about the prompt as much as the picture —
+"does this match what I asked for", "what is missing". The answer appears in its
+own panel under the toolbar rather than in the prompt box, for the same reason
+Judge's score does not land in the output panel: asking about your prompt must
+not destroy the prompt you asked about. `↑ Use as prompt` puts it in the box if
+that is what you wanted, as one undo entry. A caption is never given the prompt
+— it has to describe the image as it is, not what was asked for.
 
 **Prompt-match scoring.** Judge runs Pruna's `p-judger` over an image and
 returns how well it matches the prompt. It scores the image you just generated
@@ -379,7 +389,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 15 Worker tests, then 173 assertions per
+are needed and nothing is billed. 15 Worker tests, then 182 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a

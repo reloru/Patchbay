@@ -132,6 +132,73 @@ test("with no gate configured /api/result needs no token at all", async () => {
   assert.equal(res.status, 400, "no gate to pass, so it stops on the missing url param");
 });
 
+// /api/describe builds a different payload per vision model, and the browser
+// suite stubs this file, so the payloads themselves can only be checked here.
+// A fake AI binding records what the model was handed.
+const describeWith = async (body) => {
+  let seen = null;
+  const aiEnv = {
+    ...env,
+    AI: {
+      run: async (model, input) => {
+        seen = { model, input };
+        return { description: "ok" };
+      },
+    },
+  };
+  const res = await call("/api/describe", {
+    password: PASSWORD,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }, aiEnv);
+  assert.equal(res.status, 200, JSON.stringify(await res.json()));
+  return seen;
+};
+
+const PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+
+test("Moondream captions with the caption task when nothing was asked", async () => {
+  const seen = await describeWith({ image_b64: PIXEL, model: "@cf/moondream/moondream3.1-9B-A2B" });
+  assert.equal(seen.input.task, "caption");
+  assert.equal(seen.input.stream, false, "streaming would not come back as one JSON body");
+});
+
+test("Moondream takes a question through the query task, not caption", async () => {
+  // "caption" ignores a question outright, which is what every question typed
+  // used to get on this model — it silently captioned instead of answering.
+  const seen = await describeWith({
+    image_b64: PIXEL,
+    model: "@cf/moondream/moondream3.1-9B-A2B",
+    question: "how many cats?",
+  });
+  assert.equal(seen.input.task, "query");
+  assert.match(seen.input.question, /how many cats\?/);
+});
+
+test("the prompt is put in front of a question so it can be asked about", async () => {
+  const seen = await describeWith({
+    image_b64: PIXEL,
+    model: "@cf/llava-hf/llava-1.5-7b-hf",
+    question: "does this match?",
+    prompt: "a neon cat on a rooftop",
+  });
+  assert.match(seen.input.prompt, /a neon cat on a rooftop/);
+  assert.match(seen.input.prompt, /does this match\?/);
+});
+
+test("a caption never sees the prompt", async () => {
+  // It has to describe the image as it is. Handed the prompt, it would describe
+  // what was asked for instead — and the caption's whole job is to tell you
+  // what is actually there.
+  const seen = await describeWith({
+    image_b64: PIXEL,
+    model: "@cf/llava-hf/llava-1.5-7b-hf",
+    prompt: "a neon cat on a rooftop",
+  });
+  assert.doesNotMatch(seen.input.prompt, /neon cat/);
+});
+
 test("/api/generate rejects a model outside the catalogue", async () => {
   const res = await call("/api/generate", {
     password: PASSWORD,

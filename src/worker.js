@@ -575,8 +575,19 @@ function stripReasoning(text) {
   return t.trim();
 }
 
-// Captions an uploaded image so the text can seed a prompt. The two vision
-// models take quite different inputs, so each payload is built separately.
+// Puts the prompt box's text in front of the question, so a question can be
+// about the prompt as well as about the picture — "does this match what I
+// asked for", "what is missing". Only ever sent alongside a real question:
+// captioning has to describe the image as it is, and handing it the prompt
+// would have it describe what was asked for instead.
+function describeInput(question, prompt) {
+  if (!prompt) return question;
+  return `This image was made from the following prompt:\n\n"${prompt}"\n\nWith that in mind, answer: ${question}`;
+}
+
+// Captions an uploaded image so the text can seed a prompt, or answers a
+// question about it. The vision models take quite different inputs, so each
+// payload is built separately.
 async function handleDescribe(request, env) {
   if (!env.AI) return json({ error: "Workers AI binding is not configured." }, 500);
 
@@ -585,23 +596,37 @@ async function handleDescribe(request, env) {
   if (!b64) return json({ error: "No image provided." }, 400);
 
   const model = DESCRIBE_MODEL_IDS.has(body.model) ? body.model : DEFAULT_DESCRIBE_MODEL;
-  const question =
-    (typeof body.question === "string" && body.question.trim()) ||
-    "Describe this image in vivid detail, as if writing a prompt to recreate it.";
+  // A question the caller actually typed, as opposed to the captioning fallback.
+  // The two are different modes, not the same one with a different string.
+  const asked = (typeof body.question === "string" && body.question.trim()) || "";
+  const question = asked || "Describe this image in vivid detail, as if writing a prompt to recreate it.";
+  // Only a real question gets the prompt for context. The client already only
+  // sends it alongside one, but captioning must describe the image as it is
+  // whatever arrives here — handed the prompt, it would describe what was asked
+  // for instead, which is the one thing a caption must not do.
+  const asking = asked ? describeInput(question, typeof body.prompt === "string" ? body.prompt.trim() : "") : question;
 
   let input;
   if (model.includes("moondream")) {
-    // Streams by default; disable so we get a single JSON body back.
-    input = {
-      task: "caption",
-      image: `data:${body.mime || "image/jpeg"};base64,${b64}`,
-      caption_length: body.caption_length || "normal",
-      stream: false,
-      max_tokens: 512,
-    };
+    const image = `data:${body.mime || "image/jpeg"};base64,${b64}`;
+    // "caption" ignores a question outright — which is what every question
+    // typed here used to get. "query" is the task that takes one, under its own
+    // `question` key rather than a prompt.
+    // https://developers.cloudflare.com/workers-ai/models/moondream3.1-9B-A2B/
+    //
+    // Streams by default either way; disabled so a single JSON body comes back.
+    input = asked
+      ? { task: "query", image, question: asking, stream: false, max_tokens: 512 }
+      : {
+          task: "caption",
+          image,
+          caption_length: body.caption_length || "normal",
+          stream: false,
+          max_tokens: 512,
+        };
   } else {
     // llava and llama-3.2-11b-vision both want raw bytes as 8-bit ints.
-    input = { image: base64ToBytes(b64), prompt: question, max_tokens: 512 };
+    input = { image: base64ToBytes(b64), prompt: asking, max_tokens: 512 };
   }
 
   let out;
