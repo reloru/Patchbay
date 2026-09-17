@@ -101,6 +101,12 @@
               <span id="describe-note"></span>
               <span id="judge-note"></span>
             </p>
+            <!-- An answer lands here rather than in the prompt box, for the
+                 same reason p-judger's score lands below rather than in the
+                 output panel: asking about the prompt must not destroy the
+                 prompt you asked about. A caption still fills the box, since
+                 seeding the prompt is what captioning is for. -->
+            <div id="describe-result" class="answer hidden"></div>
             <!-- p-judger's score lands here rather than in the output panel, so
                  scoring a generation does not clear the generation. -->
             <div id="judge-result" class="judge hidden"></div>

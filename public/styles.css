@@ -364,6 +364,30 @@ button.tiny { padding: 4px 10px; font-size: 12px; }
   .prompt-lib button { flex: 1 1 48%; }
 }
 
+/* An answer from Describe. Same box as Judge's score, and there for the same
+   reason: a result that belongs to the toolbar rather than to the output. */
+.answer {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.answer-q {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 6px;
+  overflow-wrap: anywhere;
+}
+.answer-a {
+  font-size: 14px;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.answer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.answer-actions button { flex: 1 1 auto; }
+
 /* Judge (p-judger). The score sits under the prompt toolbar rather than in the
    output panel, so scoring a generation leaves the generation on screen. */
 .judge {

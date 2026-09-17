@@ -1219,6 +1219,7 @@ $("reset-btn").addEventListener("click", () => {
   clearUploads();
   renderFields();
   clearJudgeResult();
+  clearDescribeAnswer();
   setStatus("", "hide");
   // Reset puts every field back to its default, the prompt included. That is a
   // change to the prompt like any other, so it becomes an undo entry — Undo
@@ -1974,6 +1975,11 @@ function initSessionPersistence() {
   const form = $("gen-form");
   form.addEventListener("input", scheduleSessionSave);
   form.addEventListener("change", scheduleSessionSave);
+  // The Describe note says whether the prompt will ride along with a question,
+  // so it has to follow the prompt box as well as the attachments.
+  form.addEventListener("input", (e) => {
+    if (e.target === primaryPromptEl()) updateDescribeNote();
+  });
   // The model picker sits outside the form, so it needs its own listener.
   $("model-select").addEventListener("change", scheduleSessionSave);
   // iOS gives no reliable notice before it kills a backgrounded PWA: unload
@@ -3044,9 +3050,12 @@ function updateDescribeNote() {
   if (!m) return void (noteEl.textContent = "");
   const attached = attachedImageFile();
   const q = describeQuestion();
+  const el = primaryPromptEl();
+  const withPrompt = Boolean(q) && Boolean(el && el.value.trim());
   noteEl.textContent =
     (attached ? `🔍 Reads ${attached.name || "the attached image"}` : "🔍 Attach an image below") +
-    (q ? ` · asks: “${q}”` : "");
+    (withPrompt ? " and your prompt" : "") +
+    (q ? ` · asks: “${q}” · answers below, leaving the prompt alone` : "");
 }
 
 function initDescribe() {
@@ -3103,12 +3112,14 @@ function initDescribe() {
 
   async function describeFile(f) {
     const el = primaryPromptEl();
-    if (!el) return;
-
     const q = describeQuestion();
+    // A caption needs somewhere to land; an answer does not.
+    if (!el && !q) return;
+
     btn.disabled = true;
     const idle = btn.textContent;
     btn.textContent = "Reading…";
+    clearDescribeAnswer();
     setStatus(q ? `Asking about ${f.name || "image"}…` : `Describing ${f.name || "image"}…`, "load");
     try {
       const b64 = await fileToBase64(f);
@@ -3116,6 +3127,11 @@ function initDescribe() {
       // Omitted rather than sent empty, so the Worker's own captioning
       // instruction stays the default.
       if (q) body.question = q;
+      // The prompt rides along with a question so it can be asked about too,
+      // and never with a caption, which has to describe the image rather than
+      // what was asked of it.
+      const promptText = el ? el.value.trim() : "";
+      if (q && promptText) body.prompt = promptText;
       const res = await api("/api/describe", {
         method: "POST",
         retry: true,
@@ -3124,10 +3140,15 @@ function initDescribe() {
       });
       const data = await res.json();
       if (!res.ok || !data.description) throw new Error(data.error || `HTTP ${res.status}`);
-      el.value = data.description;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      commitPromptHistory(); // the answer is one entry, so Undo puts back what you had
-      setStatus(q ? "Answer put in the prompt box." : "Prompt filled from the image.", "ok");
+      if (q) {
+        renderDescribeAnswer(q, data.description);
+        setStatus("Answered below the toolbar — your prompt is untouched.", "ok");
+      } else {
+        el.value = data.description;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        commitPromptHistory(); // the caption is one entry, so Undo puts back what you had
+        setStatus("Prompt filled from the image.", "ok");
+      }
     } catch (e) {
       setStatus("Describe failed: " + e.message, "err");
     } finally {
@@ -3137,6 +3158,62 @@ function initDescribe() {
   }
 
   updateDescribeNote();
+}
+
+function clearDescribeAnswer() {
+  const box = $("describe-result");
+  if (!box) return;
+  box.innerHTML = "";
+  box.classList.add("hidden");
+}
+
+// An answer belongs beside the prompt, not in it. Captioning still fills the
+// box — seeding the prompt is the whole point of a caption — but an answer to
+// a question is a reply, and the question is very often about the prompt
+// itself, which overwriting it would destroy.
+function renderDescribeAnswer(question, text) {
+  const box = $("describe-result");
+  if (!box) return;
+  box.innerHTML = "";
+
+  const q = document.createElement("p");
+  q.className = "answer-q";
+  q.textContent = `🔍 ${question}`;
+  box.appendChild(q);
+
+  const a = document.createElement("p");
+  a.className = "answer-a";
+  a.textContent = text;
+  box.appendChild(a);
+
+  const actions = document.createElement("div");
+  actions.className = "answer-actions";
+
+  // The old behaviour, kept as a choice rather than imposed: an answer is
+  // sometimes exactly what you want the prompt to say.
+  const use = document.createElement("button");
+  use.type = "button";
+  use.className = "secondary";
+  use.textContent = "↑ Use as prompt";
+  use.addEventListener("click", () => {
+    const el = primaryPromptEl();
+    if (!el) return void setStatus("This model has no prompt box.", "err");
+    el.value = text;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    commitPromptHistory(); // one entry, so Undo puts back what you had
+    setStatus("Prompt replaced with the answer — press Undo to put it back.", "ok");
+  });
+  actions.appendChild(use);
+
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "secondary";
+  dismiss.textContent = "Dismiss";
+  dismiss.addEventListener("click", clearDescribeAnswer);
+  actions.appendChild(dismiss);
+
+  box.appendChild(actions);
+  box.classList.remove("hidden");
 }
 
 // ---------------------------------------------------------------------------

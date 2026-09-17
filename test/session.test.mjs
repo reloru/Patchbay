@@ -1375,24 +1375,55 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForTimeout(900);
   check("with no question, none is sent", posted.length === 1 && !("question" in posted[0]), JSON.stringify(posted[0] && Object.keys(posted[0])));
 
-  await page.fill("#describe-question", "what colour is the background?");
-  await page.waitForTimeout(200);
+  check("a caption seeds the prompt, which is what captioning is for", (await page.inputValue(promptSel)) === "STUB CAPTION TEXT");
   check(
-    "the note says what it will ask",
-    (await page.locator("#describe-note").textContent()).includes("what colour is the background?")
+    "and no prompt is sent with a caption — it must describe the image, not the ask",
+    !("prompt" in posted[0]),
+    JSON.stringify(Object.keys(posted[0]))
   );
+
+  const ownPrompt = "a neon cat on a rooftop at dusk";
+  await page.fill(promptSel, ownPrompt);
+  await page.waitForTimeout(700);
+  await page.fill("#describe-question", "does the image match my prompt?");
+  await page.waitForTimeout(250);
+  const note = await page.locator("#describe-note").textContent();
+  check("the note says what it will ask", note.includes("does the image match my prompt?"));
+  check("and that the prompt rides along", note.includes("and your prompt"), note);
+
   await page.locator("#prompt-describe").click();
   await page.waitForTimeout(900);
   check(
     "a typed question reaches the Worker",
-    posted.length === 2 && posted[1].question === "what colour is the background?",
-    JSON.stringify(posted[1])
+    posted.length === 2 && posted[1].question === "does the image match my prompt?",
+    JSON.stringify(posted[1] && Object.keys(posted[1]))
   );
-  check("and the answer lands in the prompt box", (await page.inputValue(promptSel)) === "STUB CAPTION TEXT");
+  check(
+    "with the prompt alongside it, so the question can be about the prompt",
+    posted[1] && posted[1].prompt === ownPrompt,
+    JSON.stringify(posted[1] && posted[1].prompt)
+  );
+  // Asking about the prompt used to overwrite the prompt asked about.
+  check("the prompt box is left alone", (await page.inputValue(promptSel)) === ownPrompt);
+  const answer = await page.locator("#describe-result").textContent();
+  check("the answer appears in its own panel", answer.includes("STUB ANSWER TEXT"), answer.slice(0, 60));
+  check("headed by the question it answers", answer.includes("does the image match my prompt?"));
+
+  // The answer can still become the prompt — offered rather than imposed.
+  await page.locator("#describe-result button", { hasText: "Use as prompt" }).click();
+  await page.waitForTimeout(200);
+  check("Use as prompt puts it in the box", (await page.inputValue(promptSel)) === "STUB ANSWER TEXT");
+  await page.locator("#prompt-undo").click();
+  check("and that is one undo entry", (await page.inputValue(promptSel)) === ownPrompt);
+  await page.locator("#describe-result button", { hasText: "Dismiss" }).click();
+  check(
+    "Dismiss hides the panel",
+    await page.locator("#describe-result").evaluate((el) => el.classList.contains("hidden"))
+  );
 
   // The box sits inside the generate form, so the browser's implicit
-  // submission made Enter start a generation — a paid one, on the key iOS
-  // labels "Go" and puts under your thumb the moment you finish a question.
+  // submission made Enter start a generation — a paid one, from the return
+  // key, while typing a question.
   let generates = 0;
   page.on("request", (r) => {
     if (r.url().includes("/api/generate")) generates++;

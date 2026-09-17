@@ -34,6 +34,7 @@ const TYPES = {
 const MODELS_BY_ID = new Map(MODELS.map((m) => [m.id, m]));
 let uploadCount = 0;
 let lastGenerate = null;
+let lastDescribe = null;
 // Flipped by the test through /__slow, so a job can be caught mid-flight.
 // Without it every generation here finishes on its first poll, and there is no
 // window in which Stop means anything.
@@ -116,7 +117,16 @@ const server = createServer(async (req, res) => {
   // suite stubs the Worker. The signing itself is covered by worker.test.mjs.
   if (path === "/api/token") return json(res, { token: "stub-token", expiresAt: Date.now() + 600000 });
   if (path === "/api/improve-prompt") return json(res, { prompt: "IMPROVED PROMPT TEXT" });
-  if (path === "/api/describe") return json(res, { description: "STUB CAPTION TEXT" });
+  if (path === "/api/describe") {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    lastDescribe = JSON.parse(Buffer.concat(chunks).toString());
+    // Echoes whether the prompt rode along, so a test can tell the two modes
+    // apart without the real Worker's composition in front of it.
+    return json(res, {
+      description: lastDescribe.question ? "STUB ANSWER TEXT" : "STUB CAPTION TEXT",
+    });
+  }
   // Not configured in the stub, which is a case the app has to tolerate.
   if (path === "/api/neurons") return json(res, {}, 404);
 
@@ -124,6 +134,7 @@ const server = createServer(async (req, res) => {
   // the app never calls them.
   if (path === "/__generate") return json(res, lastGenerate || {});
   if (path === "/__uploads") return json(res, { uploadCount });
+  if (path === "/__describe") return json(res, lastDescribe || {});
   if (path === "/__slow") {
     slowJob = url.searchParams.get("on") === "1";
     return json(res, { slowJob });
