@@ -1265,59 +1265,92 @@ function isSynchronous(spec) {
   return spec.provider === "workers-ai" || (spec.provider === "xai" && !spec.xaiAsync);
 }
 
+// Drives the elapsed count for as long as a job runs.
+//
+// The poll loop is not a clock. The status line used to be written only when a
+// poll came back, so between polls — and for the whole of any one that hung —
+// it sat frozen at whatever it last said. A slow provider, a stalled
+// connection, or an iOS tab suspended in the background (where setTimeout stops
+// firing at all) would leave it reading eight seconds after three real minutes,
+// which is worse than no count: it says the job has barely started.
+//
+// So the number comes from here, once a second, independent of the polling. It
+// also repaints the instant the tab comes back rather than waiting up to a
+// whole poll interval, which is the case that matters on a phone.
+//
+// Nothing renders until the first set(): the caller's own opening message
+// ("Picking up the job you left running…") stays up until there is a real state
+// to replace it with.
+function progressTicker(onProgress, started) {
+  let state = null;
+  const render = () => {
+    if (state !== null) onProgress(state, Math.round((Date.now() - started) / 1000));
+  };
+  const onVisible = () => {
+    if (!document.hidden) render();
+  };
+  const timer = setInterval(render, 1000);
+  document.addEventListener("visibilitychange", onVisible);
+  return {
+    set(next) {
+      state = next;
+      render();
+    },
+    stop() {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    },
+  };
+}
+
 async function runGeneration(model, input, kind, onProgress) {
   lastActualCostUsd = null;
   const spec = MODELS.find((m) => m.id === model);
-  // One clock for the whole run, handed to pollJob below so the count carries
-  // straight on rather than restarting when polling takes over.
+  // One clock for the whole run — the submit leg and the polling share it, so
+  // the count does not restart when polling takes over.
   const started = Date.now();
+  const ticker = onProgress ? progressTicker(onProgress, started) : null;
 
-  // Nothing polls a synchronous model, so without this the status line holds
-  // whatever it said at submit for the entire generation and then jumps to the
-  // finished time — which reads exactly like a hang on a model that takes a
-  // minute. The request itself is the progress, so the count comes from here.
-  // Async models get the same treatment for the submit leg, which is brief.
-  const label = isSynchronous(spec) ? "generating" : "submitting";
-  let ticker = null;
-  if (onProgress) {
-    const tick = () => onProgress(label, Math.round((Date.now() - started) / 1000));
-    tick();
-    ticker = setInterval(tick, 1000);
-  }
-
-  let startRes;
   try {
-    startRes = await api("/api/generate", {
+    // A synchronous model is generating from the first moment: Workers AI and
+    // xAI's image endpoints run the whole thing inside this one request, and
+    // there is never anything to poll.
+    if (ticker) ticker.set(isSynchronous(spec) ? "generating" : "submitting");
+
+    const startRes = await api("/api/generate", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model, input }),
     });
+    const data = await startRes.json();
+    if (!startRes.ok) throw new Error(providerErrorText(data, startRes.status));
+
+    // Workers AI returns finished images inline as data URIs (no job to poll).
+    if (Array.isArray(data.images) && data.images.length) return data.images;
+    if (data.status === "succeeded" && data.generation_url) return asUrlList(data.generation_url);
+    if (data.status === "failed" || data.status === "error") {
+      throw new Error(providerErrorText(data, startRes.status, "Generation failed."));
+    }
+
+    let id = data.id;
+    if (!id && data.get_url) {
+      const m = String(data.get_url).match(/status\/([^/?#]+)/);
+      if (m) id = m[1];
+    }
+    if (!id) throw new Error("No job id returned. Response: " + JSON.stringify(data).slice(0, 240));
+
+    // The job now exists on the provider and will run to completion whether or
+    // not this tab survives, so record it before the first poll.
+    saveJob({ id, model, kind, startedAt: Date.now() });
+    if (ticker) ticker.set("processing");
+    // The poll supplies the state word; the ticker keeps supplying the number,
+    // including while a poll is in flight.
+    return await pollJob(id, kind, (state) => ticker && ticker.set(state), started);
   } finally {
-    // Cleared on the error path too, or a failed run leaves a timer rewriting
-    // the status line over the top of the message saying what went wrong.
-    clearInterval(ticker);
+    // Stopped on every path, or a failed run leaves a timer rewriting the
+    // status line over the top of the message saying what went wrong.
+    if (ticker) ticker.stop();
   }
-  const data = await startRes.json();
-  if (!startRes.ok) throw new Error(providerErrorText(data, startRes.status));
-
-  // Workers AI returns finished images inline as data URIs (no job to poll).
-  if (Array.isArray(data.images) && data.images.length) return data.images;
-  if (data.status === "succeeded" && data.generation_url) return asUrlList(data.generation_url);
-  if (data.status === "failed" || data.status === "error") {
-    throw new Error(providerErrorText(data, startRes.status, "Generation failed."));
-  }
-
-  let id = data.id;
-  if (!id && data.get_url) {
-    const m = String(data.get_url).match(/status\/([^/?#]+)/);
-    if (m) id = m[1];
-  }
-  if (!id) throw new Error("No job id returned. Response: " + JSON.stringify(data).slice(0, 240));
-
-  // The job now exists on the provider and will run to completion whether or
-  // not this tab survives, so record it before the first poll.
-  saveJob({ id, model, kind, startedAt: Date.now() });
-  return await pollJob(id, kind, onProgress, started);
 }
 
 // ---------------------------------------------------------------------------
@@ -1503,10 +1536,24 @@ async function resumeInFlightJob() {
   const ago = mins < 1 ? "less than a minute ago" : `${mins} min ago`;
   setStatus(`Picking up the ${rec.model || "job"} you left running ${ago}…`, "load");
   showStopButton(true);
+  // Same clock discipline as a fresh run: a reattached job polls just as slowly
+  // and freezes just as readily. Counts from reattaching rather than from the
+  // original submit, which is what the wording says — the record's own
+  // startedAt is not a measure of this tab's wait.
+  const reattached = Date.now();
+  const ticker = progressTicker(
+    (state, secs) => setStatus(`${cap(state)}… ${secs}s since reattaching`, "load"),
+    reattached
+  );
   try {
-    const urls = await pollJob(rec.id, rec.kind, (state, secs) => {
-      setStatus(`${cap(state)}… ${secs}s since reattaching`, "load");
-    });
+    let urls;
+    try {
+      urls = await pollJob(rec.id, rec.kind, (state) => ticker.set(state), reattached);
+    } finally {
+      // Stopped here rather than in the outer finally, which runs *after* the
+      // closing message below — long enough for a tick to land on top of it.
+      ticker.stop();
+    }
     if (!urls.length) throw new Error("No output URL returned.");
     // The model comes from the job record; the prompt and the settings do not
     // exist to recover, since the record deliberately never held the input.

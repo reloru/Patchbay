@@ -41,6 +41,10 @@ let slowJob = false;
 // Set by the test through /__delay, to hold /api/generate open. A synchronous
 // model has no other window: the whole run is that one request.
 let generateDelayMs = 0;
+// Set by the test through /__statusdelay, to hold each poll open. Stands in for
+// the poll loop stalling — a slow provider, a hung connection, or an iOS tab
+// suspended in the background, where setTimeout stops firing altogether.
+let statusDelayMs = 0;
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
   "base64"
@@ -90,6 +94,7 @@ const server = createServer(async (req, res) => {
     return json(res, { id: "stub-job-1" });
   }
   if (path === "/api/status") {
+    if (statusDelayMs) await new Promise((r) => setTimeout(r, statusDelayMs));
     if (slowJob) return json(res, { status: "processing" });
     // A video model's job has to deliver something the app will treat as video,
     // or the archive path for the expensive half of the catalogue is untestable.
@@ -126,6 +131,10 @@ const server = createServer(async (req, res) => {
   if (path === "/__delay") {
     generateDelayMs = Number(url.searchParams.get("ms")) || 0;
     return json(res, { generateDelayMs });
+  }
+  if (path === "/__statusdelay") {
+    statusDelayMs = Number(url.searchParams.get("ms")) || 0;
+    return json(res, { statusDelayMs });
   }
 
   // Anything else is a static file, exactly as Workers Assets serves it.

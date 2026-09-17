@@ -116,10 +116,13 @@ named in the note line first.
 
 Progress: a synchronous model reporting a rising elapsed count *while* it runs
 rather than only at the end, worded as Generating; the ticker stopping once the
-run settles; and, on a polled model, the count never restarting when polling
-takes over from submitting. `/__delay` holds `/api/generate` open to make that
-window exist — a synchronous model has no other, since the run *is* that one
-request. The stub also answers Workers AI and xAI image models with a finished
+run settles; on a polled model, the count never restarting when polling takes
+over from submitting; and the count keeping up while a poll hangs, within two
+seconds of real time, where it used to sit frozen at whatever the last poll
+said. `/__delay` holds `/api/generate` open to make that window exist — a
+synchronous model has no other, since the run *is* that one request — and
+`/__statusdelay` hangs each poll, standing in for a slow provider, a stalled
+connection, or a suspended iOS tab where `setTimeout` stops firing at all. The stub also answers Workers AI and xAI image models with a finished
 image rather than a job id, because returning an id for them would let the
 polling loop cover a path production does not have.
 
