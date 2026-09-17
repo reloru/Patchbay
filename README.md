@@ -81,6 +81,16 @@ one model out of 48 and a measured one describes this account, this device and
 this connection. A run collected on reload is not counted — its elapsed time is
 measured from reattaching and says nothing about the model.
 
+The count runs from the moment you press Generate, on one clock, whatever the
+model does underneath. Fourteen of them never get a job id — Workers AI and
+xAI's image endpoints run the whole generation inside a single request and
+answer with the finished picture — so there is nothing to poll and nothing was
+driving the status line: it held "Submitting…" for the entire run and then
+jumped to the finished time. Those now count up from this side and say
+*Generating* rather than *Submitting*, since that is what is happening. On a
+polled model the submit leg and the polling share the same clock, so the count
+does not restart at the handover.
+
 **Resilient requests.** Dropped connections are retried, except where a retry
 could bill twice — a generation that may already have reached the provider is
 reported rather than repeated.
@@ -355,7 +365,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 15 Worker tests, then 159 assertions per
+are needed and nothing is billed. 15 Worker tests, then 165 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a
