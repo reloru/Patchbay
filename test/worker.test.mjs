@@ -267,6 +267,31 @@ test("the img2img model the account cannot reach is no longer offered", async ()
   assert.equal(res.status, 400);
 });
 
+const generateWith = async (model, input, output) => {
+  let seen = null;
+  const aiEnv = { ...env, AI: { run: async (m, i) => ((seen = { model: m, input: i }), output) } };
+  const res = await call("/api/generate", {
+    password: PASSWORD,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model, input }),
+  }, aiEnv);
+  return { seen, status: res.status, body: await res.json() };
+};
+
+test("Aura's raw MP3 stream comes back as an audio data URI", async () => {
+  const mp3 = new Uint8Array([0x49, 0x44, 0x33, 0x04]); // "ID3"
+  const { seen, status, body } = await generateWith(
+    "cf-aura-2-en",
+    { text: "hello", speaker: "luna" },
+    new Response(mp3).body
+  );
+  assert.equal(status, 200);
+  assert.equal(seen.model, "@cf/deepgram/aura-2-en");
+  assert.deepEqual(seen.input, { text: "hello", speaker: "luna" });
+  assert.equal(body.images[0], "data:audio/mpeg;base64,SUQzBA==");
+});
+
 test("/api/generate rejects a model outside the catalogue", async () => {
   const res = await call("/api/generate", {
     password: PASSWORD,

@@ -1582,6 +1582,53 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
+// ── Text to speech ─────────────────────────────────────────────────────────
+// Aura bills per character, so its cost has to follow the text as typed; the
+// result has to be playable, and has to reach a video model's audio field both
+// from the result panel and from the field's own voice panel.
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  await page.selectOption("#model-select", "cf-aura-2-en");
+  await page.waitForTimeout(250);
+  await page.fill('[data-field="text"]', "x".repeat(500));
+  const est = await page.locator(".tts-estimate").first().textContent();
+  check("the speech estimate follows the text", est.includes("500 characters") && est.includes("1,364 neurons"), est);
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#result audio", { timeout: 10000 });
+  check("a speech result plays in an audio element", (await page.locator("#result audio").count()) === 1);
+  const sent = await (await page.request.get(BASE + "__generate")).json();
+  check("the text goes out under the model's own key", sent.input && sent.input.text === "x".repeat(500), JSON.stringify(sent).slice(0, 200));
+  const reuse = page.locator("#result .reuse");
+  check("with nowhere to put it here, reuse offers a model that takes a voice", (await reuse.textContent()).startsWith("🔊 Use in"), await reuse.textContent());
+  await reuse.click();
+  await page.waitForTimeout(500);
+  const audioThumbs = await page.locator("#gen-form .thumb.file").count();
+  check("reusing it lands the voice in an audio field", audioThumbs === 1, `thumbs ${audioThumbs}, status ${await page.locator("#status").textContent()}`);
+
+  // The voice panel on a video model's audio field.
+  await page.selectOption("#model-select", "p-video");
+  await page.waitForTimeout(300);
+  const panel = page.locator(".tts-panel").first();
+  check("an audio field offers to generate a voice", (await panel.count()) === 1);
+  if (await page.locator("details.options").count()) await page.locator("details.options > summary").click();
+  await panel.locator("summary").click();
+  check("Aura-2 English is the panel's default", (await panel.locator(".tts-model").inputValue()) === "cf-aura-2-en");
+  await panel.locator(".tts-model").selectOption("cf-aura-2-es");
+  check("switching speech model switches the voice list", (await panel.locator(".tts-voice").inputValue()) === "aquila");
+  check("an Aura model asks for a voice, not a language", await panel.locator(".tts-lang").isHidden());
+  await panel.locator(".tts-model").selectOption("cf-aura-2-en");
+  await panel.locator(".tts-text").fill("hello there");
+  await panel.locator(".tts-go").click();
+  await page.waitForSelector("#status.ok", { timeout: 10000 });
+  const sent2 = await (await page.request.get(BASE + "__generate")).json();
+  check("the panel sends the chosen speech model and voice", sent2.model === "cf-aura-2-en" && sent2.input.speaker === "luna" && sent2.input.text === "hello there", JSON.stringify(sent2));
+  const field = panel.locator("xpath=..");
+  check("and the voice becomes that field's file", (await field.locator(".thumb").count()) === 1, await page.locator("#status").textContent());
+  await page.close();
+  await context.close();
+}
+
 // ── Real disk persistence (separate browser process, same profile) ──────────
 {
   const profile = mkdtempSync(join(tmpdir(), "pb-profile-"));
