@@ -199,6 +199,74 @@ test("a caption never sees the prompt", async () => {
   assert.doesNotMatch(seen.input.prompt, /neon cat/);
 });
 
+test("a chat vision model gets the image as an image_url part beside the text", async () => {
+  const seen = await describeWith({
+    image_b64: PIXEL,
+    mime: "image/png",
+    model: "@cf/meta/llama-4-scout-17b-16e-instruct",
+    question: "does this match?",
+    prompt: "a neon cat on a rooftop",
+  });
+  const [text, image] = seen.input.messages[0].content;
+  assert.equal(text.type, "text");
+  assert.match(text.text, /a neon cat on a rooftop/);
+  assert.equal(image.type, "image_url");
+  assert.equal(image.image_url.url, "data:image/png;base64," + PIXEL);
+  assert.equal(seen.input.chat_template_kwargs, undefined, "no knob declared, none sent");
+});
+
+test("a vision model with thinking off says so, and one with an effort sends it", async () => {
+  // Without these, both returned null content at their token budgets.
+  const qwen = await describeWith({ image_b64: PIXEL, model: "@cf/qwen/qwen3.8-27b" });
+  assert.deepEqual(qwen.input.chat_template_kwargs, { enable_thinking: false });
+  const glm = await describeWith({ image_b64: PIXEL, model: "@cf/zai-org/glm-5.3-flash" });
+  assert.equal(glm.input.reasoning_effort, "low");
+  assert.equal(glm.input.max_tokens, 3072);
+});
+
+const improveWith = async (model) => {
+  let seen = null;
+  const aiEnv = {
+    ...env,
+    AI: {
+      run: async (m, input) => {
+        seen = { model: m, input };
+        return { choices: [{ message: { content: "rewritten" } }] };
+      },
+    },
+  };
+  const res = await call("/api/improve-prompt", {
+    password: PASSWORD,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "a old lighthouse", model }),
+  }, aiEnv);
+  assert.equal(res.status, 200, JSON.stringify(await res.json()));
+  return seen;
+};
+
+test("Improve sends each model's reasoning knobs and nothing to models without them", async () => {
+  const kimi = await improveWith("@cf/moonshotai/kimi-k2.6");
+  assert.deepEqual(kimi.input.chat_template_kwargs, { enable_thinking: false });
+  assert.equal(kimi.input.max_tokens, 1500);
+  const glm = await improveWith("@cf/zai-org/glm-5.3");
+  assert.equal(glm.input.reasoning_effort, "low");
+  const llama = await improveWith("@cf/meta/llama-3.2-3b-instruct");
+  assert.equal(llama.input.max_tokens, 320);
+  assert.equal(llama.input.chat_template_kwargs, undefined);
+  assert.equal(llama.input.reasoning_effort, undefined);
+});
+
+test("the img2img model the account cannot reach is no longer offered", async () => {
+  const res = await call("/api/generate", {
+    password: PASSWORD,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "cf-sd15-img2img", input: { prompt: "x" } }),
+  });
+  assert.equal(res.status, 400);
+});
+
 test("/api/generate rejects a model outside the catalogue", async () => {
   const res = await call("/api/generate", {
     password: PASSWORD,

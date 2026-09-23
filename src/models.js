@@ -1374,23 +1374,11 @@ const WORKERS_AI_MODELS = [
       CF_SEED,
     ],
   },
-  {
-    id: "cf-sd15-img2img",
-    cfModel: "@cf/runwayml/stable-diffusion-v1-5-img2img",
-    label: "SD 1.5 Image-to-Image",
-    group: "Image editing",
-    kind: "image",
-    blurb: "Redraw an existing image from a prompt.",
-    fields: [
-      { name: "image_b64", label: "Image to edit", type: "image", required: true, asBase64: true },
-      { name: "prompt", label: "Prompt", type: "textarea", required: true },
-      CF_NEGATIVE,
-      { name: "strength", label: "How much to change it", type: "number", default: 1, min: 0, max: 1, step: 0.05 },
-      { name: "num_steps", label: "Detail (steps)", type: "int", default: 20, min: 1, max: 20 },
-      { name: "guidance", label: "Prompt adherence", type: "number", default: 7.5, min: 0, max: 20, step: 0.1 },
-      CF_SEED,
-    ],
-  },
+  // cf-sd15-img2img (@cf/runwayml/stable-diffusion-v1-5-img2img) was removed on
+  // 2026-09-23: the account gets "403 / 5018: This account is not allowed to
+  // access" it, and it is gone from Cloudflare's model catalogue. It took
+  // image_b64, prompt, negative_prompt, strength (0-1, default 1), num_steps
+  // (max 20), guidance (7.5) and seed, and was listed at $0.00 per step.
   {
     id: "cf-sd15-inpainting",
     cfModel: "@cf/runwayml/stable-diffusion-v1-5-inpainting",
@@ -1523,7 +1511,6 @@ const CF_NEURONS = {
   // metered models. The allowance gate is account-wide, not per model.
   "cf-sdxl-base": { free: true },
   "cf-sdxl-lightning": { free: true },
-  "cf-sd15-img2img": { free: true },
   "cf-sd15-inpainting": { free: true },
   // dreamshaper-8-lcm has no published rate at all — left unpriced.
 };
@@ -1581,21 +1568,50 @@ for (const m of MODELS) {
 // ladder; the cost is shown once a model is picked instead of in its name.
 // `neurons` is the rough cost of one rewrite (~120 input + ~200 output tokens)
 // at Cloudflare's published per-million-token rates.
+//
+// Exception: the entries added on 2026-09-23 (DeepSeek V4, Gemma 4, GLM 5.x,
+// Kimi, Llama 3.1 8B FP8, Qwen 3.8, SEA-LION) carry the `usage.neurons` one live
+// rewrite actually reported. Their reasoning tokens bill as output, so the
+// nominal figure undercounted them by up to 5x (GLM 5.3: ~95 nominal, 508 real).
+// Reasoning length varies from run to run; treat these as typical, not fixed.
+//
+// Per-model request knobs, all verified against the live API on that date:
+//   paid       — needs the Workers Paid plan (or prepaid AI Gateway credits);
+//                Cloudflare lists exactly these seven in its pricing docs
+//   thinking   — false sends chat_template_kwargs.enable_thinking=false. Kimi
+//                K2.6 and Gemma 4 otherwise spent the whole 1,500-token budget
+//                thinking and returned null content (finish_reason "length")
+//   effort     — sent as reasoning_effort. GLM 5.3 at its default effort used
+//                1,238 of 1,500 tokens on a one-line rewrite; "low" used 33
+//   maxTokens  — overrides the reasoning/non-reasoning default budget
 export const IMPROVE_MODELS = [
   { id: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", family: "DeepSeek", label: "DeepSeek R1 32B", neurons: 94.2, reasoning: true },
+  { id: "@cf/deepseek-ai/deepseek-v4-flash-0731", family: "DeepSeek", label: "DeepSeek V4 Flash", neurons: 19.6, reasoning: true, paid: true },
+  { id: "@cf/deepseek-ai/deepseek-v4-pro-0813", family: "DeepSeek", label: "DeepSeek V4 Pro", neurons: 101.8, reasoning: true, paid: true },
+  { id: "@cf/google/gemma-4-26b-a4b-it", family: "Gemma", label: "Gemma 4 26B", neurons: 1.5, thinking: false },
   { id: "@cf/zai-org/glm-4.7-flash", family: "GLM", label: "GLM 4.7 Flash", neurons: 7.9, reasoning: true },
+  { id: "@cf/zai-org/glm-5.3-flash", family: "GLM", label: "GLM 5.3 Flash", neurons: 18.8, reasoning: true, paid: true },
+  { id: "@cf/zai-org/glm-5.2", family: "GLM", label: "GLM 5.2", neurons: 213, reasoning: true, paid: true },
+  { id: "@cf/zai-org/glm-5.3", family: "GLM", label: "GLM 5.3", neurons: 26.2, reasoning: true, paid: true, effort: "low" },
   { id: "@cf/openai/gpt-oss-20b", family: "GPT-OSS", label: "GPT-OSS 20B", neurons: 7.7, reasoning: true },
   { id: "@cf/openai/gpt-oss-120b", family: "GPT-OSS", label: "GPT-OSS 120B", neurons: 17.5, reasoning: true },
   { id: "@cf/ibm-granite/granite-4.0-h-micro", family: "Granite", label: "Granite 4.0 Micro", neurons: 2.2 },
+  { id: "@cf/moonshotai/kimi-k2.6", family: "Kimi", label: "Kimi K2.6", neurons: 199, reasoning: true, paid: true, thinking: false },
+  { id: "@cf/moonshotai/kimi-k2.7-code", family: "Kimi", label: "Kimi K2.7 Code", neurons: 187, reasoning: true, paid: true },
   { id: "@cf/meta/llama-3.2-1b-instruct", family: "Llama", label: "Llama 3.2 1B", neurons: 3.9 },
   { id: "@cf/meta/llama-3.2-3b-instruct", family: "Llama", label: "Llama 3.2 3B", neurons: 6.6 },
-  { id: "@cf/meta/llama-3.1-8b-instruct-fp8-fast", family: "Llama", label: "Llama 3.1 8B", neurons: 7.5 },
+  // Two 8B builds: -fp8-fast is no longer in Cloudflare's catalogue but still
+  // answered on 2026-09-23; -fp8 is the listed one. Labels keep them apart.
+  { id: "@cf/meta/llama-3.1-8b-instruct-fp8-fast", family: "Llama", label: "Llama 3.1 8B Fast", neurons: 7.5 },
+  { id: "@cf/meta/llama-3.1-8b-instruct-fp8", family: "Llama", label: "Llama 3.1 8B FP8", neurons: 2.3 },
   { id: "@cf/meta/llama-4-scout-17b-16e-instruct", family: "Llama", label: "Llama 4 Scout 17B", neurons: 18.4 },
   { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", family: "Llama", label: "Llama 3.3 70B", neurons: 44.2 },
   { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", family: "Mistral", label: "Mistral Small 24B", neurons: 13.9 },
   { id: "@cf/nvidia/nemotron-3-120b-a12b", family: "Nemotron", label: "Nemotron 3 120B", neurons: 32.7, reasoning: true },
   { id: "@cf/qwen/qwen3-30b-a3b-fp8", family: "Qwen", label: "Qwen3 30B", neurons: 6.6, reasoning: true },
+  { id: "@cf/qwen/qwen3.8-27b", family: "Qwen", label: "Qwen 3.8 27B", neurons: 119.6, reasoning: true },
   { id: "@cf/qwen/qwq-32b", family: "Qwen", label: "QwQ 32B", neurons: 25.4, reasoning: true },
+  { id: "@cf/aisingapore/gemma-sea-lion-v4-27b-it", family: "SEA-LION", label: "SEA-LION v4 27B", neurons: 4.2 },
 ];
 
 // ───────────────────────── xAI (Grok Imagine) ─────────────────────────
@@ -1868,12 +1884,27 @@ for (const m of XAI_MODELS) m.price = XAI_PRICING[m.id] || { type: "variable" };
 //   llava     takes `image` as a byte array, returns {description}
 //   moondream takes `image` as a data URI, streams by default (must disable),
 //             and returns {caption} for task="caption"
+//   chat      OpenAI-style messages with an image_url content part carrying a
+//             data URI; answer in choices[0].message.content. Takes the same
+//             thinking / effort / maxTokens knobs as IMPROVE_MODELS.
 // Vision models offered for the "Describe" button. As with IMPROVE_MODELS the
 // name stands alone and the caveat moves into `note`, shown after selection.
+//
+// The chat entries' knobs were each settled by live runs on 2026-09-23 against
+// a 512px image. At 512 tokens every reasoning model returned null content.
+// With thinking off, GLM 5.3 Flash wrote its reasoning into the answer itself,
+// so it keeps thinking at low effort instead. Kimi K2.6 is deliberately absent:
+// with thinking off and a 4,000-token budget it still hit the limit, after 90s
+// and 1,460 neurons — about 15% of the daily free allowance for one caption.
 export const DESCRIBE_MODELS = [
   { id: "@cf/llava-hf/llava-1.5-7b-hf", label: "LLaVA 1.5 7B", note: "beta, no listed price" },
   { id: "@cf/moondream/moondream3.1-9B-A2B", label: "Moondream 3.1", note: "richer detail than LLaVA" },
-  { id: "@cf/meta/llama-3.2-11b-vision-instruct", label: "Llama 3.2 11B Vision", note: "the most descriptive of the three" },
+  { id: "@cf/meta/llama-3.2-11b-vision-instruct", label: "Llama 3.2 11B Vision", note: "the most descriptive of the first three" },
+  { id: "@cf/meta/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout 17B", chat: true, maxTokens: 1024 },
+  { id: "@cf/google/gemma-4-26b-a4b-it", label: "Gemma 4 26B", chat: true, thinking: false, maxTokens: 1024 },
+  { id: "@cf/qwen/qwen3.8-27b", label: "Qwen 3.8 27B", chat: true, thinking: false, maxTokens: 1024 },
+  { id: "@cf/zai-org/glm-5.3-flash", label: "GLM 5.3 Flash", chat: true, paid: true, effort: "low", maxTokens: 3072 },
+  { id: "@cf/moonshotai/kimi-k2.7-code", label: "Kimi K2.7 Code", chat: true, paid: true, thinking: false, maxTokens: 1024 },
 ];
 
 export const DESCRIBE_MODEL_IDS = new Set(DESCRIBE_MODELS.map((m) => m.id));

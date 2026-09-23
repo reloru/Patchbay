@@ -1557,6 +1557,31 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
+// ── Neuron meter past and approaching the free allowance ───────────────────
+// On Workers Paid the 10,000 is where billing starts, not where the models
+// stop, so the bar has to say so on the way up and price the overage after.
+{
+  const context = await browser.newContext();
+  const bar = async (used) => {
+    await context.request.get(BASE + `__neurons?used=${used}`);
+    const page = await open(context);
+    await page.waitForFunction(() => /neurons/.test(document.querySelector("#spend").textContent));
+    const out = { level: await page.getAttribute("#spend", "data-level"), text: await page.locator("#spend").textContent() };
+    await page.close();
+    return out;
+  };
+  const low = await bar(2000);
+  check("under the warning line the bar is plain", low.level === "" && !low.text.includes("⚠"), JSON.stringify(low));
+  const near = await bar(8500);
+  check("approaching the free allowance, the bar warns", near.level === "warn" && near.text.includes("1,500 left"), JSON.stringify(near));
+  check("and says what comes after it", near.text.includes("$0.011 per 1,000"), near.text);
+  const over = await bar(12000);
+  check("past it, the bar says so", over.level === "over" && over.text.includes("2,000 over"), JSON.stringify(over));
+  check("and prices the overage", over.text.includes("$0.022"), over.text);
+  await context.request.get(BASE + "__neurons");
+  await context.close();
+}
+
 // ── Real disk persistence (separate browser process, same profile) ──────────
 {
   const profile = mkdtempSync(join(tmpdir(), "pb-profile-"));

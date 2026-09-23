@@ -2993,7 +2993,7 @@ function improveNoteFor(m) {
   const cost = `~${m.neurons} neurons per rewrite`;
   // Reasoning models spend tokens thinking before they answer, which shows up
   // as latency rather than as a different result, so it is worth flagging.
-  return `✨ ${m.label} · ${cost}${m.reasoning ? " · reasoning, so slower" : ""}`;
+  return `✨ ${m.label} · ${cost}${m.reasoning ? " · reasoning, so slower" : ""}${m.paid ? " · Workers Paid" : ""}`;
 }
 
 function updateImproveNote() {
@@ -3149,6 +3149,7 @@ function initDescribe() {
         commitPromptHistory(); // the caption is one entry, so Undo puts back what you had
         setStatus("Prompt filled from the image.", "ok");
       }
+      setTimeout(refreshNeurons, 4000);
     } catch (e) {
       setStatus("Describe failed: " + e.message, "err");
     } finally {
@@ -3711,6 +3712,12 @@ function initPromptLibrary() {
       el.dispatchEvent(new Event("input", { bubbles: true }));
       commitPromptHistory(); // the rewrite is one entry, so Undo reverses it whole
       setStatus("Prompt improved — press Undo to revert.", "ok");
+      // A reasoning rewrite can cost hundreds of neurons, enough to move the
+      // daily meter on its own, so it counts like a generation does.
+      const im = improveModels.find((m) => m.id === $("improve-model").value);
+      if (im && im.neurons) sessionNeurons += im.neurons;
+      updateSpendBar();
+      setTimeout(refreshNeurons, 4000);
     } catch (e) {
       setStatus("Improve failed: " + e.message, "err");
     } finally {
@@ -3753,6 +3760,7 @@ let sessionNeurons = 0;
 let lastActualCostUsd = null;
 const CF_FREE_NEURONS = 10000; // Workers AI free allowance per day, resets 00:00 UTC
 const CF_USD_PER_NEURON = 0.011 / 1000; // $0.011 per 1,000 neurons beyond the allowance
+const CF_NEURON_WARN_AT = 0.8; // the spend bar turns amber at 8,000 of the 10,000
 
 // Neurons for one Workers AI run, from Cloudflare's published per-model rates.
 function estimateNeurons(model, input) {
@@ -3971,16 +3979,40 @@ function updateSpendBar() {
   const parts = [];
 
   // Real usage when analytics are available; the estimate only as a fallback.
+  // On Workers Paid, going past the free allowance is billed rather than
+  // refused, so the bar warns on the way up and then prices the overage.
+  let level = "";
   if (actualNeurons) {
-    const pct = Math.round((actualNeurons.used / actualNeurons.limit) * 100);
-    parts.push(
-      `Workers AI ${Math.round(actualNeurons.used).toLocaleString()} of ` +
-      `${actualNeurons.limit.toLocaleString()} neurons used today (${pct}%, ` +
-      `${Math.round(actualNeurons.remaining).toLocaleString()} left)`
-    );
+    const used = actualNeurons.used;
+    const limit = actualNeurons.limit;
+    const pct = Math.round((used / limit) * 100);
+    if (used >= limit) {
+      level = "over";
+      const over = used - limit;
+      parts.push(
+        `⚠ Workers AI past the free ${limit.toLocaleString()} neurons today: ` +
+        `${Math.round(used).toLocaleString()} used, ${Math.round(over).toLocaleString()} over ` +
+        `≈ ${fmtUsd(over * CF_USD_PER_NEURON)} billed so far`
+      );
+    } else {
+      if (used >= limit * CF_NEURON_WARN_AT) level = "warn";
+      parts.push(
+        `${level ? "⚠ " : ""}Workers AI ${Math.round(used).toLocaleString()} of ` +
+        `${limit.toLocaleString()} neurons used today (${pct}%, ` +
+        `${Math.round(actualNeurons.remaining).toLocaleString()} left` +
+        `${level ? `, then ${fmtUsd(1000 * CF_USD_PER_NEURON)} per 1,000` : ""})`
+      );
+    }
   } else if (sessionNeurons > 0) {
-    parts.push(`Workers AI ~${Math.round(sessionNeurons).toLocaleString()} neurons this session (est.)`);
+    // A lower bound on the day: it only knows about this tab.
+    if (sessionNeurons >= CF_FREE_NEURONS) level = "over";
+    else if (sessionNeurons >= CF_FREE_NEURONS * CF_NEURON_WARN_AT) level = "warn";
+    parts.push(
+      `${level ? "⚠ " : ""}Workers AI ~${Math.round(sessionNeurons).toLocaleString()} neurons this session (est.)` +
+      (level === "over" ? ` — past the free ${CF_FREE_NEURONS.toLocaleString()}, now billed` : "")
+    );
   }
+  el.dataset.level = level;
 
   // Pruna bills in dollars and has no usage API, so it stays an estimate.
   if (sessionSpend > 0) parts.push(`Pruna ~${fmtUsd(sessionSpend)} this session (est.)`);

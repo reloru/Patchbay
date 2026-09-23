@@ -3,18 +3,19 @@
 </p>
 
 Patchbay is a web front end for image and video generation and editing. It puts
-48 models from three providers behind one interface and runs entirely on
+47 models from three providers behind one interface and runs entirely on
 Cloudflare Workers — no server to maintain, no build step, no framework.
 
 | Provider | Models | Credentials |
 |----------|--------|-------------|
 | [Pruna AI](https://docs.api.pruna.ai/) | 32 | `PRUNA_API_KEY` |
-| [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 11 | none |
+| [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 10 | none |
 | [xAI (Grok)](https://docs.x.ai/) | 5 | `XAI_API_KEY` |
 
-A further 18 models run behind the three prompt tools rather than appearing in
-the picker: 14 Workers AI chat models rewrite prompts, 3 Workers AI vision
-models caption images, and Pruna's `p-judger` scores an image against a prompt.
+A further 29 models run behind the three prompt tools rather than appearing in
+the picker: 25 Workers AI chat models rewrite prompts, 8 Workers AI vision
+models caption images (5 of them are also among the 25), and Pruna's `p-judger`
+scores an image against a prompt.
 
 ## Features
 
@@ -32,7 +33,7 @@ so what you see is what the provider would do anyway.
 generate, edit, extend. Picking a mode changes which fields apply, and fields
 belonging to another mode are never sent.
 
-**Prompt rewriting.** Improve runs the prompt through one of 14 Workers AI chat
+**Prompt rewriting.** Improve runs the prompt through one of 25 Workers AI chat
 models as a copy edit: grammar, phrasing and punctuation only. It adds nothing,
 drops nothing, keeps your pronouns and your grammatical mood, and avoids commas,
 which image models read as tag separators rather than punctuation. The result
@@ -41,7 +42,7 @@ rewrite it afterwards. Reverting a rewrite is the prompt Undo button's job, so
 the button stays Improve rather than turning into a one-shot undo of its own.
 
 **Image description, and asking about one.** Describe reads whatever image is
-already attached, with one of 3 Workers AI vision models, and only opens a file
+already attached, with one of 8 Workers AI vision models, and only opens a file
 picker when there is none. It has two modes, and the note line always says which
 one is about to run.
 
@@ -81,6 +82,10 @@ needs, and the saved session keeps it.
 
 **Cost visibility.** List prices per model, live estimates that follow your
 settings, and Workers AI neuron consumption against the free daily allowance.
+The account is on Workers Paid, where use past the 10,000 free neurons is
+billed at $0.011 per 1,000 rather than refused, so the meter turns amber at
+8,000 and red at 10,000, and past that shows the overage and what it has cost
+today.
 
 **How long this normally takes.** A bare "Processing… 200s elapsed" is
 indistinguishable from a hang, which is exactly how a correct run of a
@@ -99,7 +104,7 @@ seconds after three real minutes, which is worse than no count at all, since it
 says the job has barely started.
 
 It runs from the moment you press Generate, on one clock, whatever the model
-does underneath. Fourteen of them never get a job id — Workers AI and
+does underneath. Thirteen of them never get a job id — Workers AI and
 xAI's image endpoints run the whole generation inside a single request and
 answer with the finished picture — so there is nothing to poll and nothing was
 driving the status line: it held "Submitting…" for the entire run and then
@@ -311,11 +316,28 @@ expires about 30 minutes after it finishes.
 
 `cf-flux-1-schnell`, `cf-flux-2-klein-4b`, `cf-flux-2-klein-9b`, `cf-flux-2-dev`,
 `cf-lucid-origin`, `cf-phoenix-1`, `cf-sdxl-base`, `cf-sdxl-lightning`,
-`cf-dreamshaper-8`, `cf-sd15-img2img`, `cf-sd15-inpainting`
+`cf-dreamshaper-8`, `cf-sd15-inpainting`
 
 These run on Cloudflare's GPUs through the `AI` binding and need no key of their
 own. The free allowance is 10,000 neurons per day; `/api/neurons` reports
 consumption against it.
+
+`cf-sd15-img2img` was removed on 2026-09-23: the account is refused it with
+`403 / 5018`, and Cloudflare no longer lists it.
+
+**Workers Paid models.** Cloudflare gates seven Workers AI models behind the
+paid plan, all of them chat models: DeepSeek V4 Flash and Pro, GLM 5.2, 5.3
+and 5.3 Flash, Kimi K2.6 and K2.7 Code. They sit behind Improve, and GLM 5.3
+Flash and Kimi K2.7 Code behind Describe too; their notes say *Workers Paid*.
+They draw on the same neuron allowance as everything else. Kimi K2.6 is
+deliberately not offered for Describe — on an image it ran past a
+4,000-token budget without finishing, at about 15% of the daily allowance.
+
+Several of the newer reasoning models need a request knob to return anything
+at all within budget — thinking switched off, or a low reasoning effort — and
+each is declared per model in `src/models.js` with the measurement that
+settled it. Their neuron figures are measured from a live run rather than
+computed from list rates, because the reasoning tokens bill as output.
 
 ### xAI / Grok (5)
 
@@ -389,7 +411,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 15 Worker tests, then 182 assertions per
+are needed and nothing is billed. 23 Worker tests, then 187 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a
