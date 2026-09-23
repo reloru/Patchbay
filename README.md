@@ -69,6 +69,25 @@ ride along with each request, and the Worker caps them (instruction 4,000
 characters, token limit 16–8,000). An orange ⚙ means the picked model has
 something set.
 
+**Translate.** Two language pickers and 🌐 Translate rewrite the prompt box
+into another language with Meta's m2m100 (English, Spanish, French, German,
+Portuguese, Russian, Arabic, Hindi, Chinese, Japanese — the languages
+Cloudflare lists for it). Undo brings the original back.
+
+**Speaking to the chat.** 🎤 beside Send records a message and transcribes it
+into the chat box — added, not sent, so it can be corrected first. Tap ■ to
+stop. Where a browser cannot record, it opens a picker for a recording
+instead. The model is chosen in the chat's ⚙: Whisper Large v3 Turbo (the
+default), Whisper, Whisper Tiny EN or Deepgram Nova-3, each sent the audio in
+the form its schema documents. All four transcribed both an iPhone-style
+AAC/MP4 clip and a WebM/Opus clip in testing. Deepgram Flux is not offered:
+Cloudflare serves it over a WebSocket only.
+
+**Other.** A collapsed section for the catalogue models that fit nowhere else:
+a safety check with Llama Guard 3 8B, sentiment with DistilBERT SST-2, image
+labels with ResNet-50 (on the attached image, or a picked one), and ranking
+passages against a query with the BGE reranker.
+
 **Embeddings.** A panel of its own, with its own text box: write something,
 change it, and watch the numbers move. About a second after you stop typing
 the text is measured by one of 6 Workers AI embedding models, which turns it
@@ -264,6 +283,9 @@ Browser (public/)  ──►  Cloudflare Worker (src/worker.js)  ──┬──
    /api/describe        captions an image via Workers AI
    /api/chat            the chat thread, via Workers AI
    /api/embed           embeds text for the Embeddings panel
+   /api/translate       translates the prompt via m2m100
+   /api/transcribe      speech to text for the chat's 🎤
+   /api/other           the Other section's tools
    /api/judge           scores an image against a prompt via Pruna p-judger
    /api/neurons         current-day Workers AI neuron spend
 ```
@@ -479,7 +501,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 30 Worker tests, then 231 assertions per
+are needed and nothing is billed. 33 Worker tests, then 240 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a

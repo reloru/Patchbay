@@ -12,6 +12,10 @@ let chatModels = [];
 let defaultChatModel = "";
 let embedModels = [];
 let defaultInstructions = { improve: "", chat: "" };
+let translateLanguages = [];
+let sttModels = [];
+let defaultSttModel = "";
+let otherTools = [];
 let defaultEmbedModel = "";
 let defaultDescribeModel = "";
 let judgeUsdPerImage = 0;
@@ -112,6 +116,10 @@ async function boot() {
   defaultChatModel = cfg.defaultChatModel || "";
   embedModels = cfg.embedModels || [];
   defaultInstructions = cfg.instructions || defaultInstructions;
+  translateLanguages = cfg.translateLanguages || [];
+  sttModels = cfg.sttModels || [];
+  defaultSttModel = cfg.defaultSttModel || "";
+  otherTools = cfg.otherTools || [];
   defaultEmbedModel = cfg.defaultEmbedModel || "";
   judgeUsdPerImage = Number(cfg.judgeUsdPerImage) || 0;
   judgeMaxImages = Number(cfg.judgeMaxImages) || 1;
@@ -3487,7 +3495,7 @@ function loadToolSettings() {
     const saved = JSON.parse(localStorage.getItem(TOOL_SETTINGS_KEY) || "null");
     if (saved && typeof saved === "object") {
       for (const t of ["improve", "chat"]) {
-        if (saved[t]) toolSettings[t] = { system: saved[t].system || "", models: saved[t].models || {} };
+        if (saved[t]) toolSettings[t] = { system: saved[t].system || "", stt: saved[t].stt || "", models: saved[t].models || {} };
       }
     }
   } catch {
@@ -3664,6 +3672,26 @@ function renderToolSettings() {
     box.appendChild(p);
   }
 
+  if (tool === "chat" && sttModels.length) {
+    const lab = document.createElement("label");
+    lab.textContent = "Speech-to-text model (🎤)";
+    const sel = document.createElement("select");
+    sel.className = "settings-stt";
+    for (const sm of sttModels) {
+      const o = document.createElement("option");
+      o.value = sm.id;
+      o.textContent = sm.label;
+      sel.appendChild(o);
+    }
+    sel.value = t.stt || defaultSttModel;
+    sel.addEventListener("change", () => {
+      t.stt = sel.value === defaultSttModel ? "" : sel.value;
+      saveToolSettings();
+    });
+    lab.appendChild(sel);
+    box.appendChild(lab);
+  }
+
   const actions = document.createElement("div");
   actions.className = "row";
   const resetModel = document.createElement("button");
@@ -3703,6 +3731,237 @@ function initToolSettings() {
     });
   }
   refreshGears();
+}
+
+// ---------------------------------------------------------------------------
+// Translate, the chat's 🎤, and the Other section
+// ---------------------------------------------------------------------------
+const TRANSLATE_KEY = "patchbay_translate";
+
+function initTranslate() {
+  const from = $("translate-from");
+  const to = $("translate-to");
+  if (!from || !translateLanguages.length) return;
+  for (const sel of [from, to]) {
+    for (const l of translateLanguages) {
+      const o = document.createElement("option");
+      o.value = l.code;
+      o.textContent = l.label;
+      sel.appendChild(o);
+    }
+  }
+  let saved = {};
+  try {
+    saved = JSON.parse(localStorage.getItem(TRANSLATE_KEY) || "{}") || {};
+  } catch {
+    /* defaults */
+  }
+  from.value = saved.from || "en";
+  to.value = saved.to || "es";
+  const remember = () => {
+    try {
+      localStorage.setItem(TRANSLATE_KEY, JSON.stringify({ from: from.value, to: to.value }));
+    } catch {
+      /* this visit only */
+    }
+  };
+  from.addEventListener("change", remember);
+  to.addEventListener("change", remember);
+
+  const btn = $("prompt-translate");
+  btn.addEventListener("click", async () => {
+    const el = primaryPromptEl();
+    const text = el ? el.value.trim() : "";
+    if (!text) return void setStatus("Nothing to translate — write a prompt first.", "err");
+    if (from.value === to.value) return void setStatus("Pick two different languages.", "err");
+    btn.disabled = true;
+    setStatus("Translating…", "load");
+    try {
+      const res = await api("/api/translate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text, source_lang: from.value, target_lang: to.value }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.text) throw new Error(data.error || `HTTP ${res.status}`);
+      el.value = data.text;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      commitPromptHistory(); // Undo puts the original back
+      setStatus("Translated — press Undo to get the original back.", "ok");
+      setTimeout(refreshNeurons, 4000);
+    } catch (e) {
+      setStatus("Translate failed: " + e.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+// Records with MediaRecorder where the browser has it, and falls back to a
+// file picker where it does not. The transcript is added to the chat box, not
+// sent, so it can be corrected first.
+let micRecorder = null;
+
+async function transcribeBlob(blob) {
+  const btn = $("chat-mic");
+  btn.disabled = true;
+  setStatus("Transcribing…", "load");
+  try {
+    const file = new File([blob], "speech", { type: blob.type || "audio/mp4" });
+    const res = await api("/api/transcribe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: toolSettings.chat.stt || defaultSttModel,
+        audio_b64: await fileToBase64(file),
+        mime: file.type,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.text) throw new Error(data.error || `HTTP ${res.status}`);
+    const input = $("chat-input");
+    input.value = input.value.trim() ? `${input.value.trim()} ${data.text}` : data.text;
+    setStatus("Transcribed into the chat box — edit it, then Send.", "ok");
+    setTimeout(refreshNeurons, 4000);
+  } catch (e) {
+    setStatus("Transcription failed: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function initMic() {
+  const btn = $("chat-mic");
+  const file = $("chat-audio-file");
+  if (!btn) return;
+  file.addEventListener("change", () => {
+    const f = file.files && file.files[0];
+    file.value = "";
+    if (f) transcribeBlob(f);
+  });
+  btn.addEventListener("click", async () => {
+    if (micRecorder) {
+      micRecorder.stop();
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined") {
+      file.click();
+      return;
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setStatus("No microphone access — pick a recording instead.", "err");
+      file.click();
+      return;
+    }
+    const chunks = [];
+    micRecorder = new MediaRecorder(stream);
+    micRecorder.addEventListener("dataavailable", (e) => e.data && e.data.size && chunks.push(e.data));
+    micRecorder.addEventListener("stop", () => {
+      stream.getTracks().forEach((t) => t.stop());
+      const type = micRecorder.mimeType || (chunks[0] && chunks[0].type) || "audio/mp4";
+      micRecorder = null;
+      btn.classList.remove("recording");
+      btn.textContent = "🎤";
+      if (chunks.length) transcribeBlob(new Blob(chunks, { type }));
+    });
+    micRecorder.start();
+    btn.classList.add("recording");
+    btn.textContent = "■";
+    setStatus("Recording — tap ■ to stop.", "load");
+  });
+}
+
+function currentOtherTool() {
+  return otherTools.find((t) => t.id === $("other-tool").value) || otherTools[0];
+}
+
+function refreshOtherForm() {
+  const t = currentOtherTool();
+  if (!t) return;
+  const text = $("other-text");
+  text.classList.toggle("hidden", t.input === "image");
+  text.placeholder = t.input === "rerank" ? "What to rank the passages against" : "Text to check";
+  $("other-passages").classList.toggle("hidden", t.input !== "rerank");
+  $("other-use-prompt").classList.toggle("hidden", t.input === "image");
+  const note = $("other-image-note");
+  note.classList.toggle("hidden", t.input !== "image");
+  if (t.input === "image") {
+    note.textContent = attachedImageFile() ? "Labels the attached image." : "No image attached — Run opens a picker.";
+  }
+  $("other-result").textContent = "";
+}
+
+function showOtherResult(t, result) {
+  const box = $("other-result");
+  const pct = (x) => `${(x * 100).toFixed(1)}%`;
+  if (t.id === "guard") {
+    box.textContent = typeof result === "string" ? result.trim() : JSON.stringify(result, null, 2);
+  } else if (t.id === "rerank") {
+    const passages = $("other-passages").value.split("\n").map((x) => x.trim()).filter(Boolean);
+    box.textContent = result.map((r, i) => `${i + 1}. ${pct(r.score)} — ${passages[r.id] ?? `#${r.id}`}`).join("\n");
+  } else if (Array.isArray(result)) {
+    box.textContent = [...result].sort((a, b) => b.score - a.score).map((r) => `${r.label} — ${pct(r.score)}`).join("\n");
+  } else {
+    box.textContent = JSON.stringify(result, null, 2);
+  }
+}
+
+async function runOther(imageFile) {
+  const t = currentOtherTool();
+  const body = { tool: t.id };
+  if (t.input === "image") {
+    const f = imageFile || attachedImageFile();
+    if (!f) return void $("other-file").click();
+    body.image_b64 = await fileToBase64(f);
+  } else {
+    body.text = $("other-text").value;
+    if (t.input === "rerank") body.passages = $("other-passages").value.split("\n");
+  }
+  const btn = $("other-run");
+  btn.disabled = true;
+  $("other-result").textContent = "…";
+  try {
+    const res = await api("/api/other", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    showOtherResult(t, data.result);
+    setTimeout(refreshNeurons, 4000);
+  } catch (e) {
+    $("other-result").textContent = "Failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function initOther() {
+  const sel = $("other-tool");
+  if (!sel || !otherTools.length) return;
+  for (const t of otherTools) {
+    const o = document.createElement("option");
+    o.value = t.id;
+    o.textContent = t.label;
+    sel.appendChild(o);
+  }
+  sel.addEventListener("change", refreshOtherForm);
+  $("other").addEventListener("toggle", refreshOtherForm);
+  $("other-use-prompt").addEventListener("click", () => {
+    const el = primaryPromptEl();
+    if (el) $("other-text").value = el.value;
+  });
+  $("other-run").addEventListener("click", () => runOther());
+  $("other-file").addEventListener("change", () => {
+    const f = $("other-file").files && $("other-file").files[0];
+    $("other-file").value = "";
+    if (f) runOther(f);
+  });
+  refreshOtherForm();
 }
 
 // ---------------------------------------------------------------------------
@@ -4355,6 +4614,9 @@ function initPromptLibrary() {
   initChat();
   initEmbed();
   initToolSettings();
+  initTranslate();
+  initMic();
+  initOther();
   initJudge();
   initPromptHistory();
 

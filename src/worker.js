@@ -22,6 +22,12 @@ import {
   EMBED_MODELS,
   EMBED_MODEL_IDS,
   DEFAULT_EMBED_MODEL,
+  TRANSLATE_MODEL,
+  TRANSLATE_LANGUAGES,
+  STT_MODELS,
+  STT_MODEL_IDS,
+  DEFAULT_STT_MODEL,
+  OTHER_TOOLS,
   DEFAULT_DESCRIBE_MODEL,
   JUDGE_MODEL,
   JUDGE_USD_PER_IMAGE,
@@ -133,6 +139,10 @@ export default {
           instructions: { improve: IMPROVE_SYSTEM, chat: CHAT_SYSTEM },
           embedModels: EMBED_MODELS,
           defaultEmbedModel: DEFAULT_EMBED_MODEL,
+          translateLanguages: TRANSLATE_LANGUAGES,
+          sttModels: STT_MODELS,
+          defaultSttModel: DEFAULT_STT_MODEL,
+          otherTools: OTHER_TOOLS,
           defaultDescribeModel: DEFAULT_DESCRIBE_MODEL,
           judgeUsdPerImage: JUDGE_USD_PER_IMAGE,
           judgeMaxImages: JUDGE_MAX_IMAGES,
@@ -167,6 +177,15 @@ export default {
       }
       if (path === "/api/improve-prompt" && request.method === "POST") {
         return await handleImprovePrompt(request, env);
+      }
+      if (path === "/api/translate" && request.method === "POST") {
+        return await handleTranslate(request, env);
+      }
+      if (path === "/api/transcribe" && request.method === "POST") {
+        return await handleTranscribe(request, env);
+      }
+      if (path === "/api/other" && request.method === "POST") {
+        return await handleOther(request, env);
       }
       if (path === "/api/embed" && request.method === "POST") {
         return await handleEmbed(request, env);
@@ -715,6 +734,93 @@ async function handleChat(request, env) {
   if (!text) return json({ error: "The model returned nothing usable. Try again or pick another model." }, 502);
   const neurons = out && out.usage && typeof out.usage.neurons === "number" ? out.usage.neurons : null;
   return json({ reply: text, neurons, sawImage: Boolean(b64 && spec.vision) });
+}
+
+const aiError = (label, err) => json({ error: `${label}: ` + (err && err.message ? err.message : String(err)) }, 502);
+
+async function handleTranslate(request, env) {
+  if (!env.AI) return json({ error: "Workers AI binding is not configured." }, 500);
+  const body = await request.json().catch(() => null);
+  const text = body && typeof body.text === "string" ? body.text.trim() : "";
+  const codes = new Set(TRANSLATE_LANGUAGES.map((l) => l.code));
+  if (!text) return json({ error: "Nothing to translate." }, 400);
+  if (text.length > 4000) return json({ error: "Text is too long to translate." }, 400);
+  if (!codes.has(body.target_lang)) return json({ error: "Pick a language to translate into." }, 400);
+  const source = codes.has(body.source_lang) ? body.source_lang : "en";
+  let out;
+  try {
+    out = await env.AI.run(TRANSLATE_MODEL, { text, source_lang: source, target_lang: body.target_lang });
+  } catch (err) {
+    return aiError("Translate failed", err);
+  }
+  const translated = out && typeof out.translated_text === "string" ? out.translated_text.trim() : "";
+  if (!translated) return json({ error: "The model returned no translation." }, 502);
+  return json({ text: translated });
+}
+
+// Audio arrives as base64 from the browser; each model then gets it in the
+// form its schema documents.
+const STT_MAX_BYTES = 20 * 1024 * 1024;
+
+async function handleTranscribe(request, env) {
+  if (!env.AI) return json({ error: "Workers AI binding is not configured." }, 500);
+  const body = await request.json().catch(() => null);
+  const b64 = body && typeof body.audio_b64 === "string" ? body.audio_b64 : "";
+  if (!b64) return json({ error: "No audio received." }, 400);
+  if (b64.length * 0.75 > STT_MAX_BYTES) return json({ error: "Recording is too long." }, 400);
+  const model = STT_MODEL_IDS.has(body.model) ? body.model : DEFAULT_STT_MODEL;
+  const spec = STT_MODELS.find((m) => m.id === model);
+  const mime = typeof body.mime === "string" && body.mime ? body.mime : "audio/mp4";
+
+  let input;
+  if (spec.audio === "base64") input = { audio: b64 };
+  else if (spec.audio === "bytes") input = { audio: base64ToBytes(b64) };
+  else input = { audio: { body: new Response(new Uint8Array(base64ToBytes(b64))).body, contentType: mime } };
+
+  let out;
+  try {
+    out = await env.AI.run(model, input);
+  } catch (err) {
+    return aiError("Transcription failed", err);
+  }
+  const alt = out && out.results && out.results.channels && out.results.channels[0] && out.results.channels[0].alternatives;
+  const text = ((out && typeof out.text === "string" ? out.text : alt && alt[0] && alt[0].transcript) || "").trim();
+  if (!text) return json({ error: "No speech was recognised." }, 502);
+  return json({ text });
+}
+
+async function handleOther(request, env) {
+  if (!env.AI) return json({ error: "Workers AI binding is not configured." }, 500);
+  const body = await request.json().catch(() => null);
+  const tool = OTHER_TOOLS.find((t) => t.id === (body && body.tool));
+  if (!tool) return json({ error: "Unknown tool." }, 400);
+  const text = typeof body.text === "string" ? body.text.trim().slice(0, 8000) : "";
+
+  let input;
+  if (tool.id === "guard") {
+    if (!text) return json({ error: "Nothing to check." }, 400);
+    input = { messages: [{ role: "user", content: text }] };
+  } else if (tool.id === "sentiment") {
+    if (!text) return json({ error: "Nothing to classify." }, 400);
+    input = { text };
+  } else if (tool.id === "labels") {
+    if (typeof body.image_b64 !== "string" || !body.image_b64) return json({ error: "No image received." }, 400);
+    input = { image: base64ToBytes(body.image_b64) };
+  } else {
+    const passages = Array.isArray(body.passages) ? body.passages.filter((p) => typeof p === "string" && p.trim()).slice(0, 50) : [];
+    if (!text || !passages.length) return json({ error: "A query and at least one passage are needed." }, 400);
+    input = { query: text, contexts: passages.map((p) => ({ text: p.trim() })) };
+  }
+
+  let out;
+  try {
+    out = await env.AI.run(tool.model, input);
+  } catch (err) {
+    return aiError(tool.label, err);
+  }
+  if (tool.id === "guard") return json({ result: out && out.response !== undefined ? out.response : out });
+  if (tool.id === "rerank") return json({ result: (out && out.response) || [] });
+  return json({ result: Array.isArray(out) ? out.slice(0, 5) : out });
 }
 
 // One text in, its embedding out: the list of numbers the Embeddings panel
