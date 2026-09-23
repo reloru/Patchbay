@@ -1393,7 +1393,11 @@ const WORKERS_AI_MODELS = [
     id: "cf-sd15-inpainting",
     cfModel: "@cf/runwayml/stable-diffusion-v1-5-inpainting",
     label: "SD 1.5 Inpainting",
-    group: "Image editing",
+    // Filed with the other Workers AI image models: with img2img gone it was
+    // the only Workers AI entry under Image editing. `edits` keeps the reuse
+    // button calling its image the thing being edited, as that group would.
+    group: "Image generation",
+    edits: true,
     kind: "image",
     blurb: "Repaint only the masked area. White in the mask = repaint.",
     fields: [

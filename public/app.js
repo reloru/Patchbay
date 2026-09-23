@@ -2943,7 +2943,7 @@ function reuseLabel(f, kind = "image") {
   if (kind === "video") {
     return currentModel.group === "Video" && f.required ? "🎬 Edit this clip" : "🎬 Use as source";
   }
-  return currentModel.group === "Image editing" && f.required ? "✏️ Edit this" : "🖼 Use as reference";
+  return (currentModel.group === "Image editing" || currentModel.edits) && f.required ? "✏️ Edit this" : "🖼 Use as reference";
 }
 
 // Every reuse button on screen, so their labels can follow the current target.
