@@ -2142,6 +2142,44 @@ export const EMBED_MODELS = [
 ];
 export const EMBED_MODEL_IDS = new Set(EMBED_MODELS.map((m) => m.id));
 export const DEFAULT_EMBED_MODEL = "@cf/baai/bge-m3";
+
+// Translate: m2m100 only. Its language list is the `languages` Cloudflare's
+// model list gives for it; codes are the ISO 639-1 ones its schema's examples
+// use ('en', 'es').
+export const TRANSLATE_MODEL = "@cf/meta/m2m100-1.2b";
+export const TRANSLATE_LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "pt", label: "Portuguese" },
+  { code: "ru", label: "Russian" },
+  { code: "ar", label: "Arabic" },
+  { code: "hi", label: "Hindi" },
+  { code: "zh", label: "Chinese" },
+  { code: "ja", label: "Japanese" },
+];
+
+// Speech to text, for the chat's 🎤. Each takes the audio differently, per its
+// schema: Whisper and Whisper Tiny a list of byte values, Whisper Large v3
+// Turbo base64, Nova-3 a stream with its content type. Deepgram Flux is left
+// out: Cloudflare serves it over a WebSocket only.
+export const STT_MODELS = [
+  { id: "@cf/openai/whisper-large-v3-turbo", label: "Whisper Large v3 Turbo", audio: "base64" },
+  { id: "@cf/openai/whisper", label: "Whisper", audio: "bytes" },
+  { id: "@cf/openai/whisper-tiny-en", label: "Whisper Tiny EN", audio: "bytes" },
+  { id: "@cf/deepgram/nova-3", label: "Deepgram Nova-3", audio: "stream" },
+];
+export const STT_MODEL_IDS = new Set(STT_MODELS.map((m) => m.id));
+export const DEFAULT_STT_MODEL = "@cf/openai/whisper-large-v3-turbo";
+
+// The "Other" section: catalogue models that fit no other panel.
+export const OTHER_TOOLS = [
+  { id: "guard", model: "@cf/meta/llama-guard-3-8b", label: "Safety check · Llama Guard 3 8B", input: "text" },
+  { id: "sentiment", model: "@cf/huggingface/distilbert-sst-2-int8", label: "Sentiment · DistilBERT SST-2 INT8", input: "text" },
+  { id: "labels", model: "@cf/microsoft/resnet-50", label: "Image labels · ResNet-50", input: "image" },
+  { id: "rerank", model: "@cf/baai/bge-reranker-base", label: "Rerank · BGE Reranker Base", input: "rerank" },
+];
 export const DEFAULT_IMPROVE_MODEL = "@cf/meta/llama-3.2-3b-instruct";
 
 // Allow-list of valid model ids (used by the Worker to reject arbitrary models).

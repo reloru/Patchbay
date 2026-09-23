@@ -70,6 +70,13 @@
                 <button id="prompt-describe" type="button" class="secondary" title="Caption an image into the prompt box">🔍 Describe</button>
               </span>
               <input id="describe-file" type="file" accept="image/*" hidden />
+              <!-- Translate rewrites the prompt box into another language; Undo
+                   brings the original back. -->
+              <span class="tool translate-tool">
+                <select id="translate-from" aria-label="Translate from"></select>
+                <select id="translate-to" aria-label="Translate to"></select>
+                <button id="prompt-translate" type="button" class="secondary" title="Translate the prompt">🌐 Translate</button>
+              </span>
               <!-- Judge takes no model picker: p-judger is the only scorer, so
                    there is nothing to choose between. -->
               <button id="prompt-judge" type="button" class="secondary" title="Score how well an image matches the prompt">⚖️ Judge</button>
@@ -109,7 +116,11 @@
               <div id="chat-thread" class="chat-thread"></div>
               <div class="chat-compose">
                 <textarea id="chat-input" rows="3" placeholder="Ask about the prompt or the image…" aria-label="Chat message"></textarea>
-                <button id="chat-send" type="button">Send</button>
+                <div class="chat-buttons">
+                  <button id="chat-mic" type="button" class="secondary" title="Speak a message" aria-label="Speak a message">🎤</button>
+                  <button id="chat-send" type="button">Send</button>
+                </div>
+                <input id="chat-audio-file" type="file" accept="audio/*" hidden />
               </div>
               <p id="chat-note" class="chat-note"></p>
             </section>
@@ -129,6 +140,20 @@
               </div>
               <p id="embed-note" class="chat-note"></p>
               <div id="embed-list" class="embed-list"></div>
+            </details>
+            <!-- Catalogue models that fit no other panel. -->
+            <details id="other" class="embed other">
+              <summary>Other</summary>
+              <div class="embed-head"><select id="other-tool" aria-label="Tool"></select></div>
+              <textarea id="other-text" rows="3" aria-label="Text"></textarea>
+              <textarea id="other-passages" rows="4" class="hidden" placeholder="Passages to rank, one per line" aria-label="Passages"></textarea>
+              <p id="other-image-note" class="chat-note hidden"></p>
+              <div class="embed-controls">
+                <button id="other-use-prompt" type="button" class="secondary">Use prompt box</button>
+                <button id="other-run" type="button">Run</button>
+              </div>
+              <input id="other-file" type="file" accept="image/*" hidden />
+              <div id="other-result" class="other-result"></div>
             </details>
             <!-- p-judger's score lands here rather than in the output panel, so
                  scoring a generation does not clear the generation. -->

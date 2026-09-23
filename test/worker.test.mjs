@@ -396,6 +396,54 @@ test("embeddings refuse empty text", async () => {
   assert.equal(status, 400);
 });
 
+const runWith = async (path, body, output) => {
+  let seen = null;
+  const aiEnv = { ...env, AI: { run: async (m, i) => ((seen = { model: m, input: i }), output) } };
+  const res = await call(path, {
+    password: PASSWORD,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }, aiEnv);
+  return { seen, status: res.status, body: await res.json() };
+};
+
+test("translate sends m2m100 its documented fields, and refuses unknown languages", async () => {
+  const ok = await runWith("/api/translate", { text: "a fox", source_lang: "en", target_lang: "fr" }, { translated_text: "un renard" });
+  assert.equal(ok.seen.model, "@cf/meta/m2m100-1.2b");
+  assert.deepEqual(ok.seen.input, { text: "a fox", source_lang: "en", target_lang: "fr" });
+  assert.deepEqual(ok.body, { text: "un renard" });
+  const bad = await runWith("/api/translate", { text: "a fox", target_lang: "xx" }, {});
+  assert.equal(bad.status, 400);
+});
+
+test("each speech model gets the audio in its own documented form", async () => {
+  const b64 = Buffer.from([1, 2, 3]).toString("base64");
+  const turbo = await runWith("/api/transcribe", { model: "@cf/openai/whisper-large-v3-turbo", audio_b64: b64 }, { text: "hi" });
+  assert.equal(turbo.seen.input.audio, b64);
+  const whisper = await runWith("/api/transcribe", { model: "@cf/openai/whisper", audio_b64: b64 }, { text: "hi" });
+  assert.deepEqual(whisper.seen.input.audio, [1, 2, 3]);
+  const nova = await runWith(
+    "/api/transcribe",
+    { model: "@cf/deepgram/nova-3", audio_b64: b64, mime: "audio/webm" },
+    { results: { channels: [{ alternatives: [{ transcript: "hello there" }] }] } }
+  );
+  assert.equal(nova.seen.input.audio.contentType, "audio/webm");
+  assert.ok(nova.seen.input.audio.body instanceof ReadableStream);
+  assert.deepEqual(nova.body, { text: "hello there" });
+});
+
+test("the Other tools send their documented inputs", async () => {
+  const guard = await runWith("/api/other", { tool: "guard", text: "a cat" }, { response: "safe" });
+  assert.deepEqual(guard.seen.input, { messages: [{ role: "user", content: "a cat" }] });
+  const rr = await runWith("/api/other", { tool: "rerank", text: "fox", passages: ["a", " ", "b"] }, { response: [{ id: 0, score: 1 }] });
+  assert.deepEqual(rr.seen.input, { query: "fox", contexts: [{ text: "a" }, { text: "b" }] });
+  const img = await runWith("/api/other", { tool: "labels", image_b64: Buffer.from([9]).toString("base64") }, [{ label: "X", score: 1 }]);
+  assert.deepEqual(img.seen.input, { image: [9] });
+  const unknown = await runWith("/api/other", { tool: "nope" }, {});
+  assert.equal(unknown.status, 400);
+});
+
 test("/api/generate rejects a model outside the catalogue", async () => {
   const res = await call("/api/generate", {
     password: PASSWORD,

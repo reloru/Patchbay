@@ -1630,6 +1630,54 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
+// ── Translate, 🎤 and Other ─────────────────────────────────────────────────
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(200);
+  await page.fill(promptSel, "a lighthouse at dusk");
+  await page.waitForTimeout(700);
+  await page.selectOption("#translate-to", "fr");
+  await page.locator("#prompt-translate").click();
+  await page.waitForSelector("#status.ok");
+  check("Translate replaces the prompt box", (await page.inputValue(promptSel)) === "[fr] a lighthouse at dusk", await page.inputValue(promptSel));
+  await page.locator("#prompt-undo").click();
+  check("and Undo brings the original back", (await page.inputValue(promptSel)) === "a lighthouse at dusk");
+
+  // No microphone in a headless browser, so the file path stands in for it.
+  await page.setInputFiles("#chat-audio-file", { name: "speech.m4a", mimeType: "audio/mp4", buffer: Buffer.from("fake audio") });
+  await page.waitForFunction(() => document.querySelector("#chat-input").value.length > 0);
+  check("a recording is transcribed into the chat box, not sent", (await page.inputValue("#chat-input")) === "STUB TRANSCRIPT" && (await page.locator(".chat-msg").count()) === 0);
+  let sent = await (await page.request.get(BASE + "__tool")).json();
+  check("with the default speech model", sent.body.model === "@cf/openai/whisper-large-v3-turbo" && sent.body.mime === "audio/mp4", JSON.stringify(sent.body).slice(0, 120));
+
+  await page.locator("#chat-settings").click();
+  await page.selectOption(".settings-stt", "@cf/deepgram/nova-3");
+  await page.setInputFiles("#chat-audio-file", { name: "b.webm", mimeType: "audio/webm", buffer: Buffer.from("x") });
+  await page.waitForFunction(() => document.querySelector("#chat-input").value.includes("STUB TRANSCRIPT STUB TRANSCRIPT"));
+  sent = await (await page.request.get(BASE + "__tool")).json();
+  check("the speech model follows the chat's ⚙ setting, and text is appended", sent.body.model === "@cf/deepgram/nova-3");
+
+  await page.locator("#other > summary").click();
+  await page.selectOption("#other-tool", "sentiment");
+  await page.locator("#other-use-prompt").click();
+  check("Use prompt box copies the prompt in", (await page.inputValue("#other-text")) === "a lighthouse at dusk");
+  await page.locator("#other-run").click();
+  await page.waitForFunction(() => document.querySelector("#other-result").textContent.includes("POSITIVE"));
+  check("sentiment shows labels, best first", (await page.locator("#other-result").textContent()).startsWith("POSITIVE — 99.0%"));
+
+  await page.selectOption("#other-tool", "rerank");
+  check("rerank asks for passages", await page.locator("#other-passages").isVisible());
+  await page.fill("#other-text", "a fox");
+  await page.fill("#other-passages", "tax deadlines\na red fox");
+  await page.locator("#other-run").click();
+  await page.waitForFunction(() => document.querySelector("#other-result").textContent.includes("a red fox"));
+  check("rerank lists the passages in ranked order", (await page.locator("#other-result").textContent()).startsWith("1. 90.0% — a red fox"));
+  await page.close();
+  await context.close();
+}
+
 // ── Embeddings ─────────────────────────────────────────────────────────────
 // Measured a moment after typing stops, compared against the baseline and the
 // previous version, paused on request, kept per model across a reload.

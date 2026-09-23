@@ -23,6 +23,10 @@ import {
   DEFAULT_CHAT_MODEL,
   EMBED_MODELS,
   DEFAULT_EMBED_MODEL,
+  TRANSLATE_LANGUAGES,
+  STT_MODELS,
+  DEFAULT_STT_MODEL,
+  OTHER_TOOLS,
   JUDGE_USD_PER_IMAGE,
   JUDGE_MAX_IMAGES,
 } from "../src/models.js";
@@ -57,6 +61,7 @@ let neuronsUsed = null;
 let lastChat = null;
 let embedCalls = 0;
 let lastImprove = null;
+let lastTool = null;
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
   "base64"
@@ -82,6 +87,10 @@ const server = createServer(async (req, res) => {
       defaultDescribeModel: DEFAULT_DESCRIBE_MODEL,
       chatModels: CHAT_MODELS,
       embedModels: EMBED_MODELS,
+      translateLanguages: TRANSLATE_LANGUAGES,
+      sttModels: STT_MODELS,
+      defaultSttModel: DEFAULT_STT_MODEL,
+      otherTools: OTHER_TOOLS,
       instructions: { improve: "DEFAULT IMPROVE INSTRUCTION", chat: "DEFAULT CHAT INSTRUCTION" },
       defaultEmbedModel: DEFAULT_EMBED_MODEL,
       defaultChatModel: DEFAULT_CHAT_MODEL,
@@ -163,6 +172,18 @@ const server = createServer(async (req, res) => {
     return json(res, { reply: `STUB REPLY ${n}`, neurons: 12.3 });
   }
   if (path === "/__chat") return json(res, lastChat || {});
+  if (path === "/api/translate" || path === "/api/transcribe" || path === "/api/other") {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    lastTool = { path, body: JSON.parse(Buffer.concat(chunks).toString() || "{}") };
+    if (path === "/api/translate") return json(res, { text: `[${lastTool.body.target_lang}] ${lastTool.body.text}` });
+    if (path === "/api/transcribe") return json(res, { text: "STUB TRANSCRIPT" });
+    const tool = lastTool.body.tool;
+    if (tool === "rerank") return json(res, { result: [{ id: 1, score: 0.9 }, { id: 0, score: 0.1 }] });
+    if (tool === "guard") return json(res, { result: "\n\nsafe" });
+    return json(res, { result: [{ label: "POSITIVE", score: 0.99 }, { label: "NEGATIVE", score: 0.01 }] });
+  }
+  if (path === "/__tool") return json(res, lastTool || {});
   if (path === "/api/embed") {
     const chunks = [];
     for await (const c of req) chunks.push(c);
