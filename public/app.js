@@ -8,6 +8,8 @@ let improveModels = [];
 let defaultModel = "";
 let defaultImproveModel = "";
 let describeModels = [];
+let chatModels = [];
+let defaultChatModel = "";
 let defaultDescribeModel = "";
 let judgeUsdPerImage = 0;
 let judgeMaxImages = 1;
@@ -103,6 +105,8 @@ async function boot() {
   defaultImproveModel = cfg.defaultImproveModel || "";
   describeModels = cfg.describeModels || [];
   defaultDescribeModel = cfg.defaultDescribeModel || "";
+  chatModels = cfg.chatModels || [];
+  defaultChatModel = cfg.defaultChatModel || "";
   judgeUsdPerImage = Number(cfg.judgeUsdPerImage) || 0;
   judgeMaxImages = Number(cfg.judgeMaxImages) || 1;
   authRequired = Boolean(cfg.authRequired);
@@ -1120,10 +1124,10 @@ function applyVisibility() {
 }
 
 function refreshOptionState() {
-  // Attaching or removing an image changes what Describe and Judge would read,
+  // Attaching or removing an image changes what Judge and the chat would read,
   // and where a generated image would land if it were reused.
-  updateDescribeNote();
   updateJudgeNote();
+  updateChatNote();
   refreshReuseLabels();
   let changed = 0;
   for (const r of optionRows) {
@@ -1380,7 +1384,6 @@ $("reset-btn").addEventListener("click", () => {
   clearUploads();
   renderFields();
   clearJudgeResult();
-  clearDescribeAnswer();
   setStatus("", "hide");
   // Reset puts every field back to its default, the prompt included. That is a
   // change to the prompt like any other, so it becomes an undo entry — Undo
@@ -2136,11 +2139,6 @@ function initSessionPersistence() {
   const form = $("gen-form");
   form.addEventListener("input", scheduleSessionSave);
   form.addEventListener("change", scheduleSessionSave);
-  // The Describe note says whether the prompt will ride along with a question,
-  // so it has to follow the prompt box as well as the attachments.
-  form.addEventListener("input", (e) => {
-    if (e.target === primaryPromptEl()) updateDescribeNote();
-  });
   // The model picker sits outside the form, so it needs its own listener.
   $("model-select").addEventListener("change", scheduleSessionSave);
   // iOS gives no reliable notice before it kills a backgrounded PWA: unload
@@ -3111,7 +3109,9 @@ function primaryPromptEl() {
     form.querySelector('[data-field="prompt"]') ||
     form.querySelector('[data-field="voice_script"]') ||
     form.querySelector('[data-field="instruction_prompt"]') ||
-    form.querySelector("textarea")
+    // Field textareas only: the chat input and the voice panel's text box
+    // live in this form too, and neither is a prompt.
+    form.querySelector("textarea[data-field]")
   );
 }
 
@@ -3161,10 +3161,8 @@ function fillGroupedSelect(sel, list, optionLabel) {
 
 function improveNoteFor(m) {
   if (!m) return "";
-  const cost = `~${m.neurons} neurons per rewrite`;
-  // Reasoning models spend tokens thinking before they answer, which shows up
-  // as latency rather than as a different result, so it is worth flagging.
-  return `✨ ${m.label} · ${cost}${m.reasoning ? " · reasoning, so slower" : ""}${m.paid ? " · Workers Paid" : ""}`;
+  // The cost is the one thing here the picker does not already say.
+  return `✨ ~${m.neurons} neurons per rewrite`;
 }
 
 function updateImproveNote() {
@@ -3205,67 +3203,14 @@ function attachedImageFile() {
   return null;
 }
 
-const DESCRIBE_QUESTION_KEY = "patchbay_describe_question";
-
-// What is typed in the question box, or "" for a plain caption. The Worker
-// supplies its own captioning instruction when nothing is sent.
-function describeQuestion() {
-  const el = $("describe-question");
-  return el ? el.value.trim() : "";
-}
-
-function updateDescribeNote() {
-  const noteEl = $("describe-note");
-  if (!noteEl) return; // called from refreshOptionState before the toolbar exists
-  const m = describeModels.find((x) => x.id === $("describe-model").value);
-  if (!m) return void (noteEl.textContent = "");
-  const attached = attachedImageFile();
-  const q = describeQuestion();
-  const el = primaryPromptEl();
-  const withPrompt = Boolean(q) && Boolean(el && el.value.trim());
-  noteEl.textContent =
-    (attached ? `🔍 Reads ${attached.name || "the attached image"}` : "🔍 Attach an image below") +
-    (withPrompt ? " and your prompt" : "") +
-    (q ? ` · asks: “${q}” · answers below, leaving the prompt alone` : "");
-}
-
 function initDescribe() {
   const sel = $("describe-model");
   // Bare names here too; the per-model caveat lives in the note below.
   fillGroupedSelect(sel, describeModels);
   sel.value = defaultDescribeModel;
-  sel.addEventListener("change", updateDescribeNote);
 
   const btn = $("prompt-describe");
   const file = $("describe-file");
-
-  // The Worker has always accepted a question and applied it; nothing ever sent
-  // one, so the models could only ever caption. Left empty this changes nothing.
-  const question = $("describe-question");
-  if (question) {
-    try {
-      question.value = localStorage.getItem(DESCRIBE_QUESTION_KEY) || "";
-    } catch {
-      /* storage unavailable — the box just starts empty */
-    }
-    question.addEventListener("input", () => {
-      try {
-        localStorage.setItem(DESCRIBE_QUESTION_KEY, question.value);
-      } catch {
-        /* not worth failing a keystroke over */
-      }
-      updateDescribeNote();
-    });
-    // This box belongs to Describe, but it sits inside the generate form, so
-    // the browser's implicit submission made Enter start a generation — a paid
-    // one, from the return key, while typing a question. Enter now runs the
-    // thing the box is actually for.
-    question.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter") return;
-      e.preventDefault();
-      btn.click();
-    });
-  }
 
   // Prefer whatever is already attached; only fall back to the file picker
   // when nothing is.
@@ -3283,26 +3228,15 @@ function initDescribe() {
 
   async function describeFile(f) {
     const el = primaryPromptEl();
-    const q = describeQuestion();
-    // A caption needs somewhere to land; an answer does not.
-    if (!el && !q) return;
+    if (!el) return; // a caption needs a prompt box to land in
 
     btn.disabled = true;
     const idle = btn.textContent;
     btn.textContent = "Reading…";
-    clearDescribeAnswer();
-    setStatus(q ? `Asking about ${f.name || "image"}…` : `Describing ${f.name || "image"}…`, "load");
+    setStatus("Describing the image…", "load");
     try {
       const b64 = await fileToBase64(f);
       const body = { image_b64: b64, mime: f.type || "image/jpeg", model: sel.value };
-      // Omitted rather than sent empty, so the Worker's own captioning
-      // instruction stays the default.
-      if (q) body.question = q;
-      // The prompt rides along with a question so it can be asked about too,
-      // and never with a caption, which has to describe the image rather than
-      // what was asked of it.
-      const promptText = el ? el.value.trim() : "";
-      if (q && promptText) body.prompt = promptText;
       const res = await api("/api/describe", {
         method: "POST",
         retry: true,
@@ -3311,15 +3245,10 @@ function initDescribe() {
       });
       const data = await res.json();
       if (!res.ok || !data.description) throw new Error(data.error || `HTTP ${res.status}`);
-      if (q) {
-        renderDescribeAnswer(q, data.description);
-        setStatus("Answered below the toolbar — your prompt is untouched.", "ok");
-      } else {
-        el.value = data.description;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        commitPromptHistory(); // the caption is one entry, so Undo puts back what you had
-        setStatus("Prompt filled from the image.", "ok");
-      }
+      el.value = data.description;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      commitPromptHistory(); // the caption is one entry, so Undo puts back what you had
+      setStatus("Prompt filled from the image.", "ok");
       setTimeout(refreshNeurons, 4000);
     } catch (e) {
       setStatus("Describe failed: " + e.message, "err");
@@ -3328,64 +3257,206 @@ function initDescribe() {
       btn.textContent = idle;
     }
   }
-
-  updateDescribeNote();
 }
 
-function clearDescribeAnswer() {
-  const box = $("describe-result");
-  if (!box) return;
-  box.innerHTML = "";
-  box.classList.add("hidden");
+// ---------------------------------------------------------------------------
+// Chat
+//
+// A conversation about the prompt, under the toolbar. The thread lives in this
+// browser until New chat, and every Send carries all of it, so the model sees
+// the conversation so far. With the context switch on, the newest message also
+// carries the prompt box text and — for a model that can see — the attached
+// image. A reply can be put in the prompt box as one Undo step.
+// ---------------------------------------------------------------------------
+const CHAT_THREAD_KEY = "patchbay_chat_thread";
+const CHAT_MODEL_KEY = "patchbay_chat_model";
+const CHAT_CONTEXT_KEY = "patchbay_chat_context";
+
+let chatThread = []; // [{ role: "user" | "assistant", content, neurons? }]
+let chatBusy = false;
+
+function loadChat() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CHAT_THREAD_KEY) || "[]");
+    if (Array.isArray(saved)) chatThread = saved.filter((m) => m && typeof m.content === "string");
+  } catch {
+    chatThread = [];
+  }
 }
 
-// An answer belongs beside the prompt, not in it. Captioning still fills the
-// box — seeding the prompt is the whole point of a caption — but an answer to
-// a question is a reply, and the question is very often about the prompt
-// itself, which overwriting it would destroy.
-function renderDescribeAnswer(question, text) {
-  const box = $("describe-result");
-  if (!box) return;
+function saveChat() {
+  try {
+    localStorage.setItem(CHAT_THREAD_KEY, JSON.stringify(chatThread));
+  } catch {
+    /* storage full or blocked: the thread still works for this visit */
+  }
+}
+
+function chatModel() {
+  const sel = $("chat-model");
+  return chatModels.find((m) => m.id === (sel && sel.value)) || null;
+}
+
+function updateChatNote() {
+  const el = $("chat-note");
+  if (!el) return; // called before the chat exists
+  const total = chatThread.reduce((n, m) => n + (m.neurons || 0), 0);
+  const parts = [];
+  if (total) parts.push(`This chat so far: ~${Math.round(total).toLocaleString()} neurons`);
+  const m = chatModel();
+  const box = $("chat-context");
+  if (m && !m.vision && box && box.checked && attachedImageFile()) {
+    parts.push("This model can't see images — pick one marked 👁 to include the attached image");
+  }
+  el.textContent = parts.join(" · ");
+}
+
+function putInPromptBox(text) {
+  const el = primaryPromptEl();
+  if (!el) return void setStatus("This model has no prompt box.", "err");
+  el.value = text;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  commitPromptHistory(); // one entry, so Undo puts back what you had
+  setStatus("Put in the prompt box — press Undo to get the old prompt back.", "ok");
+}
+
+function renderChat({ pending = false } = {}) {
+  const box = $("chat-thread");
   box.innerHTML = "";
+  for (const m of chatThread) {
+    const b = document.createElement("div");
+    b.className = `chat-msg ${m.role}`;
+    const t = document.createElement("div");
+    t.className = "chat-text";
+    t.textContent = m.content;
+    b.appendChild(t);
+    if (m.role === "assistant") {
+      const row = document.createElement("div");
+      row.className = "chat-msg-actions";
+      if (m.neurons != null) {
+        const cost = document.createElement("span");
+        cost.className = "chat-cost";
+        cost.textContent = `~${m.neurons < 10 ? m.neurons.toFixed(1) : Math.round(m.neurons)} neurons`;
+        row.appendChild(cost);
+      }
+      const use = document.createElement("button");
+      use.type = "button";
+      use.className = "secondary chat-use";
+      use.textContent = "Put in prompt box";
+      use.addEventListener("click", () => putInPromptBox(m.content));
+      row.appendChild(use);
+      b.appendChild(row);
+    }
+    box.appendChild(b);
+  }
+  if (pending) {
+    const w = document.createElement("div");
+    w.className = "chat-msg assistant pending";
+    w.textContent = "…";
+    box.appendChild(w);
+  }
+  box.classList.toggle("hidden", !chatThread.length && !pending);
+  box.scrollTop = box.scrollHeight;
+  updateChatNote();
+}
 
-  const q = document.createElement("p");
-  q.className = "answer-q";
-  q.textContent = `🔍 ${question}`;
-  box.appendChild(q);
+async function sendChat() {
+  if (chatBusy) return;
+  const input = $("chat-input");
+  const text = input.value.trim();
+  if (!text) return;
+  const m = chatModel();
+  if (!m) return void setStatus("No chat model available.", "err");
 
-  const a = document.createElement("p");
-  a.className = "answer-a";
-  a.textContent = text;
-  box.appendChild(a);
+  chatThread.push({ role: "user", content: text });
+  input.value = "";
+  chatBusy = true;
+  $("chat-send").disabled = true;
+  renderChat({ pending: true });
 
-  const actions = document.createElement("div");
-  actions.className = "answer-actions";
-
-  // The old behaviour, kept as a choice rather than imposed: an answer is
-  // sometimes exactly what you want the prompt to say.
-  const use = document.createElement("button");
-  use.type = "button";
-  use.className = "secondary";
-  use.textContent = "↑ Use as prompt";
-  use.addEventListener("click", () => {
+  const body = { model: m.id, messages: chatThread.map(({ role, content }) => ({ role, content })) };
+  if ($("chat-context").checked) {
     const el = primaryPromptEl();
-    if (!el) return void setStatus("This model has no prompt box.", "err");
-    el.value = text;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    commitPromptHistory(); // one entry, so Undo puts back what you had
-    setStatus("Prompt replaced with the answer — press Undo to put it back.", "ok");
+    if (el && el.value.trim()) body.prompt = el.value.trim();
+    const img = m.vision ? attachedImageFile() : null;
+    if (img) {
+      body.image_b64 = await fileToBase64(img);
+      body.mime = img.type || "image/jpeg";
+    }
+  }
+  try {
+    const res = await api("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.reply) throw new Error(data.error || `HTTP ${res.status}`);
+    chatThread.push({ role: "assistant", content: data.reply, neurons: data.neurons });
+    if (typeof data.neurons === "number") sessionNeurons += data.neurons;
+    saveChat();
+    updateSpendBar();
+    setTimeout(refreshNeurons, 4000);
+  } catch (e) {
+    // The message was not answered, so it goes back in the box to resend
+    // rather than sitting in the thread as if it had been.
+    chatThread.pop();
+    input.value = text;
+    setStatus("Chat failed: " + e.message, "err");
+  } finally {
+    chatBusy = false;
+    $("chat-send").disabled = false;
+    renderChat();
+  }
+}
+
+function initChat() {
+  const sel = $("chat-model");
+  if (!sel) return;
+  // 👁 marks a model that can be shown the attached image.
+  fillGroupedSelect(sel, chatModels.map((m) => ({ ...m, label: m.vision ? `${m.label} 👁` : m.label })));
+  let saved = null;
+  try {
+    saved = localStorage.getItem(CHAT_MODEL_KEY);
+  } catch {
+    /* default below */
+  }
+  sel.value = chatModels.some((m) => m.id === saved) ? saved : defaultChatModel;
+  sel.addEventListener("change", () => {
+    try {
+      localStorage.setItem(CHAT_MODEL_KEY, sel.value);
+    } catch {
+      /* remembered for this visit only */
+    }
+    updateChatNote();
   });
-  actions.appendChild(use);
 
-  const dismiss = document.createElement("button");
-  dismiss.type = "button";
-  dismiss.className = "secondary";
-  dismiss.textContent = "Dismiss";
-  dismiss.addEventListener("click", clearDescribeAnswer);
-  actions.appendChild(dismiss);
+  const ctx = $("chat-context");
+  try {
+    if (localStorage.getItem(CHAT_CONTEXT_KEY) === "off") ctx.checked = false;
+  } catch {
+    /* stays on */
+  }
+  ctx.addEventListener("change", () => {
+    try {
+      localStorage.setItem(CHAT_CONTEXT_KEY, ctx.checked ? "on" : "off");
+    } catch {
+      /* remembered for this visit only */
+    }
+    updateChatNote();
+  });
 
-  box.appendChild(actions);
-  box.classList.remove("hidden");
+  // Enter adds a line, as in any text box; only Send sends.
+  $("chat-send").addEventListener("click", sendChat);
+  $("chat-new").addEventListener("click", () => {
+    if (chatThread.length && !window.confirm("Start a new chat? This one will be cleared.")) return;
+    chatThread = [];
+    saveChat();
+    renderChat();
+  });
+
+  loadChat();
+  renderChat();
 }
 
 // ---------------------------------------------------------------------------
@@ -3432,7 +3503,7 @@ function judgeTarget() {
       from: "attached",
       // Name the file when there is one, count them when there are several —
       // the note has to make a partial read impossible to miss.
-      label: batch.length > 1 ? `${batch.length} attached images` : batch[0].name || "the attached image",
+      label: batch.length > 1 ? `${batch.length} attached images` : "the attached image",
     };
   }
   return null;
@@ -3806,6 +3877,7 @@ function initPromptLibrary() {
   refreshPromptSelect();
   initImproveModelPicker();
   initDescribe();
+  initChat();
   initJudge();
   initPromptHistory();
 

@@ -292,6 +292,22 @@ footer { margin-top: 28px; color: var(--muted); font-size: 12px; }
   background: var(--panel);
   color: var(--text);
 }
+.chat { margin-top: 10px; border: 1px solid var(--border); border-radius: 12px; padding: 10px; background: var(--panel); }
+.chat-head { display: flex; gap: 8px; }
+.chat-head select { flex: 1; min-width: 0; }
+.chat-context { display: flex; align-items: center; gap: 6px; margin: 8px 0; font-size: 13px; color: var(--muted); }
+.chat-thread { max-height: 55vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.chat-msg { padding: 8px 10px; border-radius: 12px; max-width: 88%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-msg.user { align-self: flex-end; background: var(--accent); color: #111; }
+.chat-msg.assistant { align-self: flex-start; background: var(--bg); border: 1px solid var(--border); }
+.chat-msg.pending { color: var(--muted); }
+.chat-msg-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.chat-cost { font-size: 12px; color: var(--muted); }
+.chat-use { padding: 5px 10px; font-size: 13px; }
+.chat-compose { display: flex; gap: 8px; align-items: flex-end; }
+.chat-compose textarea { flex: 1; min-width: 0; resize: vertical; }
+.chat-note { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+.chat-note:empty { display: none; }
 .tts-panel { margin-top: 8px; }
 .tts-panel summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .tts-panel .tts-text { width: 100%; margin-top: 8px; }
@@ -350,9 +366,6 @@ button.tiny { padding: 4px 10px; font-size: 12px; }
    mistaken for the primary action, but stays a comfortable tap target. */
 .actions #stop-btn { flex: 0 0 auto; padding: 12px 16px; font-size: 15px; }
 
-/* Describe's question box: full width on its own row under the toolbar. */
-.tool-input { width: 100%; margin-bottom: 12px; }
-
 /* Styled file picker: the native control kept showing "no file selected"
    after a choice and gave no way to swap an image. */
 .file-input { display: none; }
@@ -372,29 +385,6 @@ button.tiny { padding: 4px 10px; font-size: 12px; }
   .prompt-lib button { flex: 1 1 48%; }
 }
 
-/* An answer from Describe. Same box as Judge's score, and there for the same
-   reason: a result that belongs to the toolbar rather than to the output. */
-.answer {
-  margin: 0 0 14px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel-2);
-}
-.answer-q {
-  font-size: 12px;
-  color: var(--muted);
-  margin: 0 0 6px;
-  overflow-wrap: anywhere;
-}
-.answer-a {
-  font-size: 14px;
-  margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.answer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.answer-actions button { flex: 1 1 auto; }
 
 /* Judge (p-judger). The score sits under the prompt toolbar rather than in the
    output panel, so scoring a generation leaves the generation on screen. */

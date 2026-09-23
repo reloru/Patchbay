@@ -16,6 +16,9 @@ import {
   DEFAULT_IMPROVE_MODEL,
   DESCRIBE_MODELS,
   DESCRIBE_MODEL_IDS,
+  CHAT_MODELS,
+  CHAT_MODEL_IDS,
+  DEFAULT_CHAT_MODEL,
   DEFAULT_DESCRIBE_MODEL,
   JUDGE_MODEL,
   JUDGE_USD_PER_IMAGE,
@@ -122,6 +125,8 @@ export default {
           improveModels: IMPROVE_MODELS,
           defaultImproveModel: DEFAULT_IMPROVE_MODEL,
           describeModels: DESCRIBE_MODELS,
+          chatModels: CHAT_MODELS,
+          defaultChatModel: DEFAULT_CHAT_MODEL,
           defaultDescribeModel: DEFAULT_DESCRIBE_MODEL,
           judgeUsdPerImage: JUDGE_USD_PER_IMAGE,
           judgeMaxImages: JUDGE_MAX_IMAGES,
@@ -156,6 +161,9 @@ export default {
       }
       if (path === "/api/improve-prompt" && request.method === "POST") {
         return await handleImprovePrompt(request, env);
+      }
+      if (path === "/api/chat" && request.method === "POST") {
+        return await handleChat(request, env);
       }
       if (path === "/api/describe" && request.method === "POST") {
         return await handleDescribe(request, env);
@@ -599,19 +607,85 @@ function stripReasoning(text) {
   return t.trim();
 }
 
-// Puts the prompt box's text in front of the question, so a question can be
-// about the prompt as well as about the picture — "does this match what I
-// asked for", "what is missing". Only ever sent alongside a real question:
-// captioning has to describe the image as it is, and handing it the prompt
-// would have it describe what was asked for instead.
-function describeInput(question, prompt) {
-  if (!prompt) return question;
-  return `This image was made from the following prompt:\n\n"${prompt}"\n\nWith that in mind, answer: ${question}`;
+// The chat under the prompt toolbar. The browser keeps the thread and sends all
+// of it every time, so the model sees the conversation so far; the Worker adds
+// the system instruction, and — when the context switch is on — the prompt
+// box's text and the attached image to the newest message only. Earlier
+// messages go as plain text: resending the image with every turn would bill
+// it again each time for nothing the model had not already seen.
+const CHAT_SYSTEM =
+  `You are helping the user write and refine prompts for image and video generation models. ` +
+  `Their current prompt and any attached image are included for context. ` +
+  `Answer directly and briefly. ` +
+  `When asked to rewrite the prompt, output only the rewritten prompt. ` +
+  `Do not soften the language or remove mature content.`;
+
+// Bounds on what one request may carry, so a runaway thread fails here with a
+// clear message rather than as an opaque model error or a huge bill.
+const CHAT_MAX_MESSAGES = 60;
+const CHAT_MAX_CHARS = 60000;
+
+function chatContext(prompt, text) {
+  return prompt ? `My current prompt:\n"""\n${prompt}\n"""\n\n${text}` : text;
 }
 
-// Captions an uploaded image so the text can seed a prompt, or answers a
-// question about it. The vision models take quite different inputs, so each
-// payload is built separately.
+async function handleChat(request, env) {
+  if (!env.AI) return json({ error: "Workers AI binding is not configured." }, 500);
+  const body = await request.json().catch(() => null);
+  if (!body || !Array.isArray(body.messages) || !body.messages.length) {
+    return json({ error: "Nothing to send." }, 400);
+  }
+  const model = CHAT_MODEL_IDS.has(body.model) ? body.model : DEFAULT_CHAT_MODEL;
+  const spec = CHAT_MODELS.find((m) => m.id === model);
+
+  const thread = body.messages.slice(-CHAT_MAX_MESSAGES);
+  let chars = 0;
+  for (const m of thread) {
+    if (!m || (m.role !== "user" && m.role !== "assistant") || typeof m.content !== "string") {
+      return json({ error: "Malformed message in the thread." }, 400);
+    }
+    chars += m.content.length;
+  }
+  if (thread[thread.length - 1].role !== "user") return json({ error: "The last message must be yours." }, 400);
+  if (chars > CHAT_MAX_CHARS) return json({ error: "This chat is too long to send. Start a new chat." }, 400);
+
+  const messages = [{ role: "system", content: CHAT_SYSTEM }, ...thread.map((m) => ({ role: m.role, content: m.content }))];
+  const last = messages[messages.length - 1];
+  const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+  last.content = chatContext(prompt, last.content);
+
+  // An image only reaches a model that can see one; the knobs that make those
+  // answer at all are the Describe entry's, measured with an image attached.
+  const b64 = typeof body.image_b64 === "string" ? body.image_b64 : "";
+  let knobs = spec;
+  if (b64 && spec.vision) {
+    knobs = DESCRIBE_MODELS.find((m) => m.id === model) || spec;
+    last.content = [
+      { type: "text", text: last.content },
+      { type: "image_url", image_url: { url: `data:${body.mime || "image/jpeg"};base64,${b64}` } },
+    ];
+  }
+
+  let out;
+  try {
+    out = await env.AI.run(model, {
+      messages,
+      max_tokens: knobs.maxTokens || (spec.reasoning ? 2000 : 1024),
+      ...reasoningKnobs(knobs),
+    });
+  } catch (err) {
+    return json({ error: "Chat failed: " + (err && err.message ? err.message : String(err)) }, 502);
+  }
+  const text = stripReasoning(pickText(out));
+  if (!text) return json({ error: "The model returned nothing usable. Try again or pick another model." }, 502);
+  const neurons = out && out.usage && typeof out.usage.neurons === "number" ? out.usage.neurons : null;
+  return json({ reply: text, neurons, sawImage: Boolean(b64 && spec.vision) });
+}
+
+const CAPTION_REQUEST = "Describe this image in vivid detail, as if writing a prompt to recreate it.";
+
+// Captions an uploaded image so the text can seed a prompt. The vision models
+// take quite different inputs, so each payload is built separately.
 async function handleDescribe(request, env) {
   if (!env.AI) return json({ error: "Workers AI binding is not configured." }, 500);
 
@@ -620,15 +694,9 @@ async function handleDescribe(request, env) {
   if (!b64) return json({ error: "No image provided." }, 400);
 
   const model = DESCRIBE_MODEL_IDS.has(body.model) ? body.model : DEFAULT_DESCRIBE_MODEL;
-  // A question the caller actually typed, as opposed to the captioning fallback.
-  // The two are different modes, not the same one with a different string.
-  const asked = (typeof body.question === "string" && body.question.trim()) || "";
-  const question = asked || "Describe this image in vivid detail, as if writing a prompt to recreate it.";
-  // Only a real question gets the prompt for context. The client already only
-  // sends it alongside one, but captioning must describe the image as it is
-  // whatever arrives here — handed the prompt, it would describe what was asked
-  // for instead, which is the one thing a caption must not do.
-  const asking = asked ? describeInput(question, typeof body.prompt === "string" ? body.prompt.trim() : "") : question;
+  // Captions only. Questions about an image are asked in the chat, which keeps
+  // the thread; this route used to take one too, and threw the answer away.
+  const asking = CAPTION_REQUEST;
 
   const spec = DESCRIBE_MODELS.find((m) => m.id === model) || {};
   let input;
@@ -648,21 +716,15 @@ async function handleDescribe(request, env) {
     };
   } else if (model.includes("moondream")) {
     const image = `data:${body.mime || "image/jpeg"};base64,${b64}`;
-    // "caption" ignores a question outright — which is what every question
-    // typed here used to get. "query" is the task that takes one, under its own
-    // `question` key rather than a prompt.
+    // Streams by default; disabled so a single JSON body comes back.
     // https://developers.cloudflare.com/workers-ai/models/moondream3.1-9B-A2B/
-    //
-    // Streams by default either way; disabled so a single JSON body comes back.
-    input = asked
-      ? { task: "query", image, question: asking, stream: false, max_tokens: 512 }
-      : {
-          task: "caption",
-          image,
-          caption_length: body.caption_length || "normal",
-          stream: false,
-          max_tokens: 512,
-        };
+    input = {
+      task: "caption",
+      image,
+      caption_length: body.caption_length || "normal",
+      stream: false,
+      max_tokens: 512,
+    };
   } else {
     // llava and llama-3.2-11b-vision both want raw bytes as 8-bit ints.
     input = { image: base64ToBytes(b64), prompt: asking, max_tokens: 512 };

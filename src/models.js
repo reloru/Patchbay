@@ -2020,6 +2020,16 @@ export const JUDGE_MAX_IMAGES = 10;
 export const DEFAULT_MODEL = "p-image-edit";
 
 export const IMPROVE_MODEL_IDS = new Set(IMPROVE_MODELS.map((m) => m.id));
+
+// The chat under the toolbar talks to the Improve models, since only
+// chat-format models can hold a conversation. `vision` marks those that can
+// also be handed the attached image: the chat-format Describe entries. LLaVA,
+// Moondream and Llama 3.2 Vision take one image and one question with no
+// history, so they stay behind Describe for captions.
+const CHAT_VISION_IDS = new Set(DESCRIBE_MODELS.filter((m) => m.chat).map((m) => m.id));
+export const CHAT_MODELS = IMPROVE_MODELS.map((m) => ({ ...m, vision: CHAT_VISION_IDS.has(m.id) }));
+export const CHAT_MODEL_IDS = new Set(CHAT_MODELS.map((m) => m.id));
+export const DEFAULT_CHAT_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
 export const DEFAULT_IMPROVE_MODEL = "@cf/meta/llama-3.2-3b-instruct";
 
 // Allow-list of valid model ids (used by the Worker to reject arbitrary models).
