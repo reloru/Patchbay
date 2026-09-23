@@ -130,6 +130,7 @@ export default {
           describeModels: DESCRIBE_MODELS,
           chatModels: CHAT_MODELS,
           defaultChatModel: DEFAULT_CHAT_MODEL,
+          instructions: { improve: IMPROVE_SYSTEM, chat: CHAT_SYSTEM },
           embedModels: EMBED_MODELS,
           defaultEmbedModel: DEFAULT_EMBED_MODEL,
           defaultDescribeModel: DEFAULT_DESCRIBE_MODEL,
@@ -307,16 +308,17 @@ async function handleImprovePrompt(request, env) {
   if (!prompt) return json({ error: "Nothing to improve — write a prompt first." }, 400);
   if (prompt.length > 2000) return json({ error: "Prompt is too long to improve." }, 400);
 
-  // Same instruction for every mode. Whether the target is an edit, a video or
-  // a from-scratch generation changes nothing about copy-editing the sentence,
-  // and the branching only ever gave the model more to get wrong.
-  const system = IMPROVE_SYSTEM;
-
   // Only models from the offered list may be run here.
   const improveModel = IMPROVE_MODEL_IDS.has(body.model) ? body.model : DEFAULT_IMPROVE_MODEL;
   // Reasoning models burn tokens thinking before they answer; too small a
   // budget and `content` comes back null.
   const spec = IMPROVE_MODELS.find((m) => m.id === improveModel) || {};
+  const mine = userSettings(body.settings, spec);
+
+  // Same instruction for every mode, unless the ⚙ panel on this device set
+  // another. Whether the target is an edit, a video or a from-scratch
+  // generation changes nothing about copy-editing the sentence.
+  const system = mine.system || IMPROVE_SYSTEM;
 
   let out;
   try {
@@ -327,8 +329,8 @@ async function handleImprovePrompt(request, env) {
       ],
       // 120 words runs ~170-200 tokens; 320 leaves headroom so the raised
       // word cap doesn't just get truncated at the token level instead.
-      max_tokens: spec.maxTokens || (spec.reasoning ? 1500 : 320),
-      ...reasoningKnobs(spec),
+      max_tokens: mine.maxTokens || spec.maxTokens || (spec.reasoning ? 1500 : 320),
+      ...withUserKnobs(reasoningKnobs(spec), mine),
     });
   } catch (err) {
     return json({ error: "Improve failed: " + (err && err.message ? err.message : String(err)) }, 502);
@@ -570,6 +572,30 @@ async function pollXaiVideo(requestId, env) {
   return json(result);
 }
 
+// Overrides from the ⚙ panel, kept on the user's device and sent with each
+// request. Bounded here: an instruction up to 4,000 characters, a token limit
+// of 16–8,000, and thinking or effort only for a model whose schema takes it.
+const USER_MAX_TOKENS = 8000;
+const USER_MAX_SYSTEM = 4000;
+
+function userSettings(raw, spec) {
+  const out = {};
+  if (!raw || typeof raw !== "object") return out;
+  if (typeof raw.system === "string" && raw.system.trim()) out.system = raw.system.trim().slice(0, USER_MAX_SYSTEM);
+  const n = Math.floor(Number(raw.maxTokens));
+  if (Number.isFinite(n) && n >= 16) out.maxTokens = Math.min(n, USER_MAX_TOKENS);
+  if (spec.canThink && typeof raw.thinking === "boolean") out.thinking = raw.thinking;
+  if (spec.canEffort && ["low", "medium", "high"].includes(raw.effort)) out.effort = raw.effort;
+  return out;
+}
+
+function withUserKnobs(knobs, mine) {
+  const k = { ...knobs };
+  if (mine.thinking !== undefined) k.chat_template_kwargs = { enable_thinking: mine.thinking };
+  if (mine.effort) k.reasoning_effort = mine.effort;
+  return k;
+}
+
 // The per-model reasoning controls declared in IMPROVE_MODELS / DESCRIBE_MODELS,
 // as request fields. Absent knobs send nothing, so every model without one
 // runs exactly as it did before they existed.
@@ -657,7 +683,8 @@ async function handleChat(request, env) {
   if (thread[thread.length - 1].role !== "user") return json({ error: "The last message must be yours." }, 400);
   if (chars > CHAT_MAX_CHARS) return json({ error: "This chat is too long to send. Start a new chat." }, 400);
 
-  const messages = [{ role: "system", content: CHAT_SYSTEM }, ...thread.map((m) => ({ role: m.role, content: m.content }))];
+  const mine = userSettings(body.settings, spec);
+  const messages = [{ role: "system", content: mine.system || CHAT_SYSTEM }, ...thread.map((m) => ({ role: m.role, content: m.content }))];
   const last = messages[messages.length - 1];
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   last.content = chatContext(prompt, last.content);
@@ -678,8 +705,8 @@ async function handleChat(request, env) {
   try {
     out = await env.AI.run(model, {
       messages,
-      max_tokens: knobs.maxTokens || (spec.reasoning ? 2000 : 1024),
-      ...reasoningKnobs(knobs),
+      max_tokens: mine.maxTokens || knobs.maxTokens || (spec.reasoning ? 2000 : 1024),
+      ...withUserKnobs(reasoningKnobs(knobs), mine),
     });
   } catch (err) {
     return json({ error: "Chat failed: " + (err && err.message ? err.message : String(err)) }, 502);

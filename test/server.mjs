@@ -56,6 +56,7 @@ let neuronsUsed = null;
 // What the chat last sent, for the test to inspect through /__chat.
 let lastChat = null;
 let embedCalls = 0;
+let lastImprove = null;
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
   "base64"
@@ -81,6 +82,7 @@ const server = createServer(async (req, res) => {
       defaultDescribeModel: DEFAULT_DESCRIBE_MODEL,
       chatModels: CHAT_MODELS,
       embedModels: EMBED_MODELS,
+      instructions: { improve: "DEFAULT IMPROVE INSTRUCTION", chat: "DEFAULT CHAT INSTRUCTION" },
       defaultEmbedModel: DEFAULT_EMBED_MODEL,
       defaultChatModel: DEFAULT_CHAT_MODEL,
       judgeUsdPerImage: JUDGE_USD_PER_IMAGE,
@@ -135,7 +137,13 @@ const server = createServer(async (req, res) => {
   // The real Worker signs these; nothing here verifies one, because the browser
   // suite stubs the Worker. The signing itself is covered by worker.test.mjs.
   if (path === "/api/token") return json(res, { token: "stub-token", expiresAt: Date.now() + 600000 });
-  if (path === "/api/improve-prompt") return json(res, { prompt: "IMPROVED PROMPT TEXT" });
+  if (path === "/api/improve-prompt") {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    lastImprove = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+    return json(res, { prompt: "IMPROVED PROMPT TEXT" });
+  }
+  if (path === "/__improve") return json(res, lastImprove || {});
   if (path === "/api/describe") {
     const chunks = [];
     for await (const c of req) chunks.push(c);

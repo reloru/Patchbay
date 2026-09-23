@@ -2025,6 +2025,58 @@ export const JUDGE_MAX_IMAGES = 10;
 // common case, so it beats generating one from scratch as a starting point.
 export const DEFAULT_MODEL = "p-image-edit";
 
+// What each chat model accepts beyond the basics, for the ⚙ settings panel.
+// Read from each model's input schema via Cloudflare's models/schema API on
+// 2026-09-23: `think` = chat_template_kwargs.enable_thinking, `effort` =
+// reasoning_effort. GPT-OSS documents effort only in its Responses-API form,
+// which this app does not send, so it gets neither.
+const THINK_AND_EFFORT = [
+  "@cf/deepseek-ai/deepseek-v4-flash-0731", "@cf/deepseek-ai/deepseek-v4-pro-0813",
+  "@cf/google/gemma-4-26b-a4b-it", "@cf/zai-org/glm-4.7-flash", "@cf/zai-org/glm-5.3-flash",
+  "@cf/zai-org/glm-5.2", "@cf/zai-org/glm-5.3", "@cf/moonshotai/kimi-k2.5",
+  "@cf/moonshotai/kimi-k2.6", "@cf/moonshotai/kimi-k2.7-code", "@cf/qwen/qwen3.8-27b",
+];
+const THINK_ONLY = ["@cf/nvidia/nemotron-3-120b-a12b"];
+
+// Neurons per million output tokens, from Cloudflare's published per-model
+// rates. Used to show the most a reply can cost at a given token limit.
+const OUT_NEURONS_PER_M = {
+  "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b": 443756,
+  "@cf/deepseek-ai/deepseek-v4-flash-0731": 120000,
+  "@cf/deepseek-ai/deepseek-v4-pro-0813": 360000,
+  "@cf/google/gemma-4-26b-a4b-it": 27273,
+  "@cf/zai-org/glm-4.7-flash": 36400,
+  "@cf/zai-org/glm-5.3-flash": 45455,
+  "@cf/zai-org/glm-5.2": 400000,
+  "@cf/zai-org/glm-5.3": 400000,
+  "@cf/openai/gpt-oss-20b": 27273,
+  "@cf/openai/gpt-oss-120b": 68182,
+  "@cf/ibm-granite/granite-4.0-h-micro": 10158,
+  "@cf/moonshotai/kimi-k2.5": 272727,
+  "@cf/moonshotai/kimi-k2.6": 363636,
+  "@cf/moonshotai/kimi-k2.7-code": 363636,
+  "@cf/meta/llama-3.2-1b-instruct": 18252,
+  "@cf/meta/llama-3.2-3b-instruct": 30475,
+  "@cf/meta/llama-3.1-8b-instruct-fp8-fast": 34868,
+  "@cf/meta/llama-3.1-8b-instruct-fp8": 26128,
+  "@cf/meta/llama-4-scout-17b-16e-instruct": 77273,
+  "@cf/meta/llama-3.1-70b-instruct-fp8-fast": 204805,
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast": 204805,
+  "@cf/mistral/mistral-7b-instruct-v0.1": 17300,
+  "@cf/mistralai/mistral-small-3.1-24b-instruct": 50488,
+  "@cf/nvidia/nemotron-3-120b-a12b": 136364,
+  "@cf/qwen/qwen3-30b-a3b-fp8": 30475,
+  "@cf/qwen/qwen2.5-coder-32b-instruct": 90909,
+  "@cf/qwen/qwen3.8-27b": 290909,
+  "@cf/qwen/qwq-32b": 90909,
+  "@cf/aisingapore/gemma-sea-lion-v4-27b-it": 50488,
+};
+for (const m of IMPROVE_MODELS) {
+  m.canThink = THINK_AND_EFFORT.includes(m.id) || THINK_ONLY.includes(m.id);
+  m.canEffort = THINK_AND_EFFORT.includes(m.id);
+  m.outPerM = OUT_NEURONS_PER_M[m.id] || null;
+}
+
 export const IMPROVE_MODEL_IDS = new Set(IMPROVE_MODELS.map((m) => m.id));
 
 // The chat under the toolbar talks to the Improve models, since only

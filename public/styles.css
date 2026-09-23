@@ -292,6 +292,16 @@ footer { margin-top: 28px; color: var(--muted); font-size: 12px; }
   background: var(--panel);
   color: var(--text);
 }
+.gear { padding: 9px 10px; flex: 0 0 auto; }
+.gear.custom { border-color: var(--accent); color: var(--accent); }
+/* Beats the phone rule that stretches every toolbar button to half a row. */
+.prompt-lib .gear { flex: 0 0 auto; }
+.tool-settings { margin-top: 10px; border: 1px solid var(--accent); border-radius: 12px; padding: 10px; background: var(--panel); display: flex; flex-direction: column; gap: 8px; }
+.tool-settings h3 { margin: 0; font-size: 14px; }
+.tool-settings label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.tool-settings textarea { min-height: 120px; }
+.tool-settings .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.tool-settings .hint { font-size: 12px; color: var(--muted); margin: 0; }
 .chat { margin-top: 10px; border: 1px solid var(--border); border-radius: 12px; padding: 10px; background: var(--panel); }
 .chat-head { display: flex; gap: 8px; }
 .chat-head select { flex: 1; min-width: 0; }
