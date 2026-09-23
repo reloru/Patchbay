@@ -287,7 +287,7 @@ async function handleImprovePrompt(request, env) {
   const improveModel = IMPROVE_MODEL_IDS.has(body.model) ? body.model : DEFAULT_IMPROVE_MODEL;
   // Reasoning models burn tokens thinking before they answer; too small a
   // budget and `content` comes back null.
-  const isReasoning = IMPROVE_MODELS.some((m) => m.id === improveModel && m.reasoning);
+  const spec = IMPROVE_MODELS.find((m) => m.id === improveModel) || {};
 
   let out;
   try {
@@ -298,7 +298,8 @@ async function handleImprovePrompt(request, env) {
       ],
       // 120 words runs ~170-200 tokens; 320 leaves headroom so the raised
       // word cap doesn't just get truncated at the token level instead.
-      max_tokens: isReasoning ? 1500 : 320,
+      max_tokens: spec.maxTokens || (spec.reasoning ? 1500 : 320),
+      ...reasoningKnobs(spec),
     });
   } catch (err) {
     return json({ error: "Improve failed: " + (err && err.message ? err.message : String(err)) }, 502);
@@ -540,6 +541,16 @@ async function pollXaiVideo(requestId, env) {
   return json(result);
 }
 
+// The per-model reasoning controls declared in IMPROVE_MODELS / DESCRIBE_MODELS,
+// as request fields. Absent knobs send nothing, so every model without one
+// runs exactly as it did before they existed.
+function reasoningKnobs(spec) {
+  const extra = {};
+  if (spec.thinking === false) extra.chat_template_kwargs = { enable_thinking: false };
+  if (spec.effort) extra.reasoning_effort = spec.effort;
+  return extra;
+}
+
 // Workers AI text responses come back in several shapes depending on the
 // model family: a bare {response}, an OpenAI-style {choices[].message.content}
 // (gpt-oss), or nested under {result} (moondream). Pull the text from whichever
@@ -606,8 +617,23 @@ async function handleDescribe(request, env) {
   // for instead, which is the one thing a caption must not do.
   const asking = asked ? describeInput(question, typeof body.prompt === "string" ? body.prompt.trim() : "") : question;
 
+  const spec = DESCRIBE_MODELS.find((m) => m.id === model) || {};
   let input;
-  if (model.includes("moondream")) {
+  if (spec.chat) {
+    input = {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: asking },
+            { type: "image_url", image_url: { url: `data:${body.mime || "image/jpeg"};base64,${b64}` } },
+          ],
+        },
+      ],
+      max_tokens: spec.maxTokens || 1024,
+      ...reasoningKnobs(spec),
+    };
+  } else if (model.includes("moondream")) {
     const image = `data:${body.mime || "image/jpeg"};base64,${b64}`;
     // "caption" ignores a question outright — which is what every question
     // typed here used to get. "query" is the task that takes one, under its own

@@ -292,6 +292,8 @@ footer { margin-top: 28px; color: var(--muted); font-size: 12px; }
   background: var(--panel);
   color: var(--text);
 }
+.spend[data-level="warn"] { border-color: var(--accent); color: var(--accent); }
+.spend[data-level="over"] { border-color: var(--danger); color: var(--danger); }
 .error { color: var(--danger); font-size: 13px; }
 
 

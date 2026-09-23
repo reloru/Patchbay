@@ -46,6 +46,9 @@ let generateDelayMs = 0;
 // the poll loop stalling — a slow provider, a hung connection, or an iOS tab
 // suspended in the background, where setTimeout stops firing altogether.
 let statusDelayMs = 0;
+// Set by the test through /__neurons, to stand in for a day's analytics. Null
+// keeps /api/neurons unconfigured, which is what every other block expects.
+let neuronsUsed = null;
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
   "base64"
@@ -128,7 +131,10 @@ const server = createServer(async (req, res) => {
     });
   }
   // Not configured in the stub, which is a case the app has to tolerate.
-  if (path === "/api/neurons") return json(res, {}, 404);
+  if (path === "/api/neurons") {
+    if (neuronsUsed == null) return json(res, {}, 404);
+    return json(res, { day: "2026-09-23", used: neuronsUsed, limit: 10000, remaining: Math.max(0, 10000 - neuronsUsed), byModel: [] });
+  }
 
   // Routes under /__ are the test's own window into what the browser sent;
   // the app never calls them.
@@ -142,6 +148,10 @@ const server = createServer(async (req, res) => {
   if (path === "/__delay") {
     generateDelayMs = Number(url.searchParams.get("ms")) || 0;
     return json(res, { generateDelayMs });
+  }
+  if (path === "/__neurons") {
+    neuronsUsed = url.searchParams.has("used") ? Number(url.searchParams.get("used")) : null;
+    return json(res, { neuronsUsed });
   }
   if (path === "/__statusdelay") {
     statusDelayMs = Number(url.searchParams.get("ms")) || 0;
