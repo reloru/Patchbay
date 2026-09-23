@@ -330,6 +330,34 @@ test("chat refuses a malformed thread", async () => {
   assert.equal(lastNotMine.status, 400);
 });
 
+const embedWith = async (body, output) => {
+  let seen = null;
+  const aiEnv = { ...env, AI: { run: async (m, i) => ((seen = { model: m, input: i }), output) } };
+  const res = await call("/api/embed", {
+    password: PASSWORD,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }, aiEnv);
+  return { seen, status: res.status, body: await res.json() };
+};
+
+test("embeddings follow each model's documented input", async () => {
+  const m3 = await embedWith({ model: "@cf/baai/bge-m3", text: "a fox" }, { response: [[0.1, 0.2]], meta: { neurons: 0.006 } });
+  assert.deepEqual(m3.seen.input, { contexts: [{ text: "a fox" }], truncate_inputs: true });
+  assert.deepEqual(m3.body, { vector: [0.1, 0.2], neurons: 0.006 });
+  const small = await embedWith({ model: "@cf/baai/bge-small-en-v1.5", text: "a fox" }, { data: [[0.3]], shape: [1, 1] });
+  assert.deepEqual(small.seen.input, { text: ["a fox"], pooling: "cls" });
+  assert.deepEqual(small.body.vector, [0.3]);
+  const qwen = await embedWith({ model: "@cf/qwen/qwen3-embedding-0.6b", text: "a fox" }, { data: [[0.4]] });
+  assert.deepEqual(qwen.seen.input, { text: ["a fox"] });
+});
+
+test("embeddings refuse empty text", async () => {
+  const { status } = await embedWith({ text: "   " }, { data: [[1]] });
+  assert.equal(status, 400);
+});
+
 test("/api/generate rejects a model outside the catalogue", async () => {
   const res = await call("/api/generate", {
     password: PASSWORD,
