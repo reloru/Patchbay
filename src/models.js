@@ -1993,7 +1993,9 @@ export const DESCRIBE_MODELS = [
   { id: "@cf/google/gemma-4-26b-a4b-it", label: "Gemma 4 26B A4B IT", chat: true, thinking: false, maxTokens: 1024 },
   { id: "@cf/qwen/qwen3.8-27b", label: "Qwen3.8 27B", chat: true, thinking: false, maxTokens: 1024 },
   { id: "@cf/zai-org/glm-5.3-flash", label: "GLM 5.3 Flash", chat: true, paid: true, effort: "low", maxTokens: 3072 },
-  { id: "@cf/moonshotai/kimi-k2.7-code", label: "Kimi K2.7 Code", chat: true, paid: true, thinking: false, maxTokens: 1024 },
+  // Re-checked on 2026-09-23: it now reasons even with thinking off, and at
+  // 1,024 tokens spent the whole budget before answering; 2,048 finished.
+  { id: "@cf/moonshotai/kimi-k2.7-code", label: "Kimi K2.7 Code", chat: true, paid: true, thinking: false, maxTokens: 2048 },
   // Not flagged as vision in Cloudflare's model API, but its catalogue page
   // says it is, and on 2026-09-23 it described the test image correctly.
   { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", label: "Mistral Small 3.1 24B Instruct", chat: true, maxTokens: 1024 },

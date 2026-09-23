@@ -1374,6 +1374,15 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("Describe sends no question and no prompt", posted.length === 1 && !("question" in posted[0]) && !("prompt" in posted[0]), JSON.stringify(posted[0] && Object.keys(posted[0])));
   const notes = await page.locator(".tool-notes").textContent();
   check("the notes name no files", !notes.includes("cat.png"), notes);
+
+  // A model with no prompt box used to swallow the tap without a word.
+  await page.selectOption("#model-select", "p-image-rmbg");
+  await page.waitForTimeout(300);
+  await page.setInputFiles(".file-input", imgPath);
+  await page.waitForSelector(".thumbs .thumb img");
+  await page.locator("#prompt-describe").click();
+  await page.waitForTimeout(300);
+  check("with no prompt box, Describe says so beside the button", (await page.locator("#describe-note").textContent()).includes("no prompt box"));
   await page.close();
   await context.close();
 }

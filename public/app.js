@@ -3240,9 +3240,17 @@ function initDescribe() {
     if (f) describeFile(f);
   });
 
+  // Problems show under the toolbar, beside the button pressed: the status
+  // line sits far below it on a phone, which made a failure look like nothing.
+  const note = (msg) => ($("describe-note").textContent = msg ? `🔍 ${msg}` : "");
+
   async function describeFile(f) {
+    note("");
     const el = primaryPromptEl();
-    if (!el) return; // a caption needs a prompt box to land in
+    if (!el) {
+      note("This model has no prompt box for the caption to go in — pick one that does.");
+      return;
+    }
 
     btn.disabled = true;
     const idle = btn.textContent;
@@ -3263,9 +3271,13 @@ function initDescribe() {
       el.dispatchEvent(new Event("input", { bubbles: true }));
       commitPromptHistory(); // the caption is one entry, so Undo puts back what you had
       setStatus("Prompt filled from the image.", "ok");
+      // The prompt box is well below the toolbar; bring it into view so the
+      // caption is seen landing.
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
       setTimeout(refreshNeurons, 4000);
     } catch (e) {
       setStatus("Describe failed: " + e.message, "err");
+      note("Describe failed: " + e.message);
     } finally {
       btn.disabled = false;
       btn.textContent = idle;

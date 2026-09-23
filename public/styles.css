@@ -367,6 +367,7 @@ select, input, textarea, button { max-width: 100%; }
 .tool-notes { margin: -6px 2px 14px; font-size: 12px; color: var(--muted); }
 .tool-notes span { display: block; overflow-wrap: anywhere; }
 .tool-notes span:empty { display: none; }
+.tool-notes .describe-note { color: var(--danger); }
 /* Judge's note carries an inline action, so its own children stay on the line
    the rule above puts the note itself on. */
 #judge-note > span, #judge-note > button { display: inline; }
