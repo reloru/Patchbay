@@ -1240,7 +1240,7 @@ const WORKERS_AI_MODELS = [
   {
     id: "cf-flux-1-schnell",
     cfModel: "@cf/black-forest-labs/flux-1-schnell",
-    label: "FLUX.1 schnell",
+    label: "FLUX.1 [schnell]",
     group: "Image generation",
     kind: "image",
     blurb: "12B rectified-flow model. Very fast, capped at 8 steps.",
@@ -1253,7 +1253,7 @@ const WORKERS_AI_MODELS = [
   {
     id: "cf-flux-2-klein-4b",
     cfModel: "@cf/black-forest-labs/flux-2-klein-4b",
-    label: "FLUX.2 Klein 4B",
+    label: "FLUX.2 [klein] 4B",
     group: "Image generation",
     kind: "image",
     multipart: true,
@@ -1269,7 +1269,7 @@ const WORKERS_AI_MODELS = [
   {
     id: "cf-flux-2-klein-9b",
     cfModel: "@cf/black-forest-labs/flux-2-klein-9b",
-    label: "FLUX.2 Klein 9B",
+    label: "FLUX.2 [klein] 9B",
     group: "Image generation",
     kind: "image",
     multipart: true,
@@ -1286,7 +1286,7 @@ const WORKERS_AI_MODELS = [
   {
     id: "cf-flux-2-dev",
     cfModel: "@cf/black-forest-labs/flux-2-dev",
-    label: "FLUX.2 dev",
+    label: "FLUX.2 [dev]",
     group: "Image generation",
     kind: "image",
     multipart: true,
@@ -1336,7 +1336,7 @@ const WORKERS_AI_MODELS = [
   {
     id: "cf-sdxl-base",
     cfModel: "@cf/stabilityai/stable-diffusion-xl-base-1.0",
-    label: "Stable Diffusion XL 1.0",
+    label: "Stable Diffusion XL Base 1.0",
     group: "Image generation",
     kind: "image",
     blurb: "The classic SDXL base model.",
@@ -1353,7 +1353,7 @@ const WORKERS_AI_MODELS = [
   {
     id: "cf-sdxl-lightning",
     cfModel: "@cf/bytedance/stable-diffusion-xl-lightning",
-    label: "SDXL Lightning",
+    label: "Stable Diffusion XL Lightning",
     group: "Image generation",
     kind: "image",
     blurb: "Lightning-fast 1024px SDXL variant.",
@@ -1392,7 +1392,7 @@ const WORKERS_AI_MODELS = [
   {
     id: "cf-sd15-inpainting",
     cfModel: "@cf/runwayml/stable-diffusion-v1-5-inpainting",
-    label: "SD 1.5 Inpainting",
+    label: "Stable Diffusion v1.5 Inpainting",
     // Filed with the other Workers AI image models: with img2img gone it was
     // the only Workers AI entry under Image editing. `edits` keeps the reuse
     // button calling its image the thing being edited, as that group would.
@@ -1662,39 +1662,45 @@ for (const m of MODELS) {
 //                1,238 of 1,500 tokens on a one-line rewrite; "low" used 33
 //   maxTokens  — overrides the reasoning/non-reasoning default budget
 export const IMPROVE_MODELS = [
-  { id: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", family: "DeepSeek", label: "DeepSeek R1 32B", neurons: 94.2, reasoning: true },
-  { id: "@cf/deepseek-ai/deepseek-v4-flash-0731", family: "DeepSeek", label: "DeepSeek V4 Flash", neurons: 19.6, reasoning: true, paid: true },
-  { id: "@cf/deepseek-ai/deepseek-v4-pro-0813", family: "DeepSeek", label: "DeepSeek V4 Pro", neurons: 101.8, reasoning: true, paid: true },
-  { id: "@cf/google/gemma-4-26b-a4b-it", family: "Gemma", label: "Gemma 4 26B", neurons: 1.5, thinking: false },
+  { id: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", family: "DeepSeek", label: "DeepSeek R1 Distill Qwen 32B", neurons: 94.2, reasoning: true },
+  { id: "@cf/deepseek-ai/deepseek-v4-flash-0731", family: "DeepSeek", label: "DeepSeek V4 Flash (0731)", neurons: 19.6, reasoning: true, paid: true },
+  { id: "@cf/deepseek-ai/deepseek-v4-pro-0813", family: "DeepSeek", label: "DeepSeek V4 Pro (0813)", neurons: 101.8, reasoning: true, paid: true },
+  { id: "@cf/google/gemma-4-26b-a4b-it", family: "Gemma", label: "Gemma 4 26B A4B IT", neurons: 1.5, thinking: false },
   { id: "@cf/zai-org/glm-4.7-flash", family: "GLM", label: "GLM 4.7 Flash", neurons: 7.9, reasoning: true },
   { id: "@cf/zai-org/glm-5.3-flash", family: "GLM", label: "GLM 5.3 Flash", neurons: 18.8, reasoning: true, paid: true },
   { id: "@cf/zai-org/glm-5.2", family: "GLM", label: "GLM 5.2", neurons: 213, reasoning: true, paid: true },
   { id: "@cf/zai-org/glm-5.3", family: "GLM", label: "GLM 5.3", neurons: 26.2, reasoning: true, paid: true, effort: "low" },
   { id: "@cf/openai/gpt-oss-20b", family: "GPT-OSS", label: "GPT-OSS 20B", neurons: 7.7, reasoning: true },
   { id: "@cf/openai/gpt-oss-120b", family: "GPT-OSS", label: "GPT-OSS 120B", neurons: 17.5, reasoning: true },
-  { id: "@cf/ibm-granite/granite-4.0-h-micro", family: "Granite", label: "Granite 4.0 Micro", neurons: 2.2 },
-  // Measured on 2026-09-23 with thinking off: 1,025 tokens and 381 neurons for
-  // a one-line rewrite. It works, but it is the priciest entry here.
-  { id: "@cf/moonshotai/kimi-k2.5", family: "Kimi", label: "Kimi K2.5", neurons: 381, reasoning: true, thinking: false, maxTokens: 3000 },
+  { id: "@cf/ibm-granite/granite-4.0-h-micro", family: "Granite", label: "Granite 4.0 H Micro", neurons: 2.2 },
   { id: "@cf/moonshotai/kimi-k2.6", family: "Kimi", label: "Kimi K2.6", neurons: 199, reasoning: true, paid: true, thinking: false },
   { id: "@cf/moonshotai/kimi-k2.7-code", family: "Kimi", label: "Kimi K2.7 Code", neurons: 187, reasoning: true, paid: true },
-  { id: "@cf/meta/llama-3.2-1b-instruct", family: "Llama", label: "Llama 3.2 1B", neurons: 3.9 },
-  { id: "@cf/meta/llama-3.2-3b-instruct", family: "Llama", label: "Llama 3.2 3B", neurons: 6.6 },
-  // Two 8B builds: -fp8-fast is no longer in Cloudflare's catalogue but still
-  // answered on 2026-09-23; -fp8 is the listed one. Labels keep them apart.
-  { id: "@cf/meta/llama-3.1-8b-instruct-fp8-fast", family: "Llama", label: "Llama 3.1 8B Fast", neurons: 7.5 },
-  { id: "@cf/meta/llama-3.1-8b-instruct-fp8", family: "Llama", label: "Llama 3.1 8B FP8", neurons: 2.3 },
-  { id: "@cf/meta/llama-4-scout-17b-16e-instruct", family: "Llama", label: "Llama 4 Scout 17B", neurons: 18.4 },
-  { id: "@cf/meta/llama-3.1-70b-instruct-fp8-fast", family: "Llama", label: "Llama 3.1 70B", neurons: 44.2 },
-  { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", family: "Llama", label: "Llama 3.3 70B", neurons: 44.2 },
-  { id: "@cf/mistral/mistral-7b-instruct-v0.1", family: "Mistral", label: "Mistral 7B", neurons: 4.7 },
-  { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", family: "Mistral", label: "Mistral Small 24B", neurons: 13.9 },
-  { id: "@cf/nvidia/nemotron-3-120b-a12b", family: "Nemotron", label: "Nemotron 3 120B", neurons: 32.7, reasoning: true },
-  { id: "@cf/qwen/qwen3-30b-a3b-fp8", family: "Qwen", label: "Qwen3 30B", neurons: 6.6, reasoning: true },
-  { id: "@cf/qwen/qwen2.5-coder-32b-instruct", family: "Qwen", label: "Qwen 2.5 Coder 32B", neurons: 25.4 },
-  { id: "@cf/qwen/qwen3.8-27b", family: "Qwen", label: "Qwen 3.8 27B", neurons: 119.6, reasoning: true },
+  { id: "@cf/meta/llama-3.2-1b-instruct", family: "Llama", label: "Llama 3.2 1B Instruct", neurons: 3.9 },
+  { id: "@cf/meta/llama-3.2-3b-instruct", family: "Llama", label: "Llama 3.2 3B Instruct", neurons: 6.6 },
+  // -fp8-fast answered as `llama-3.1-8b-fast-v2` on 2026-09-23 (the reply's
+  // own `model` field), so the entry names what actually runs.
+  { id: "@cf/meta/llama-3.1-8b-fast-v2", family: "Llama", label: "Llama 3.1 8B Fast v2", neurons: 7.5 },
+  { id: "@cf/meta/llama-3.1-8b-instruct-fp8", family: "Llama", label: "Llama 3.1 8B Instruct FP8", neurons: 2.3 },
+  { id: "@cf/meta/llama-4-scout-17b-16e-instruct", family: "Llama", label: "Llama 4 Scout 17B 16E Instruct", neurons: 18.4 },
+  { id: "@cf/meta/llama-3.1-70b-instruct-fp8-fast", family: "Llama", label: "Llama 3.1 70B Instruct FP8 Fast", neurons: 44.2 },
+  { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", family: "Llama", label: "Llama 3.3 70B Instruct FP8 Fast", neurons: 44.2 },
+  // -v0.1 answered as `mistral-7b-instruct-v0.2-lora` on 2026-09-23, so this is
+  // the model that was running all along, under its own name. It also takes
+  // LoRA adapters.
+  // No published rate; 0.09 neurons measured for one rewrite on 2026-09-23.
+  { id: "@cf/mistral/mistral-7b-instruct-v0.2-lora", family: "Mistral", label: "Mistral 7B Instruct v0.2", neurons: 0.1 },
+  { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", family: "Mistral", label: "Mistral Small 3.1 24B Instruct", neurons: 13.9 },
+  { id: "@cf/nvidia/nemotron-3-120b-a12b", family: "Nemotron", label: "Nemotron 3 120B A12B", neurons: 32.7, reasoning: true },
+  { id: "@cf/qwen/qwen3-30b-a3b-fp8", family: "Qwen", label: "Qwen3 30B A3B FP8", neurons: 6.6, reasoning: true },
+  { id: "@cf/qwen/qwen2.5-coder-32b-instruct", family: "Qwen", label: "Qwen2.5 Coder 32B Instruct", neurons: 25.4 },
+  { id: "@cf/qwen/qwen3.8-27b", family: "Qwen", label: "Qwen3.8 27B", neurons: 119.6, reasoning: true },
   { id: "@cf/qwen/qwq-32b", family: "Qwen", label: "QwQ 32B", neurons: 25.4, reasoning: true },
-  { id: "@cf/aisingapore/gemma-sea-lion-v4-27b-it", family: "SEA-LION", label: "SEA-LION v4 27B", neurons: 4.2 },
+  // Neither publishes a rate. Measured on 2026-09-23, one rewrite each: Gemma
+  // 2B billed 93 neurons for 93 tokens (about 1 per token); Gemma 7B reported
+  // 0, and ignored the rewrite instruction to write 304 tokens of its own.
+  { id: "@cf/google/gemma-2b-it-lora", family: "Gemma", label: "Gemma 2B IT", neurons: 93 },
+  { id: "@cf/google/gemma-7b-it-lora", family: "Gemma", label: "Gemma 7B IT", neurons: 0 },
+  { id: "@cf/aisingapore/gemma-sea-lion-v4-27b-it", family: "SEA-LION", label: "Gemma SEA-LION v4 27B IT", neurons: 4.2 },
 ];
 
 // ───────────────────────── xAI (Grok Imagine) ─────────────────────────
@@ -1981,13 +1987,16 @@ for (const m of XAI_MODELS) m.price = XAI_PRICING[m.id] || { type: "variable" };
 // and 1,460 neurons — about 15% of the daily free allowance for one caption.
 export const DESCRIBE_MODELS = [
   { id: "@cf/llava-hf/llava-1.5-7b-hf", label: "LLaVA 1.5 7B", note: "beta, no listed price" },
-  { id: "@cf/moondream/moondream3.1-9B-A2B", label: "Moondream 3.1", note: "richer detail than LLaVA" },
-  { id: "@cf/meta/llama-3.2-11b-vision-instruct", label: "Llama 3.2 11B Vision", note: "the most descriptive of the first three" },
-  { id: "@cf/meta/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout 17B", chat: true, maxTokens: 1024 },
-  { id: "@cf/google/gemma-4-26b-a4b-it", label: "Gemma 4 26B", chat: true, thinking: false, maxTokens: 1024 },
-  { id: "@cf/qwen/qwen3.8-27b", label: "Qwen 3.8 27B", chat: true, thinking: false, maxTokens: 1024 },
+  { id: "@cf/moondream/moondream3.1-9B-A2B", label: "Moondream 3.1 9B A2B", note: "richer detail than LLaVA" },
+  { id: "@cf/meta/llama-3.2-11b-vision-instruct", label: "Llama 3.2 11B Vision Instruct", note: "the most descriptive of the first three" },
+  { id: "@cf/meta/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout 17B 16E Instruct", chat: true, maxTokens: 1024 },
+  { id: "@cf/google/gemma-4-26b-a4b-it", label: "Gemma 4 26B A4B IT", chat: true, thinking: false, maxTokens: 1024 },
+  { id: "@cf/qwen/qwen3.8-27b", label: "Qwen3.8 27B", chat: true, thinking: false, maxTokens: 1024 },
   { id: "@cf/zai-org/glm-5.3-flash", label: "GLM 5.3 Flash", chat: true, paid: true, effort: "low", maxTokens: 3072 },
   { id: "@cf/moonshotai/kimi-k2.7-code", label: "Kimi K2.7 Code", chat: true, paid: true, thinking: false, maxTokens: 1024 },
+  // Not flagged as vision in Cloudflare's model API, but its catalogue page
+  // says it is, and on 2026-09-23 it described the test image correctly.
+  { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", label: "Mistral Small 3.1 24B Instruct", chat: true, maxTokens: 1024 },
 ];
 
 export const DESCRIBE_MODEL_IDS = new Set(DESCRIBE_MODELS.map((m) => m.id));
@@ -2026,17 +2035,34 @@ export const JUDGE_MAX_IMAGES = 10;
 export const DEFAULT_MODEL = "p-image-edit";
 
 // What each chat model accepts beyond the basics, for the ⚙ settings panel.
-// Read from each model's input schema via Cloudflare's models/schema API on
-// 2026-09-23: `think` = chat_template_kwargs.enable_thinking, `effort` =
-// reasoning_effort. GPT-OSS documents effort only in its Responses-API form,
-// which this app does not send, so it gets neither.
-const THINK_AND_EFFORT = [
+// Thinking (chat_template_kwargs.enable_thinking) is from each model's input
+// schema via Cloudflare's models/schema API, 2026-09-23. Effort values are the
+// `reasoning_effort.supported_efforts` Cloudflare's model list gives per model;
+// a value outside it is silently rewritten (GLM 5.3 turns "medium" into
+// "max"), so only these are offered. Where the list gives none, the schema's
+// own low/medium/high stands. GPT-OSS takes effort in the messages form too,
+// verified live: low answered in 20 tokens, high in 80.
+const THINKING = [
   "@cf/deepseek-ai/deepseek-v4-flash-0731", "@cf/deepseek-ai/deepseek-v4-pro-0813",
   "@cf/google/gemma-4-26b-a4b-it", "@cf/zai-org/glm-4.7-flash", "@cf/zai-org/glm-5.3-flash",
-  "@cf/zai-org/glm-5.2", "@cf/zai-org/glm-5.3", "@cf/moonshotai/kimi-k2.5",
-  "@cf/moonshotai/kimi-k2.6", "@cf/moonshotai/kimi-k2.7-code", "@cf/qwen/qwen3.8-27b",
+  "@cf/zai-org/glm-5.2", "@cf/zai-org/glm-5.3", "@cf/moonshotai/kimi-k2.6",
+  "@cf/moonshotai/kimi-k2.7-code", "@cf/qwen/qwen3.8-27b", "@cf/nvidia/nemotron-3-120b-a12b",
 ];
-const THINK_ONLY = ["@cf/nvidia/nemotron-3-120b-a12b"];
+const SCHEMA_EFFORTS = ["low", "medium", "high"];
+const EFFORTS = {
+  "@cf/deepseek-ai/deepseek-v4-flash-0731": ["none", "low", "high", "max"],
+  "@cf/deepseek-ai/deepseek-v4-pro-0813": ["none", "low", "high", "max"],
+  "@cf/google/gemma-4-26b-a4b-it": SCHEMA_EFFORTS,
+  "@cf/zai-org/glm-4.7-flash": SCHEMA_EFFORTS,
+  "@cf/zai-org/glm-5.3-flash": ["low", "high", "max"],
+  "@cf/zai-org/glm-5.2": ["none", "high", "max"],
+  "@cf/zai-org/glm-5.3": ["low", "high", "max"],
+  "@cf/openai/gpt-oss-20b": SCHEMA_EFFORTS,
+  "@cf/openai/gpt-oss-120b": SCHEMA_EFFORTS,
+  "@cf/moonshotai/kimi-k2.6": ["none", "high"],
+  "@cf/moonshotai/kimi-k2.7-code": SCHEMA_EFFORTS,
+  "@cf/qwen/qwen3.8-27b": ["low", "medium", "xhigh"],
+};
 
 // Neurons per million output tokens, from Cloudflare's published per-model
 // rates. Used to show the most a reply can cost at a given token limit.
@@ -2052,17 +2078,16 @@ const OUT_NEURONS_PER_M = {
   "@cf/openai/gpt-oss-20b": 27273,
   "@cf/openai/gpt-oss-120b": 68182,
   "@cf/ibm-granite/granite-4.0-h-micro": 10158,
-  "@cf/moonshotai/kimi-k2.5": 272727,
   "@cf/moonshotai/kimi-k2.6": 363636,
   "@cf/moonshotai/kimi-k2.7-code": 363636,
   "@cf/meta/llama-3.2-1b-instruct": 18252,
   "@cf/meta/llama-3.2-3b-instruct": 30475,
-  "@cf/meta/llama-3.1-8b-instruct-fp8-fast": 34868,
+  "@cf/meta/llama-3.1-8b-fast-v2": 34868,
   "@cf/meta/llama-3.1-8b-instruct-fp8": 26128,
   "@cf/meta/llama-4-scout-17b-16e-instruct": 77273,
   "@cf/meta/llama-3.1-70b-instruct-fp8-fast": 204805,
   "@cf/meta/llama-3.3-70b-instruct-fp8-fast": 204805,
-  "@cf/mistral/mistral-7b-instruct-v0.1": 17300,
+  // Mistral 7B v0.2 and both Gemmas publish no rate, so no maximum is shown.
   "@cf/mistralai/mistral-small-3.1-24b-instruct": 50488,
   "@cf/nvidia/nemotron-3-120b-a12b": 136364,
   "@cf/qwen/qwen3-30b-a3b-fp8": 30475,
@@ -2072,8 +2097,8 @@ const OUT_NEURONS_PER_M = {
   "@cf/aisingapore/gemma-sea-lion-v4-27b-it": 50488,
 };
 for (const m of IMPROVE_MODELS) {
-  m.canThink = THINK_AND_EFFORT.includes(m.id) || THINK_ONLY.includes(m.id);
-  m.canEffort = THINK_AND_EFFORT.includes(m.id);
+  m.canThink = THINKING.includes(m.id);
+  m.efforts = EFFORTS[m.id] || null;
   m.outPerM = OUT_NEURONS_PER_M[m.id] || null;
 }
 
@@ -2106,12 +2131,14 @@ export const DEFAULT_CHAT_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
 //   qwen3 and plamo take plain `text` (for qwen3, an alias of `documents`,
 //   which skips the retrieval `instruction` meant for queries)
 export const EMBED_MODELS = [
-  { id: "@cf/baai/bge-m3", label: "BGE M3 (multilingual)", dims: 1024, neuronsPerM: 1075, contexts: true },
+  { id: "@cf/baai/bge-m3", label: "BGE M3", dims: 1024, neuronsPerM: 1075, contexts: true },
   { id: "@cf/qwen/qwen3-embedding-0.6b", label: "Qwen3 Embedding 0.6B", dims: 1024, neuronsPerM: 1075 },
-  { id: "@cf/baai/bge-small-en-v1.5", label: "BGE Small (English)", dims: 384, neuronsPerM: 1841, pooling: "cls" },
-  { id: "@cf/baai/bge-base-en-v1.5", label: "BGE Base (English)", dims: 768, neuronsPerM: 6058, pooling: "cls" },
-  { id: "@cf/baai/bge-large-en-v1.5", label: "BGE Large (English)", dims: 1024, neuronsPerM: 18582, pooling: "cls" },
-  { id: "@cf/pfnet/plamo-embedding-1b", label: "PLaMo Embedding 1B (Japanese)", dims: 2048, neuronsPerM: 1689 },
+  { id: "@cf/baai/bge-small-en-v1.5", label: "BGE Small EN v1.5", dims: 384, neuronsPerM: 1841, pooling: "cls" },
+  { id: "@cf/baai/bge-base-en-v1.5", label: "BGE Base EN v1.5", dims: 768, neuronsPerM: 6058, pooling: "cls" },
+  { id: "@cf/baai/bge-large-en-v1.5", label: "BGE Large EN v1.5", dims: 1024, neuronsPerM: 18582, pooling: "cls" },
+  // Beta and absent from the pricing table, so its rate is unknown here.
+  { id: "@cf/google/embeddinggemma-300m", label: "EmbeddingGemma 300M", dims: 768, neuronsPerM: null },
+  { id: "@cf/pfnet/plamo-embedding-1b", label: "PLaMo Embedding 1B", dims: 2048, neuronsPerM: 1689 },
 ];
 export const EMBED_MODEL_IDS = new Set(EMBED_MODELS.map((m) => m.id));
 export const DEFAULT_EMBED_MODEL = "@cf/baai/bge-m3";

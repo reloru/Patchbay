@@ -353,6 +353,15 @@ test("settings from the ⚙ panel reach the model, within bounds", async () => {
   assert.deepEqual(glm.seen.input.chat_template_kwargs, { enable_thinking: true });
   assert.equal(glm.seen.input.reasoning_effort, "high");
 
+  // "medium" is not one of GLM 5.3's listed efforts; Cloudflare would turn it
+  // into "max", so it is dropped here rather than forwarded.
+  const medium = await chatWith({
+    model: "@cf/zai-org/glm-5.3",
+    messages: [{ role: "user", content: "hi" }],
+    settings: { effort: "medium" },
+  });
+  assert.equal(medium.seen.input.reasoning_effort, "low", "falls back to the model's own default");
+
   // Llama takes neither switch, so they are not sent even when asked for.
   const llama = await chatWith({
     model: "@cf/meta/llama-3.2-3b-instruct",

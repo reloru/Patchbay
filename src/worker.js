@@ -585,7 +585,7 @@ function userSettings(raw, spec) {
   const n = Math.floor(Number(raw.maxTokens));
   if (Number.isFinite(n) && n >= 16) out.maxTokens = Math.min(n, USER_MAX_TOKENS);
   if (spec.canThink && typeof raw.thinking === "boolean") out.thinking = raw.thinking;
-  if (spec.canEffort && ["low", "medium", "high"].includes(raw.effort)) out.effort = raw.effort;
+  if (Array.isArray(spec.efforts) && spec.efforts.includes(raw.effort)) out.effort = raw.effort;
   return out;
 }
 
