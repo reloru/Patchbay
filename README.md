@@ -13,9 +13,9 @@ Cloudflare Workers — no server to maintain, no build step, no framework.
 | [xAI (Grok)](https://docs.x.ai/) | 5 | `XAI_API_KEY` |
 
 A further 39 models run behind the prompt tools rather than appearing in the
-picker: 29 Workers AI chat models rewrite prompts and hold the chat, 8 Workers
-AI vision models caption images (5 of them are also among the 29, and can see
-the attached image in the chat), 6 embedding models measure text in the
+picker: 30 Workers AI chat models rewrite prompts and hold the chat, 9 Workers
+AI vision models caption images (6 of them are also among the 30, and can see
+the attached image in the chat), 7 embedding models measure text in the
 Embeddings panel, and Pruna's `p-judger` scores an image against a prompt.
 
 ## Features
@@ -34,7 +34,7 @@ so what you see is what the provider would do anyway.
 generate, edit, extend. Picking a mode changes which fields apply, and fields
 belonging to another mode are never sent.
 
-**Prompt rewriting.** Improve runs the prompt through one of 29 Workers AI chat
+**Prompt rewriting.** Improve runs the prompt through one of 30 Workers AI chat
 models as a copy edit: grammar, phrasing and punctuation only. It adds nothing,
 drops nothing, keeps your pronouns and your grammatical mood, and avoids commas,
 which image models read as tag separators rather than punctuation. The result
@@ -43,7 +43,7 @@ rewrite it afterwards. Reverting a rewrite is the prompt Undo button's job, so
 the button stays Improve rather than turning into a one-shot undo of its own.
 
 **Image description.** Describe captions whatever image is already attached,
-with one of 8 Workers AI vision models, and drops the caption into the prompt
+with one of 9 Workers AI vision models, and drops the caption into the prompt
 box as a starting prompt (one Undo step). It only opens a file picker when
 nothing is attached.
 
@@ -54,7 +54,7 @@ thread stays on this device until *New chat*. With *Include the prompt box and
 attached image* on, the newest message also carries the prompt box text and,
 for a model marked 👁, the attached image. Any reply can be put in the prompt
 box as one Undo step, and each shows the neurons it actually used, as reported
-by Cloudflare. It talks to the same 29 chat models as Improve; LLaVA,
+by Cloudflare. It talks to the same 30 chat models as Improve; LLaVA,
 Moondream and Llama 3.2 Vision cannot hold a conversation and stay behind
 Describe.
 
@@ -380,6 +380,33 @@ each is declared per model in `src/models.js` with the measurement that
 settled it. Their neuron figures are measured from a live run rather than
 computed from list rates, because the reasoning tokens bill as output.
 
+### Workers AI model identity
+
+Labels are readable but keep every version detail; the ⚙ panel shows each
+model's exact Cloudflare id. Cloudflare's pricing page and its model catalogue
+(the 65 models its model-search API returns for this account) do not agree,
+and some ids resolve to a different model than their name says — a chat reply
+carries the `model` that actually answered. As checked on 2026-09-23:
+
+- `@cf/mistral/mistral-7b-instruct-v0.1` answers as
+  `@cf/mistral/mistral-7b-instruct-v0.2-lora`, so the app uses the v0.2 id.
+- `@cf/meta/llama-3.1-8b-instruct-fp8-fast` answers as
+  `@cf/meta/llama-3.1-8b-fast-v2`, which the app now calls directly. Neither id
+  is in the catalogue.
+- `@cf/moonshotai/kimi-k2.5` answers as `@cf/moonshotai/kimi-k2.6`, which the
+  app already has, so it was removed.
+- `@cf/meta/llama-3.1-70b-instruct-fp8-fast` is on the pricing page but not in
+  the catalogue, and its reply format carries no model name.
+- Mistral Small 3.1 is not flagged as vision in the model API, but its
+  catalogue page says it is and it read a test image correctly, so it is
+  offered for images.
+- Mistral 7B v0.2, Gemma 2B, Gemma 7B and EmbeddingGemma have no published
+  rate. Measured once each: Gemma 2B about 1 neuron per token, Gemma 7B and
+  Mistral 7B v0.2 near zero; EmbeddingGemma reports no usage.
+- Reasoning effort is offered per model with exactly the values Cloudflare
+  lists for it; a value outside that list is rewritten on Cloudflare's side,
+  and GLM 5.3 turns "medium" into "max".
+
 ### xAI / Grok (5)
 
 `xai-imagine-image`, `xai-imagine-image-quality`, `xai-imagine-image-2`,
@@ -452,7 +479,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 30 Worker tests, then 229 assertions per
+are needed and nothing is billed. 30 Worker tests, then 231 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a

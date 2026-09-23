@@ -3551,6 +3551,10 @@ function renderToolSettings() {
   const h = document.createElement("h3");
   h.textContent = `${tool === "improve" ? "Improve" : "Chat"} settings · ${m.label}`;
   box.appendChild(h);
+  const exact = document.createElement("p");
+  exact.className = "hint model-id";
+  exact.textContent = m.id;
+  box.appendChild(exact);
 
   const instr = document.createElement("label");
   instr.textContent = `Instruction (all ${tool === "improve" ? "Improve" : "chat"} models)`;
@@ -3587,7 +3591,7 @@ function renderToolSettings() {
   num.placeholder = `default ${def}`;
   num.value = mine.maxTokens || "";
   const cost = document.createElement("p");
-  cost.className = "hint";
+  cost.className = "hint settings-cost";
   const showCost = () => {
     const n = Number(num.value) || def;
     cost.textContent = m.outPerM
@@ -3629,12 +3633,15 @@ function renderToolSettings() {
     lab.appendChild(sel);
     row.appendChild(lab);
   }
-  if (m.canEffort) {
+  if (Array.isArray(m.efforts) && m.efforts.length) {
     const lab = document.createElement("label");
     lab.textContent = "Reasoning effort";
     const sel = document.createElement("select");
     sel.className = "settings-effort";
-    for (const [v, text] of [["", `Default${m.effort ? ` (${m.effort})` : ""}`], ["low", "Low"], ["medium", "Medium"], ["high", "High"]]) {
+    // Only the values Cloudflare lists for this model: anything else is
+    // silently rewritten on its side, sometimes to the priciest setting.
+    const opts = [["", `Default${m.effort ? ` (${m.effort})` : ""}`], ...m.efforts.map((e) => [e, e[0].toUpperCase() + e.slice(1)])];
+    for (const [v, text] of opts) {
       const o = document.createElement("option");
       o.value = v;
       o.textContent = text;
@@ -3774,7 +3781,10 @@ function renderEmbed() {
   list.innerHTML = "";
   const m = embedModels.find((x) => x.id === $("embed-model").value);
   const note = [];
-  if (m) note.push(`${m.dims.toLocaleString()} numbers per text · ~${m.neuronsPerM.toLocaleString()} neurons per million tokens`);
+  if (m) {
+    note.push(`${m.dims.toLocaleString()} numbers per text`);
+    note.push(m.neuronsPerM ? `~${m.neuronsPerM.toLocaleString()} neurons per million tokens` : "no published rate");
+  }
   if (h.versions.length) note.push(`${h.versions.length} version${h.versions.length === 1 ? "" : "s"}`);
   if ($("embed-pause").checked) note.push("paused");
   $("embed-note").textContent = note.join(" · ");

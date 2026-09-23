@@ -1577,12 +1577,18 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("the instruction starts as the default", (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION");
   check("a model with thinking offers the switch", (await page.locator(".settings-thinking").count()) === 1 && (await page.locator(".settings-effort").count()) === 1);
   check("and effort shows its built-in default", (await page.locator(".settings-effort option").first().textContent()).includes("low"));
+  check(
+    "effort offers only the values Cloudflare lists for the model",
+    JSON.stringify(await page.locator(".settings-effort option").allTextContents()) === JSON.stringify(["Default (low)", "Low", "High", "Max"]),
+    JSON.stringify(await page.locator(".settings-effort option").allTextContents())
+  );
+  check("the exact model id is shown", (await page.locator("#tool-settings .model-id").textContent()) === "@cf/zai-org/glm-5.3");
 
   await page.fill(".settings-system", "Rewrite it as a haiku.");
   await page.fill(".settings-tokens", "900");
   await page.selectOption(".settings-thinking", "off");
   await page.selectOption(".settings-effort", "high");
-  check("the cost of the limit is shown", (await page.locator("#tool-settings .hint").first().textContent()).includes("360"));
+  check("the cost of the limit is shown", (await page.locator("#tool-settings .settings-cost").textContent()).includes("360"));
   check("the ⚙ marks a customised model", await page.locator("#improve-settings").evaluate((el) => el.classList.contains("custom")));
 
   await page.fill(promptSel, "a cat");
