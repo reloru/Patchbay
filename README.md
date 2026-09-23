@@ -323,7 +323,9 @@ own. The free allowance is 10,000 neurons per day; `/api/neurons` reports
 consumption against it.
 
 `cf-sd15-img2img` was removed on 2026-09-23: the account is refused it with
-`403 / 5018`, and Cloudflare no longer lists it.
+`403 / 5018`, and Cloudflare no longer lists it. That left SD 1.5 Inpainting
+alone under Workers AI Image editing, so it is filed with the other Workers AI
+image models instead.
 
 **Text to speech.** Deepgram's Aura-2 (English and Spanish) and Aura-1 turn
 text into an MP3, which plays in the output panel and can be saved or sent
