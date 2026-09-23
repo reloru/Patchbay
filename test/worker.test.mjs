@@ -199,7 +199,7 @@ test("a vision model with thinking off says so, and one with an effort sends it"
   assert.equal(glm.input.max_tokens, 3072);
 });
 
-const improveWith = async (model) => {
+const improveWith = async (model, settings) => {
   let seen = null;
   const aiEnv = {
     ...env,
@@ -214,7 +214,7 @@ const improveWith = async (model) => {
     password: PASSWORD,
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt: "a old lighthouse", model }),
+    body: JSON.stringify({ prompt: "a old lighthouse", model, settings }),
   }, aiEnv);
   assert.equal(res.status, 200, JSON.stringify(await res.json()));
   return seen;
@@ -341,6 +341,35 @@ const embedWith = async (body, output) => {
   }, aiEnv);
   return { seen, status: res.status, body: await res.json() };
 };
+
+test("settings from the ⚙ panel reach the model, within bounds", async () => {
+  const glm = await chatWith({
+    model: "@cf/zai-org/glm-5.3",
+    messages: [{ role: "user", content: "hi" }],
+    settings: { system: "Be terse.", maxTokens: 99999, thinking: true, effort: "high" },
+  });
+  assert.equal(glm.seen.input.messages[0].content, "Be terse.");
+  assert.equal(glm.seen.input.max_tokens, 8000);
+  assert.deepEqual(glm.seen.input.chat_template_kwargs, { enable_thinking: true });
+  assert.equal(glm.seen.input.reasoning_effort, "high");
+
+  // Llama takes neither switch, so they are not sent even when asked for.
+  const llama = await chatWith({
+    model: "@cf/meta/llama-3.2-3b-instruct",
+    messages: [{ role: "user", content: "hi" }],
+    settings: { thinking: false, effort: "low", maxTokens: 5 },
+  });
+  assert.equal(llama.seen.input.chat_template_kwargs, undefined);
+  assert.equal(llama.seen.input.reasoning_effort, undefined);
+  assert.equal(llama.seen.input.max_tokens, 1024, "below 16 is ignored");
+});
+
+test("Improve takes a custom instruction and still falls back to the default", async () => {
+  const custom = await improveWith("@cf/meta/llama-3.2-3b-instruct", { system: "Haiku." });
+  assert.equal(custom.input.messages[0].content, "Haiku.");
+  const plain = await improveWith("@cf/meta/llama-3.2-3b-instruct");
+  assert.match(plain.input.messages[0].content, /improve its clarity/);
+});
 
 test("embeddings follow each model's documented input", async () => {
   const m3 = await embedWith({ model: "@cf/baai/bge-m3", text: "a fox" }, { response: [[0.1, 0.2]], meta: { neurons: 0.006 } });

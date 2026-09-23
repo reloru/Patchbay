@@ -11,6 +11,7 @@ let describeModels = [];
 let chatModels = [];
 let defaultChatModel = "";
 let embedModels = [];
+let defaultInstructions = { improve: "", chat: "" };
 let defaultEmbedModel = "";
 let defaultDescribeModel = "";
 let judgeUsdPerImage = 0;
@@ -110,6 +111,7 @@ async function boot() {
   chatModels = cfg.chatModels || [];
   defaultChatModel = cfg.defaultChatModel || "";
   embedModels = cfg.embedModels || [];
+  defaultInstructions = cfg.instructions || defaultInstructions;
   defaultEmbedModel = cfg.defaultEmbedModel || "";
   judgeUsdPerImage = Number(cfg.judgeUsdPerImage) || 0;
   judgeMaxImages = Number(cfg.judgeMaxImages) || 1;
@@ -3378,7 +3380,11 @@ async function sendChat() {
   $("chat-send").disabled = true;
   renderChat({ pending: true });
 
-  const body = { model: m.id, messages: chatThread.map(({ role, content }) => ({ role, content })) };
+  const body = {
+    model: m.id,
+    messages: chatThread.map(({ role, content }) => ({ role, content })),
+    settings: toolSettingsFor("chat", m.id),
+  };
   if ($("chat-context").checked) {
     const el = primaryPromptEl();
     if (el && el.value.trim()) body.prompt = el.value.trim();
@@ -3461,6 +3467,235 @@ function initChat() {
 
   loadChat();
   renderChat();
+}
+
+// ---------------------------------------------------------------------------
+// ⚙ settings for Improve and the chat
+//
+// Kept in this browser only and sent with each request; the Worker bounds them
+// (instruction up to 4,000 characters, token limit 16–8,000) and applies
+// thinking and effort only to models whose schema takes them. The instruction
+// belongs to the tool; the token limit, thinking and effort belong to the
+// model, because a limit that suits Kimi wastes money on Llama.
+// ---------------------------------------------------------------------------
+const TOOL_SETTINGS_KEY = "patchbay_tool_settings";
+let toolSettings = { improve: { system: "", models: {} }, chat: { system: "", models: {} } };
+let settingsOpenFor = null;
+
+function loadToolSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(TOOL_SETTINGS_KEY) || "null");
+    if (saved && typeof saved === "object") {
+      for (const t of ["improve", "chat"]) {
+        if (saved[t]) toolSettings[t] = { system: saved[t].system || "", models: saved[t].models || {} };
+      }
+    }
+  } catch {
+    /* defaults */
+  }
+}
+
+function saveToolSettings() {
+  try {
+    localStorage.setItem(TOOL_SETTINGS_KEY, JSON.stringify(toolSettings));
+  } catch {
+    /* kept for this visit */
+  }
+  refreshGears();
+}
+
+// What goes out with a request: only what differs from the defaults.
+function toolSettingsFor(tool, modelId) {
+  const t = toolSettings[tool];
+  const m = (t.models || {})[modelId] || {};
+  const out = {};
+  if (t.system && t.system.trim()) out.system = t.system;
+  if (m.maxTokens) out.maxTokens = m.maxTokens;
+  if (typeof m.thinking === "boolean") out.thinking = m.thinking;
+  if (m.effort) out.effort = m.effort;
+  return out;
+}
+
+function toolModel(tool) {
+  const id = $(tool === "improve" ? "improve-model" : "chat-model").value;
+  return chatModels.find((m) => m.id === id) || improveModels.find((m) => m.id === id) || null;
+}
+
+// The limit the Worker uses when none is set here, mirroring its own defaults.
+function defaultMaxTokens(tool, m) {
+  if (m.maxTokens) return m.maxTokens;
+  if (tool === "improve") return m.reasoning ? 1500 : 320;
+  return m.reasoning ? 2000 : 1024;
+}
+
+function refreshGears() {
+  for (const tool of ["improve", "chat"]) {
+    const btn = $(`${tool}-settings`);
+    const m = toolModel(tool);
+    if (!btn || !m) continue;
+    btn.classList.toggle("custom", Object.keys(toolSettingsFor(tool, m.id)).length > 0);
+  }
+}
+
+function renderToolSettings() {
+  const box = $("tool-settings");
+  const tool = settingsOpenFor;
+  box.classList.toggle("hidden", !tool);
+  box.innerHTML = "";
+  if (!tool) return;
+  const m = toolModel(tool);
+  if (!m) return;
+  const t = toolSettings[tool];
+  const mine = (t.models[m.id] = t.models[m.id] || {});
+
+  const h = document.createElement("h3");
+  h.textContent = `${tool === "improve" ? "Improve" : "Chat"} settings · ${m.label}`;
+  box.appendChild(h);
+
+  const instr = document.createElement("label");
+  instr.textContent = `Instruction (all ${tool === "improve" ? "Improve" : "chat"} models)`;
+  const ta = document.createElement("textarea");
+  ta.className = "settings-system";
+  ta.value = t.system || defaultInstructions[tool] || "";
+  ta.addEventListener("input", () => {
+    // Saving the default text verbatim would pin it, so a later change to the
+    // app's default would never reach this device. Equal to default = unset.
+    t.system = ta.value.trim() === (defaultInstructions[tool] || "").trim() ? "" : ta.value;
+    saveToolSettings();
+  });
+  instr.appendChild(ta);
+  box.appendChild(instr);
+  const resetInstr = document.createElement("button");
+  resetInstr.type = "button";
+  resetInstr.className = "secondary";
+  resetInstr.textContent = "Reset instruction to default";
+  resetInstr.addEventListener("click", () => {
+    t.system = "";
+    saveToolSettings();
+    renderToolSettings();
+  });
+  box.appendChild(resetInstr);
+
+  const def = defaultMaxTokens(tool, m);
+  const tok = document.createElement("label");
+  tok.textContent = "Token limit (this model)";
+  const num = document.createElement("input");
+  num.type = "number";
+  num.min = "16";
+  num.max = "8000";
+  num.className = "settings-tokens";
+  num.placeholder = `default ${def}`;
+  num.value = mine.maxTokens || "";
+  const cost = document.createElement("p");
+  cost.className = "hint";
+  const showCost = () => {
+    const n = Number(num.value) || def;
+    cost.textContent = m.outPerM
+      ? `At most ~${Math.round((n * m.outPerM) / 1e6).toLocaleString()} neurons of reply at ${n.toLocaleString()} tokens.`
+      : "";
+  };
+  num.addEventListener("input", () => {
+    const n = Math.floor(Number(num.value));
+    if (n >= 16) mine.maxTokens = Math.min(n, 8000);
+    else delete mine.maxTokens;
+    saveToolSettings();
+    showCost();
+  });
+  tok.appendChild(num);
+  box.appendChild(tok);
+  box.appendChild(cost);
+  showCost();
+
+  const row = document.createElement("div");
+  row.className = "row";
+  if (m.canThink) {
+    const lab = document.createElement("label");
+    lab.textContent = "Thinking";
+    const sel = document.createElement("select");
+    sel.className = "settings-thinking";
+    const dflt = m.thinking === false ? "off" : "on";
+    for (const [v, text] of [["", `Default (${dflt})`], ["on", "On"], ["off", "Off"]]) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = text;
+      sel.appendChild(o);
+    }
+    sel.value = typeof mine.thinking === "boolean" ? (mine.thinking ? "on" : "off") : "";
+    sel.addEventListener("change", () => {
+      if (sel.value === "") delete mine.thinking;
+      else mine.thinking = sel.value === "on";
+      saveToolSettings();
+    });
+    lab.appendChild(sel);
+    row.appendChild(lab);
+  }
+  if (m.canEffort) {
+    const lab = document.createElement("label");
+    lab.textContent = "Reasoning effort";
+    const sel = document.createElement("select");
+    sel.className = "settings-effort";
+    for (const [v, text] of [["", `Default${m.effort ? ` (${m.effort})` : ""}`], ["low", "Low"], ["medium", "Medium"], ["high", "High"]]) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = text;
+      sel.appendChild(o);
+    }
+    sel.value = mine.effort || "";
+    sel.addEventListener("change", () => {
+      if (sel.value) mine.effort = sel.value;
+      else delete mine.effort;
+      saveToolSettings();
+    });
+    lab.appendChild(sel);
+    row.appendChild(lab);
+  }
+  if (row.children.length) box.appendChild(row);
+  else {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = "This model takes no thinking or effort setting.";
+    box.appendChild(p);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "row";
+  const resetModel = document.createElement("button");
+  resetModel.type = "button";
+  resetModel.className = "secondary";
+  resetModel.textContent = "Reset this model";
+  resetModel.addEventListener("click", () => {
+    delete t.models[m.id];
+    saveToolSettings();
+    renderToolSettings();
+  });
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "secondary";
+  close.textContent = "Close";
+  close.addEventListener("click", () => {
+    settingsOpenFor = null;
+    renderToolSettings();
+  });
+  actions.appendChild(resetModel);
+  actions.appendChild(close);
+  box.appendChild(actions);
+}
+
+function initToolSettings() {
+  loadToolSettings();
+  for (const tool of ["improve", "chat"]) {
+    const btn = $(`${tool}-settings`);
+    if (!btn) continue;
+    btn.addEventListener("click", () => {
+      settingsOpenFor = settingsOpenFor === tool ? null : tool;
+      renderToolSettings();
+    });
+    $(tool === "improve" ? "improve-model" : "chat-model").addEventListener("change", () => {
+      refreshGears();
+      if (settingsOpenFor === tool) renderToolSettings();
+    });
+  }
+  refreshGears();
 }
 
 // ---------------------------------------------------------------------------
@@ -4109,6 +4344,7 @@ function initPromptLibrary() {
   initDescribe();
   initChat();
   initEmbed();
+  initToolSettings();
   initJudge();
   initPromptHistory();
 
@@ -4178,7 +4414,13 @@ function initPromptLibrary() {
         method: "POST",
         retry: true,
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt: text, kind: currentModel.kind, hasImage, model: $("improve-model").value }),
+        body: JSON.stringify({
+          prompt: text,
+          kind: currentModel.kind,
+          hasImage,
+          model: $("improve-model").value,
+          settings: toolSettingsFor("improve", $("improve-model").value),
+        }),
       });
       const data = await res.json();
       if (!res.ok || !data.prompt) throw new Error(data.error || `HTTP ${res.status}`);

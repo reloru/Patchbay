@@ -62,6 +62,7 @@
                    button visually sat on before the wrapper existed. -->
               <span class="tool">
                 <select id="improve-model" aria-label="Model used by Improve" title="Which model rewrites the prompt"></select>
+                <button id="improve-settings" type="button" class="secondary gear" title="Improve settings on this device" aria-label="Improve settings">⚙</button>
                 <button id="prompt-improve" type="button" class="secondary" title="Rewrite the prompt with more detail">✨ Improve</button>
               </span>
               <span class="tool">
@@ -89,12 +90,16 @@
               <span id="improve-note"></span>
               <span id="judge-note"></span>
             </p>
+            <!-- Settings for Improve or the chat, opened by either ⚙. Kept on this
+                 device only; empty fields mean the app's defaults. -->
+            <div id="tool-settings" class="tool-settings hidden"></div>
             <!-- A chat about the prompt. The thread is kept on the device until
                  New chat, and every message sends the whole thread, so the
                  model remembers the conversation. Enter adds a line; Send sends. -->
             <section id="chat" class="chat" aria-label="Chat about the prompt">
               <div class="chat-head">
                 <select id="chat-model" aria-label="Chat model"></select>
+                <button id="chat-settings" type="button" class="secondary gear" title="Chat settings on this device" aria-label="Chat settings">⚙</button>
                 <button id="chat-new" type="button" class="secondary">New chat</button>
               </div>
               <label class="chat-context">

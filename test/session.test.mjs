@@ -1565,6 +1565,65 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
+// ── ⚙ settings for Improve and the chat ────────────────────────────────────
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(200);
+  await page.selectOption("#improve-model", "@cf/zai-org/glm-5.3");
+  await page.locator("#improve-settings").click();
+  check("⚙ opens the settings for the picked model", (await page.locator("#tool-settings h3").textContent()).includes("GLM 5.3"));
+  check("the instruction starts as the default", (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION");
+  check("a model with thinking offers the switch", (await page.locator(".settings-thinking").count()) === 1 && (await page.locator(".settings-effort").count()) === 1);
+  check("and effort shows its built-in default", (await page.locator(".settings-effort option").first().textContent()).includes("low"));
+
+  await page.fill(".settings-system", "Rewrite it as a haiku.");
+  await page.fill(".settings-tokens", "900");
+  await page.selectOption(".settings-thinking", "off");
+  await page.selectOption(".settings-effort", "high");
+  check("the cost of the limit is shown", (await page.locator("#tool-settings .hint").first().textContent()).includes("360"));
+  check("the ⚙ marks a customised model", await page.locator("#improve-settings").evaluate((el) => el.classList.contains("custom")));
+
+  await page.fill(promptSel, "a cat");
+  await page.waitForTimeout(700);
+  await page.locator("#prompt-improve").click();
+  await page.waitForTimeout(500);
+  const sent = await (await page.request.get(BASE + "__improve")).json();
+  check(
+    "Improve sends the settings",
+    JSON.stringify(sent.settings) === JSON.stringify({ system: "Rewrite it as a haiku.", maxTokens: 900, thinking: false, effort: "high" }),
+    JSON.stringify(sent.settings)
+  );
+
+  await page.selectOption("#improve-model", "@cf/meta/llama-3.2-3b-instruct");
+  await page.waitForTimeout(150);
+  check("a model without thinking says so", (await page.locator(".settings-thinking").count()) === 0 && (await page.locator("#tool-settings").textContent()).includes("no thinking"));
+  check("the instruction is shared by the tool's models", (await page.inputValue(".settings-system")) === "Rewrite it as a haiku.");
+  check("the token limit belongs to the other model", (await page.inputValue(".settings-tokens")) === "");
+
+  await page.close();
+  page = await open(context);
+  await page.selectOption("#improve-model", "@cf/zai-org/glm-5.3");
+  await page.locator("#improve-settings").click();
+  check("settings survive a reload", (await page.inputValue(".settings-tokens")) === "900");
+  await page.locator("#tool-settings button", { hasText: "Reset this model" }).click();
+  await page.locator("#tool-settings button", { hasText: "Reset instruction" }).click();
+  check("Reset puts the defaults back", (await page.inputValue(".settings-tokens")) === "" && (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION");
+  check("and the ⚙ is plain again", !(await page.locator("#improve-settings").evaluate((el) => el.classList.contains("custom"))));
+
+  await page.locator("#chat-settings").click();
+  check("the chat's ⚙ opens its own settings", (await page.inputValue(".settings-system")) === "DEFAULT CHAT INSTRUCTION");
+  await page.fill(".settings-tokens", "300");
+  await page.fill("#chat-input", "hi");
+  await page.locator("#chat-send").click();
+  await page.waitForSelector(".chat-msg.assistant:not(.pending)");
+  const chatSent = await (await page.request.get(BASE + "__chat")).json();
+  check("the chat sends its settings", chatSent.settings && chatSent.settings.maxTokens === 300, JSON.stringify(chatSent.settings));
+  await page.close();
+  await context.close();
+}
+
 // ── Embeddings ─────────────────────────────────────────────────────────────
 // Measured a moment after typing stops, compared against the baseline and the
 // previous version, paused on request, kept per model across a reload.

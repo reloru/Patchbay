@@ -58,6 +58,17 @@ by Cloudflare. It talks to the same 29 chat models as Improve; LLaVA,
 Moondream and Llama 3.2 Vision cannot hold a conversation and stay behind
 Describe.
 
+**⚙ settings, on this device.** A ⚙ beside the Improve picker and the chat's
+model picker opens that tool's settings: its instruction (shared by all its
+models, with *Reset instruction to default*), and for the picked model a token
+limit with the most a reply can cost at it, plus Thinking and Reasoning effort
+where the model's schema takes them — DeepSeek V4, Gemma 4, GLM 4.7 Flash and
+5.x, Kimi and Qwen 3.8 take both, Nemotron takes thinking only, the rest take
+neither. Nothing is stored server-side: the settings live in this browser and
+ride along with each request, and the Worker caps them (instruction 4,000
+characters, token limit 16–8,000). An orange ⚙ means the picked model has
+something set.
+
 **Embeddings.** A panel of its own, with its own text box: write something,
 change it, and watch the numbers move. About a second after you stop typing
 the text is measured by one of 6 Workers AI embedding models, which turns it
@@ -441,7 +452,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 28 Worker tests, then 214 assertions per
+are needed and nothing is billed. 30 Worker tests, then 229 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a
