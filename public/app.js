@@ -10,6 +10,8 @@ let defaultImproveModel = "";
 let describeModels = [];
 let chatModels = [];
 let defaultChatModel = "";
+let embedModels = [];
+let defaultEmbedModel = "";
 let defaultDescribeModel = "";
 let judgeUsdPerImage = 0;
 let judgeMaxImages = 1;
@@ -107,6 +109,8 @@ async function boot() {
   defaultDescribeModel = cfg.defaultDescribeModel || "";
   chatModels = cfg.chatModels || [];
   defaultChatModel = cfg.defaultChatModel || "";
+  embedModels = cfg.embedModels || [];
+  defaultEmbedModel = cfg.defaultEmbedModel || "";
   judgeUsdPerImage = Number(cfg.judgeUsdPerImage) || 0;
   judgeMaxImages = Number(cfg.judgeMaxImages) || 1;
   authRequired = Boolean(cfg.authRequired);
@@ -3460,6 +3464,232 @@ function initChat() {
 }
 
 // ---------------------------------------------------------------------------
+// Embeddings
+//
+// Write something, change it, and watch the numbers move. Each measured
+// version is the text plus the model's list of numbers for it; every row shows
+// how close it is in meaning to the baseline (the first version, unless another
+// is set) and to the version before it, and draws the list as a barcode with a
+// second strip for what changed since the previous version.
+//
+// Lists from different models cannot be compared, so the history is kept per
+// model, in this browser. Numbers are rounded to 4 places to keep the store
+// small; that moves a similarity by far less than the 3 places shown.
+// ---------------------------------------------------------------------------
+const EMBED_STORE_KEY = "patchbay_embed";
+const EMBED_MODEL_KEY = "patchbay_embed_model";
+const EMBED_MAX_VERSIONS = 30;
+const EMBED_IDLE_MS = 1000;
+
+let embedStore = {}; // model id -> { baseline: index, versions: [{ text, vec }] }
+let embedTimer = null;
+let embedBusy = false;
+let embedAgain = false;
+
+function embedHistory() {
+  const id = $("embed-model").value;
+  if (!embedStore[id]) embedStore[id] = { baseline: 0, versions: [] };
+  return embedStore[id];
+}
+
+function saveEmbed() {
+  try {
+    localStorage.setItem(EMBED_STORE_KEY, JSON.stringify(embedStore));
+  } catch {
+    /* full or blocked: the history still works for this visit */
+  }
+}
+
+function cosine(a, b) {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  return na && nb ? dot / Math.sqrt(na * nb) : 0;
+}
+
+// One column per number. Orange for positive, blue for negative, brighter the
+// larger it is. `scale` is shared by every strip of one history, so a faint
+// change strip means a small change rather than a rescaled one.
+function drawStrip(canvas, values, scale) {
+  const w = values.length;
+  canvas.width = w;
+  canvas.height = 1;
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(w, 1);
+  for (let i = 0; i < w; i++) {
+    const t = Math.max(-1, Math.min(1, values[i] / scale));
+    const k = Math.abs(t);
+    const [r, g, b] = t >= 0 ? [255, 138, 61] : [90, 169, 255];
+    img.data[i * 4] = Math.round(15 + (r - 15) * k);
+    img.data[i * 4 + 1] = Math.round(17 + (g - 17) * k);
+    img.data[i * 4 + 2] = Math.round(21 + (b - 21) * k);
+    img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function renderEmbed() {
+  const h = embedHistory();
+  const list = $("embed-list");
+  list.innerHTML = "";
+  const m = embedModels.find((x) => x.id === $("embed-model").value);
+  const note = [];
+  if (m) note.push(`${m.dims.toLocaleString()} numbers per text · ~${m.neuronsPerM.toLocaleString()} neurons per million tokens`);
+  if (h.versions.length) note.push(`${h.versions.length} version${h.versions.length === 1 ? "" : "s"}`);
+  if ($("embed-pause").checked) note.push("paused");
+  $("embed-note").textContent = note.join(" · ");
+  if (!h.versions.length) return;
+
+  let scale = 0;
+  for (const v of h.versions) for (const x of v.vec) scale = Math.max(scale, Math.abs(x));
+  const base = h.versions[h.baseline] || h.versions[0];
+
+  // Newest first: the change just made is the one being watched.
+  for (let i = h.versions.length - 1; i >= 0; i--) {
+    const v = h.versions[i];
+    const prev = h.versions[i - 1];
+    const row = document.createElement("div");
+    row.className = "embed-row" + (i === h.baseline ? " baseline" : "");
+
+    const text = document.createElement("p");
+    text.className = "embed-text";
+    text.textContent = v.text;
+    row.appendChild(text);
+
+    const scores = document.createElement("p");
+    scores.className = "embed-scores";
+    const parts = [];
+    parts.push(i === h.baseline ? "<b>baseline</b>" : `vs baseline <b>${cosine(v.vec, base.vec).toFixed(3)}</b>`);
+    if (prev) parts.push(`vs previous <b>${cosine(v.vec, prev.vec).toFixed(3)}</b>`);
+    scores.innerHTML = parts.join(" · ");
+    row.appendChild(scores);
+
+    const strip = document.createElement("canvas");
+    strip.className = "embed-strip";
+    drawStrip(strip, v.vec, scale);
+    row.appendChild(strip);
+
+    if (prev) {
+      const label = document.createElement("p");
+      label.className = "embed-strip-label";
+      label.textContent = "change since previous";
+      row.appendChild(label);
+      const diff = document.createElement("canvas");
+      diff.className = "embed-strip diff";
+      drawStrip(diff, v.vec.map((x, j) => x - prev.vec[j]), scale);
+      row.appendChild(diff);
+    }
+
+    if (i !== h.baseline) {
+      const set = document.createElement("button");
+      set.type = "button";
+      set.className = "secondary";
+      set.textContent = "Set as baseline";
+      set.addEventListener("click", () => {
+        h.baseline = i;
+        saveEmbed();
+        renderEmbed();
+      });
+      row.appendChild(set);
+    }
+    list.appendChild(row);
+  }
+}
+
+async function measureEmbed() {
+  const text = $("embed-text").value.trim();
+  if (!text) return;
+  const h = embedHistory();
+  const last = h.versions[h.versions.length - 1];
+  if (last && last.text === text) return; // nothing changed since the last measure
+  if (embedBusy) {
+    embedAgain = true;
+    return;
+  }
+  embedBusy = true;
+  const model = $("embed-model").value;
+  try {
+    const res = await api("/api/embed", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model, text }),
+    });
+    const data = await res.json();
+    if (!res.ok || !Array.isArray(data.vector)) throw new Error(data.error || `HTTP ${res.status}`);
+    const hist = embedStore[model] || (embedStore[model] = { baseline: 0, versions: [] });
+    hist.versions.push({ text, vec: data.vector.map((x) => Math.round(x * 1e4) / 1e4) });
+    if (hist.versions.length > EMBED_MAX_VERSIONS) {
+      hist.versions.shift();
+      hist.baseline = Math.max(0, hist.baseline - 1);
+    }
+    if (typeof data.neurons === "number") sessionNeurons += data.neurons;
+    saveEmbed();
+    if ($("embed-model").value === model) renderEmbed();
+  } catch (e) {
+    setStatus("Embedding failed: " + e.message, "err");
+  } finally {
+    embedBusy = false;
+    if (embedAgain) {
+      embedAgain = false;
+      measureEmbed();
+    }
+  }
+}
+
+function initEmbed() {
+  const sel = $("embed-model");
+  if (!sel) return;
+  for (const m of embedModels) {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = m.label;
+    sel.appendChild(o);
+  }
+  try {
+    embedStore = JSON.parse(localStorage.getItem(EMBED_STORE_KEY) || "{}") || {};
+    const saved = localStorage.getItem(EMBED_MODEL_KEY);
+    sel.value = embedModels.some((m) => m.id === saved) ? saved : defaultEmbedModel;
+  } catch {
+    embedStore = {};
+    sel.value = defaultEmbedModel;
+  }
+  sel.addEventListener("change", () => {
+    try {
+      localStorage.setItem(EMBED_MODEL_KEY, sel.value);
+    } catch {
+      /* remembered for this visit only */
+    }
+    renderEmbed();
+  });
+
+  // Measured once typing has stopped for a moment, unless paused; Measure now
+  // works either way.
+  $("embed-text").addEventListener("input", () => {
+    clearTimeout(embedTimer);
+    if ($("embed-pause").checked) return;
+    embedTimer = setTimeout(measureEmbed, EMBED_IDLE_MS);
+  });
+  $("embed-pause").addEventListener("change", () => {
+    clearTimeout(embedTimer);
+    renderEmbed();
+  });
+  $("embed-measure").addEventListener("click", measureEmbed);
+  $("embed-clear").addEventListener("click", () => {
+    const h = embedHistory();
+    if (h.versions.length && !window.confirm("Clear this model's versions?")) return;
+    delete embedStore[sel.value];
+    saveEmbed();
+    renderEmbed();
+  });
+  renderEmbed();
+}
+
+// ---------------------------------------------------------------------------
 // Judge (p-judger)
 //
 // Scores how well an image matches the prompt. It is a prompt tool rather than
@@ -3878,6 +4108,7 @@ function initPromptLibrary() {
   initImproveModelPicker();
   initDescribe();
   initChat();
+  initEmbed();
   initJudge();
   initPromptHistory();
 

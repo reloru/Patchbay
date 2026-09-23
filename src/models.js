@@ -1673,6 +1673,9 @@ export const IMPROVE_MODELS = [
   { id: "@cf/openai/gpt-oss-20b", family: "GPT-OSS", label: "GPT-OSS 20B", neurons: 7.7, reasoning: true },
   { id: "@cf/openai/gpt-oss-120b", family: "GPT-OSS", label: "GPT-OSS 120B", neurons: 17.5, reasoning: true },
   { id: "@cf/ibm-granite/granite-4.0-h-micro", family: "Granite", label: "Granite 4.0 Micro", neurons: 2.2 },
+  // Measured on 2026-09-23 with thinking off: 1,025 tokens and 381 neurons for
+  // a one-line rewrite. It works, but it is the priciest entry here.
+  { id: "@cf/moonshotai/kimi-k2.5", family: "Kimi", label: "Kimi K2.5", neurons: 381, reasoning: true, thinking: false, maxTokens: 3000 },
   { id: "@cf/moonshotai/kimi-k2.6", family: "Kimi", label: "Kimi K2.6", neurons: 199, reasoning: true, paid: true, thinking: false },
   { id: "@cf/moonshotai/kimi-k2.7-code", family: "Kimi", label: "Kimi K2.7 Code", neurons: 187, reasoning: true, paid: true },
   { id: "@cf/meta/llama-3.2-1b-instruct", family: "Llama", label: "Llama 3.2 1B", neurons: 3.9 },
@@ -1682,10 +1685,13 @@ export const IMPROVE_MODELS = [
   { id: "@cf/meta/llama-3.1-8b-instruct-fp8-fast", family: "Llama", label: "Llama 3.1 8B Fast", neurons: 7.5 },
   { id: "@cf/meta/llama-3.1-8b-instruct-fp8", family: "Llama", label: "Llama 3.1 8B FP8", neurons: 2.3 },
   { id: "@cf/meta/llama-4-scout-17b-16e-instruct", family: "Llama", label: "Llama 4 Scout 17B", neurons: 18.4 },
+  { id: "@cf/meta/llama-3.1-70b-instruct-fp8-fast", family: "Llama", label: "Llama 3.1 70B", neurons: 44.2 },
   { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", family: "Llama", label: "Llama 3.3 70B", neurons: 44.2 },
+  { id: "@cf/mistral/mistral-7b-instruct-v0.1", family: "Mistral", label: "Mistral 7B", neurons: 4.7 },
   { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", family: "Mistral", label: "Mistral Small 24B", neurons: 13.9 },
   { id: "@cf/nvidia/nemotron-3-120b-a12b", family: "Nemotron", label: "Nemotron 3 120B", neurons: 32.7, reasoning: true },
   { id: "@cf/qwen/qwen3-30b-a3b-fp8", family: "Qwen", label: "Qwen3 30B", neurons: 6.6, reasoning: true },
+  { id: "@cf/qwen/qwen2.5-coder-32b-instruct", family: "Qwen", label: "Qwen 2.5 Coder 32B", neurons: 25.4 },
   { id: "@cf/qwen/qwen3.8-27b", family: "Qwen", label: "Qwen 3.8 27B", neurons: 119.6, reasoning: true },
   { id: "@cf/qwen/qwq-32b", family: "Qwen", label: "QwQ 32B", neurons: 25.4, reasoning: true },
   { id: "@cf/aisingapore/gemma-sea-lion-v4-27b-it", family: "SEA-LION", label: "SEA-LION v4 27B", neurons: 4.2 },
@@ -2030,6 +2036,33 @@ const CHAT_VISION_IDS = new Set(DESCRIBE_MODELS.filter((m) => m.chat).map((m) =>
 export const CHAT_MODELS = IMPROVE_MODELS.map((m) => ({ ...m, vision: CHAT_VISION_IDS.has(m.id) }));
 export const CHAT_MODEL_IDS = new Set(CHAT_MODELS.map((m) => m.id));
 export const DEFAULT_CHAT_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
+
+// Text embedding models for the Embeddings panel. Each turns a text into a
+// list of numbers placed by meaning; the panel compares those lists. `dims` is
+// the list length each returned on 2026-09-23, and `neuronsPerM` is
+// Cloudflare's published rate per million input tokens — a prompt is a
+// hundred or so tokens, so a measurement costs about a tenth of a neuron.
+// Lists from different models cannot be compared, so the panel keeps one
+// version history per model.
+//
+// Request shapes follow each model's documented schema:
+//   contexts  bge-m3 documents {contexts: [{text}]}, and answers under
+//             `response` rather than `data`
+//   pooling   the English BGE models take `pooling`; Cloudflare recommends
+//             "cls" for accuracy and warns cls and mean vectors do not mix,
+//             so it is fixed here rather than left to the default "mean"
+//   qwen3 and plamo take plain `text` (for qwen3, an alias of `documents`,
+//   which skips the retrieval `instruction` meant for queries)
+export const EMBED_MODELS = [
+  { id: "@cf/baai/bge-m3", label: "BGE M3 (multilingual)", dims: 1024, neuronsPerM: 1075, contexts: true },
+  { id: "@cf/qwen/qwen3-embedding-0.6b", label: "Qwen3 Embedding 0.6B", dims: 1024, neuronsPerM: 1075 },
+  { id: "@cf/baai/bge-small-en-v1.5", label: "BGE Small (English)", dims: 384, neuronsPerM: 1841, pooling: "cls" },
+  { id: "@cf/baai/bge-base-en-v1.5", label: "BGE Base (English)", dims: 768, neuronsPerM: 6058, pooling: "cls" },
+  { id: "@cf/baai/bge-large-en-v1.5", label: "BGE Large (English)", dims: 1024, neuronsPerM: 18582, pooling: "cls" },
+  { id: "@cf/pfnet/plamo-embedding-1b", label: "PLaMo Embedding 1B (Japanese)", dims: 2048, neuronsPerM: 1689 },
+];
+export const EMBED_MODEL_IDS = new Set(EMBED_MODELS.map((m) => m.id));
+export const DEFAULT_EMBED_MODEL = "@cf/baai/bge-m3";
 export const DEFAULT_IMPROVE_MODEL = "@cf/meta/llama-3.2-3b-instruct";
 
 // Allow-list of valid model ids (used by the Worker to reject arbitrary models).

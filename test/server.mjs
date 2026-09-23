@@ -21,6 +21,8 @@ import {
   DEFAULT_DESCRIBE_MODEL,
   CHAT_MODELS,
   DEFAULT_CHAT_MODEL,
+  EMBED_MODELS,
+  DEFAULT_EMBED_MODEL,
   JUDGE_USD_PER_IMAGE,
   JUDGE_MAX_IMAGES,
 } from "../src/models.js";
@@ -53,6 +55,7 @@ let statusDelayMs = 0;
 let neuronsUsed = null;
 // What the chat last sent, for the test to inspect through /__chat.
 let lastChat = null;
+let embedCalls = 0;
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
   "base64"
@@ -77,6 +80,8 @@ const server = createServer(async (req, res) => {
       describeModels: DESCRIBE_MODELS,
       defaultDescribeModel: DEFAULT_DESCRIBE_MODEL,
       chatModels: CHAT_MODELS,
+      embedModels: EMBED_MODELS,
+      defaultEmbedModel: DEFAULT_EMBED_MODEL,
       defaultChatModel: DEFAULT_CHAT_MODEL,
       judgeUsdPerImage: JUDGE_USD_PER_IMAGE,
       judgeMaxImages: JUDGE_MAX_IMAGES,
@@ -150,6 +155,23 @@ const server = createServer(async (req, res) => {
     return json(res, { reply: `STUB REPLY ${n}`, neurons: 12.3 });
   }
   if (path === "/__chat") return json(res, lastChat || {});
+  if (path === "/api/embed") {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const { text } = JSON.parse(Buffer.concat(chunks).toString());
+    embedCalls++;
+    // A bag of words: each word lights up a few of 64 positions, so texts that
+    // share words score close and texts that do not score far apart — enough
+    // to test that the panel compares, without a model.
+    const vec = new Array(64).fill(0);
+    for (const w of text.toLowerCase().split(/\W+/).filter(Boolean)) {
+      let hsh = 0;
+      for (const ch of w) hsh = (hsh * 31 + ch.charCodeAt(0)) >>> 0;
+      for (let k = 0; k < 3; k++) vec[(hsh >>> (k * 7)) % 64] += k === 1 ? -1 : 1;
+    }
+    return json(res, { vector: vec, neurons: 0.01 });
+  }
+  if (path === "/__embed") return json(res, { embedCalls });
   if (path === "/api/neurons") {
     if (neuronsUsed == null) return json(res, {}, 404);
     return json(res, { day: "2026-09-23", used: neuronsUsed, limit: 10000, remaining: Math.max(0, 10000 - neuronsUsed), byModel: [] });

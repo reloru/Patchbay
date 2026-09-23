@@ -108,6 +108,23 @@
               </div>
               <p id="chat-note" class="chat-note"></p>
             </section>
+            <!-- Embeddings: write, change it, and watch the numbers move. Its own
+                 text box, independent of the prompt box. Each version is
+                 measured about a second after typing stops unless paused. -->
+            <details id="embed" class="embed">
+              <summary>Embeddings</summary>
+              <div class="embed-head">
+                <select id="embed-model" aria-label="Embedding model"></select>
+              </div>
+              <textarea id="embed-text" rows="3" placeholder="Write something, then change it…" aria-label="Text to measure"></textarea>
+              <div class="embed-controls">
+                <label class="embed-pause"><input id="embed-pause" type="checkbox" /> Pause</label>
+                <button id="embed-measure" type="button" class="secondary">Measure now</button>
+                <button id="embed-clear" type="button" class="secondary">Clear</button>
+              </div>
+              <p id="embed-note" class="chat-note"></p>
+              <div id="embed-list" class="embed-list"></div>
+            </details>
             <!-- p-judger's score lands here rather than in the output panel, so
                  scoring a generation does not clear the generation. -->
             <div id="judge-result" class="judge hidden"></div>

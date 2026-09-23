@@ -1565,6 +1565,61 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
+// ── Embeddings ─────────────────────────────────────────────────────────────
+// Measured a moment after typing stops, compared against the baseline and the
+// previous version, paused on request, kept per model across a reload.
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+  const calls = async () => (await (await page.request.get(BASE + "__embed")).json()).embedCalls;
+  await page.locator("#embed > summary").click();
+  const before = await calls();
+  await page.fill("#embed-text", "a red fox in the snow");
+  await page.waitForTimeout(1500);
+  check("a pause in typing measures the text", (await calls()) === before + 1 && (await page.locator(".embed-row").count()) === 1);
+  check("the first version is the baseline", (await page.locator(".embed-row.baseline").count()) === 1);
+  check("and is drawn as a barcode", (await page.locator(".embed-row canvas").count()) === 1);
+
+  await page.fill("#embed-text", "a red fox in the deep snow");
+  await page.waitForTimeout(1500);
+  const small = await page.locator(".embed-row").first().locator(".embed-scores").textContent();
+  check("a small edit scores close to the baseline", /vs baseline (0\.[89]|1\.0)/.test(small), small);
+  check("and gets a change strip", (await page.locator(".embed-row").first().locator("canvas").count()) === 2);
+
+  await page.fill("#embed-text", "quarterly tax filing deadlines");
+  await page.waitForTimeout(1500);
+  const far = await page.locator(".embed-row").first().locator(".embed-scores").textContent();
+  const farScore = Number((far.match(/vs baseline ([\d.-]+)/) || [])[1]);
+  check("a different subject scores far from it", farScore < 0.5, far);
+
+  await page.check("#embed-pause");
+  const paused = await calls();
+  await page.fill("#embed-text", "typed while paused");
+  await page.waitForTimeout(1500);
+  check("paused, typing measures nothing", (await calls()) === paused);
+  await page.locator("#embed-measure").click();
+  await page.waitForTimeout(400);
+  check("Measure now still measures", (await calls()) === paused + 1 && (await page.locator(".embed-row").count()) === 4);
+
+  await page.locator(".embed-row").nth(1).locator("button", { hasText: "Set as baseline" }).click();
+  check("any version can become the baseline", (await page.locator(".embed-row").nth(1).evaluate((el) => el.classList.contains("baseline"))));
+
+  await page.selectOption("#embed-model", "@cf/baai/bge-small-en-v1.5");
+  check("another model has its own, empty, history", (await page.locator(".embed-row").count()) === 0);
+  await page.selectOption("#embed-model", "@cf/baai/bge-m3");
+  check("and switching back finds it", (await page.locator(".embed-row").count()) === 4);
+
+  await page.close();
+  page = await open(context);
+  await page.locator("#embed > summary").click();
+  check("the versions survive a reload", (await page.locator(".embed-row").count()) === 4);
+  page.once("dialog", (d) => d.accept());
+  await page.locator("#embed-clear").click();
+  check("Clear empties them", (await page.locator(".embed-row").count()) === 0);
+  await page.close();
+  await context.close();
+}
+
 // ── Neuron meter past and approaching the free allowance ───────────────────
 // On Workers Paid the 10,000 is where billing starts, not where the models
 // stop, so the bar has to say so on the way up and price the overage after.

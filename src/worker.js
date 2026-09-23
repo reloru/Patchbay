@@ -19,6 +19,9 @@ import {
   CHAT_MODELS,
   CHAT_MODEL_IDS,
   DEFAULT_CHAT_MODEL,
+  EMBED_MODELS,
+  EMBED_MODEL_IDS,
+  DEFAULT_EMBED_MODEL,
   DEFAULT_DESCRIBE_MODEL,
   JUDGE_MODEL,
   JUDGE_USD_PER_IMAGE,
@@ -127,6 +130,8 @@ export default {
           describeModels: DESCRIBE_MODELS,
           chatModels: CHAT_MODELS,
           defaultChatModel: DEFAULT_CHAT_MODEL,
+          embedModels: EMBED_MODELS,
+          defaultEmbedModel: DEFAULT_EMBED_MODEL,
           defaultDescribeModel: DEFAULT_DESCRIBE_MODEL,
           judgeUsdPerImage: JUDGE_USD_PER_IMAGE,
           judgeMaxImages: JUDGE_MAX_IMAGES,
@@ -161,6 +166,9 @@ export default {
       }
       if (path === "/api/improve-prompt" && request.method === "POST") {
         return await handleImprovePrompt(request, env);
+      }
+      if (path === "/api/embed" && request.method === "POST") {
+        return await handleEmbed(request, env);
       }
       if (path === "/api/chat" && request.method === "POST") {
         return await handleChat(request, env);
@@ -680,6 +688,39 @@ async function handleChat(request, env) {
   if (!text) return json({ error: "The model returned nothing usable. Try again or pick another model." }, 502);
   const neurons = out && out.usage && typeof out.usage.neurons === "number" ? out.usage.neurons : null;
   return json({ reply: text, neurons, sawImage: Boolean(b64 && spec.vision) });
+}
+
+// One text in, its embedding out: the list of numbers the Embeddings panel
+// draws and compares. The comparing happens in the browser, which holds the
+// history; this only asks the model.
+const EMBED_MAX_CHARS = 8000;
+
+async function handleEmbed(request, env) {
+  if (!env.AI) return json({ error: "Workers AI binding is not configured." }, 500);
+  const body = await request.json().catch(() => null);
+  const text = body && typeof body.text === "string" ? body.text.trim() : "";
+  if (!text) return json({ error: "Nothing to measure." }, 400);
+  if (text.length > EMBED_MAX_CHARS) return json({ error: "Text is too long to measure." }, 400);
+  const model = EMBED_MODEL_IDS.has(body.model) ? body.model : DEFAULT_EMBED_MODEL;
+
+  const spec = EMBED_MODELS.find((m) => m.id === model);
+  const input = spec.contexts ? { contexts: [{ text }], truncate_inputs: true } : { text: [text] };
+  if (spec.pooling) input.pooling = spec.pooling;
+
+  let out;
+  try {
+    out = await env.AI.run(model, input);
+  } catch (err) {
+    return json({ error: "Embedding failed: " + (err && err.message ? err.message : String(err)) }, 502);
+  }
+  const rows = out && (Array.isArray(out.data) ? out.data : out.response);
+  const vector = Array.isArray(rows) && Array.isArray(rows[0]) ? rows[0] : null;
+  if (!vector || !vector.length) return json({ error: "The model returned no embedding." }, 502);
+  const neurons =
+    (out.usage && typeof out.usage.neurons === "number" && out.usage.neurons) ||
+    (out.meta && typeof out.meta.neurons === "number" && out.meta.neurons) ||
+    null;
+  return json({ vector, neurons });
 }
 
 const CAPTION_REQUEST = "Describe this image in vivid detail, as if writing a prompt to recreate it.";

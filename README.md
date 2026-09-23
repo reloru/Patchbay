@@ -12,11 +12,11 @@ Cloudflare Workers — no server to maintain, no build step, no framework.
 | [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 13 | none |
 | [xAI (Grok)](https://docs.x.ai/) | 5 | `XAI_API_KEY` |
 
-A further 29 models run behind the prompt tools rather than appearing in the
-picker: 25 Workers AI chat models rewrite prompts and hold the chat, 8 Workers
-AI vision models caption images (5 of them are also among the 25, and can see
-the attached image in the chat), and Pruna's `p-judger` scores an image
-against a prompt.
+A further 39 models run behind the prompt tools rather than appearing in the
+picker: 29 Workers AI chat models rewrite prompts and hold the chat, 8 Workers
+AI vision models caption images (5 of them are also among the 29, and can see
+the attached image in the chat), 6 embedding models measure text in the
+Embeddings panel, and Pruna's `p-judger` scores an image against a prompt.
 
 ## Features
 
@@ -34,7 +34,7 @@ so what you see is what the provider would do anyway.
 generate, edit, extend. Picking a mode changes which fields apply, and fields
 belonging to another mode are never sent.
 
-**Prompt rewriting.** Improve runs the prompt through one of 25 Workers AI chat
+**Prompt rewriting.** Improve runs the prompt through one of 29 Workers AI chat
 models as a copy edit: grammar, phrasing and punctuation only. It adds nothing,
 drops nothing, keeps your pronouns and your grammatical mood, and avoids commas,
 which image models read as tag separators rather than punctuation. The result
@@ -54,9 +54,23 @@ thread stays on this device until *New chat*. With *Include the prompt box and
 attached image* on, the newest message also carries the prompt box text and,
 for a model marked 👁, the attached image. Any reply can be put in the prompt
 box as one Undo step, and each shows the neurons it actually used, as reported
-by Cloudflare. It talks to the same 25 chat models as Improve; LLaVA,
+by Cloudflare. It talks to the same 29 chat models as Improve; LLaVA,
 Moondream and Llama 3.2 Vision cannot hold a conversation and stay behind
 Describe.
+
+**Embeddings.** A panel of its own, with its own text box: write something,
+change it, and watch the numbers move. About a second after you stop typing
+the text is measured by one of 6 Workers AI embedding models, which turns it
+into a list of numbers placed by meaning (384 to 2,048 of them, by model).
+Each version shows how close it is to the baseline — the first version, or
+any you set — and to the version before it, on a 0–1 scale, and draws its
+numbers as a barcode with a second strip for what changed since the previous
+version. Pause stops the automatic measuring; Measure now works either way.
+Versions are kept on this device, separately per model, since lists from
+different models cannot be compared. Each request follows the model's
+documented schema: `contexts` for BGE M3, `cls` pooling for the English BGE
+models, as Cloudflare recommends. A measurement costs about a tenth of a
+neuron.
 
 **Prompt-match scoring.** Judge runs Pruna's `p-judger` over an image and
 returns how well it matches the prompt. It scores the image you just generated
@@ -238,6 +252,7 @@ Browser (public/)  ──►  Cloudflare Worker (src/worker.js)  ──┬──
    /api/improve-prompt  copy-edits a prompt via Workers AI
    /api/describe        captions an image via Workers AI
    /api/chat            the chat thread, via Workers AI
+   /api/embed           embeds text for the Embeddings panel
    /api/judge           scores an image against a prompt via Pruna p-judger
    /api/neurons         current-day Workers AI neuron spend
 ```
@@ -426,7 +441,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 26 Worker tests, then 201 assertions per
+are needed and nothing is billed. 28 Worker tests, then 214 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a
