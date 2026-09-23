@@ -428,6 +428,18 @@ carries the `model` that actually answered. As checked on 2026-09-23:
 - Reasoning effort is offered per model with exactly the values Cloudflare
   lists for it; a value outside that list is rewritten on Cloudflare's side,
   and GLM 5.3 turns "medium" into "max".
+- LoRA adapters are not offered in the app. Tested on 2026-09-23: Workers AI
+  runs a public Hugging Face adapter once its two files are uploaded to the
+  account as a finetune (`wrangler ai finetune create`, or the finetunes API),
+  but it refuses any adapter whose `adapter_config.json` names a base outside
+  its allowed list — the Predibase adapters in Cloudflare's own collection
+  name `mistralai/Mistral-7B-v0.1`, which is why Cloudflare's public
+  `cf-public-*` adapters returned `500` on every call. Changing that field to
+  `mistralai/Mistral-7B-Instruct-v0.2` (and adding `model_type: "mistral"`)
+  made one run on `@cf/mistral/mistral-7b-instruct-v0.2-lora`. Only
+  `.safetensors` weights are accepted. No adapter found for an allowed base
+  was useful for image prompts: the image-prompt adapters on Hugging Face are
+  almost all for Llama 2 7B, whose Cloudflare base returns garbled text.
 
 ### xAI / Grok (5)
 
