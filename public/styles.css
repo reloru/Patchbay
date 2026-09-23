@@ -292,6 +292,12 @@ footer { margin-top: 28px; color: var(--muted); font-size: 12px; }
   background: var(--panel);
   color: var(--text);
 }
+.tts-panel { margin-top: 8px; }
+.tts-panel summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.tts-panel .tts-text { width: 100%; margin-top: 8px; }
+.tts-row { display: flex; gap: 8px; margin-top: 8px; }
+.tts-row select, .tts-row input { flex: 1; min-width: 0; }
+.result-audio { width: 100%; }
 .spend[data-level="warn"] { border-color: var(--accent); color: var(--accent); }
 .spend[data-level="over"] { border-color: var(--danger); color: var(--danger); }
 .error { color: var(--danger); font-size: 13px; }

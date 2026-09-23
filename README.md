@@ -3,13 +3,13 @@
 </p>
 
 Patchbay is a web front end for image and video generation and editing. It puts
-47 models from three providers behind one interface and runs entirely on
+50 models from three providers behind one interface and runs entirely on
 Cloudflare Workers — no server to maintain, no build step, no framework.
 
 | Provider | Models | Credentials |
 |----------|--------|-------------|
 | [Pruna AI](https://docs.api.pruna.ai/) | 32 | `PRUNA_API_KEY` |
-| [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 10 | none |
+| [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 13 | none |
 | [xAI (Grok)](https://docs.x.ai/) | 5 | `XAI_API_KEY` |
 
 A further 29 models run behind the three prompt tools rather than appearing in
@@ -20,7 +20,7 @@ scores an image against a prompt.
 ## Features
 
 **One picker, grouped by task.** Models are filed under Image editing, Image
-generation, Video and LoRA training, each split by provider — provider decides
+generation, Video, Audio and LoRA training, each split by provider — provider decides
 what a model costs and which key it needs, and two of them ship FLUX.2 Klein 4B
 under the same name.
 
@@ -104,7 +104,7 @@ seconds after three real minutes, which is worse than no count at all, since it
 says the job has barely started.
 
 It runs from the moment you press Generate, on one clock, whatever the model
-does underneath. Thirteen of them never get a job id — Workers AI and
+does underneath. Sixteen of them never get a job id — Workers AI and
 xAI's image endpoints run the whole generation inside a single request and
 answer with the finished picture — so there is nothing to poll and nothing was
 driving the status line: it held "Submitting…" for the entire run and then
@@ -312,11 +312,11 @@ The two trainers emit a `.zip` of weights rather than an image, and are billed
 per 1,000 training steps. A run takes minutes to hours and its output link
 expires about 30 minutes after it finishes.
 
-### Cloudflare Workers AI (11)
+### Cloudflare Workers AI (13)
 
 `cf-flux-1-schnell`, `cf-flux-2-klein-4b`, `cf-flux-2-klein-9b`, `cf-flux-2-dev`,
 `cf-lucid-origin`, `cf-phoenix-1`, `cf-sdxl-base`, `cf-sdxl-lightning`,
-`cf-dreamshaper-8`, `cf-sd15-inpainting`
+`cf-dreamshaper-8`, `cf-sd15-inpainting`, `cf-aura-2-en`, `cf-aura-2-es`, `cf-aura-1`
 
 These run on Cloudflare's GPUs through the `AI` binding and need no key of their
 own. The free allowance is 10,000 neurons per day; `/api/neurons` reports
@@ -324,6 +324,18 @@ consumption against it.
 
 `cf-sd15-img2img` was removed on 2026-09-23: the account is refused it with
 `403 / 5018`, and Cloudflare no longer lists it.
+
+**Text to speech.** Deepgram's Aura-2 (English and Spanish) and Aura-1 turn
+text into an MP3, which plays in the output panel and can be saved or sent
+into a video model's audio track. The same voices are available without
+leaving a video model: every audio field has a *Generate voice* panel that
+speaks the text and attaches the result as that field's file. Aura bills per
+character — about 2,727 neurons per 1,000 characters for Aura-2 and half that
+for Aura-1, so a 1,000-character script is over a quarter of the daily free
+allowance — and the estimate under the text follows it as you type.
+MeloTTS is documented but not offered: on 2026-09-23 it answered every call
+with `500 / 3043: Internal server error`. Generated audio is not kept in the
+Recent strip, which holds images and video only.
 
 **Workers Paid models.** Cloudflare gates seven Workers AI models behind the
 paid plan, all of them chat models: DeepSeek V4 Flash and Pro, GLM 5.2, 5.3
@@ -411,7 +423,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 23 Worker tests, then 187 assertions per
+are needed and nothing is billed. 24 Worker tests, then 198 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a

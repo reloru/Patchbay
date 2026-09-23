@@ -1226,6 +1226,16 @@ export const MODELS = [
 const CF_NEGATIVE = { name: "negative_prompt", label: "Things to avoid", type: "text", default: "" };
 const CF_SEED = { name: "seed", label: "Seed", type: "int", default: 0, min: 0, defaultLabel: "random" };
 
+const AURA_2_EN_VOICES = [
+  "amalthea", "andromeda", "apollo", "arcas", "aries", "asteria", "athena", "atlas", "aurora", "callista",
+  "cora", "cordelia", "delia", "draco", "electra", "harmonia", "helena", "hera", "hermes", "hyperion",
+  "iris", "janus", "juno", "jupiter", "luna", "mars", "minerva", "neptune", "odysseus", "ophelia",
+  "orion", "orpheus", "pandora", "phoebe", "pluto", "saturn", "thalia", "theia", "vesta", "zeus",
+];
+const AURA_2_ES_VOICES = ["alvaro", "aquila", "carina", "celeste", "diana", "estrella", "javier", "nestor", "selena", "sirio"];
+const AURA_1_VOICES = ["angus", "arcas", "asteria", "athena", "helios", "hera", "luna", "orion", "orpheus", "perseus", "stella", "zeus"];
+const voiceOptions = (names) => names.map((v) => ({ value: v, label: v[0].toUpperCase() + v.slice(1) }));
+
 const WORKERS_AI_MODELS = [
   {
     id: "cf-flux-1-schnell",
@@ -1396,6 +1406,62 @@ const WORKERS_AI_MODELS = [
       CF_SEED,
     ],
   },
+  // ── Text to speech ──
+  // Voice lists are the `speaker` enums in each model's input schema on
+  // developers.cloudflare.com. Output is MP3 for all four; the Worker returns it
+  // as a data: URI like the image models. Aura-2 English leads the group so it
+  // is the default wherever a TTS model is picked.
+  {
+    id: "cf-aura-2-en",
+    cfModel: "@cf/deepgram/aura-2-en",
+    label: "Aura-2 English",
+    group: "Audio",
+    kind: "audio",
+    blurb: "Deepgram text-to-speech with context-aware pacing, expression and fillers.",
+    fields: [
+      { name: "text", label: "Text to speak", type: "textarea", required: true },
+      { name: "speaker", label: "Voice", type: "enum", default: "luna", options: voiceOptions(AURA_2_EN_VOICES) },
+    ],
+  },
+  {
+    id: "cf-aura-2-es",
+    cfModel: "@cf/deepgram/aura-2-es",
+    label: "Aura-2 Spanish",
+    group: "Audio",
+    kind: "audio",
+    blurb: "Aura-2 with Spanish voices.",
+    fields: [
+      { name: "text", label: "Text to speak", type: "textarea", required: true },
+      { name: "speaker", label: "Voice", type: "enum", default: "aquila", options: voiceOptions(AURA_2_ES_VOICES) },
+    ],
+  },
+  {
+    id: "cf-aura-1",
+    cfModel: "@cf/deepgram/aura-1",
+    label: "Aura-1",
+    group: "Audio",
+    kind: "audio",
+    blurb: "The earlier Aura generation, at half Aura-2's rate.",
+    fields: [
+      { name: "text", label: "Text to speak", type: "textarea", required: true },
+      { name: "speaker", label: "Voice", type: "enum", default: "angus", options: voiceOptions(AURA_1_VOICES) },
+    ],
+  },
+  // MeloTTS (@cf/myshell-ai/melotts) is documented but not offered. On
+  // 2026-09-23 every call — through the binding and the REST API, with and
+  // without `lang`, on the documented minimal input {prompt} — failed with
+  // "500 / 3043: Internal server error". Restore this entry once it answers;
+  // the Worker already unwraps its JSON {audio} shape, the voice panel already
+  // shows a language box for a model with a `lang` field, and its rate stays
+  // in CF_NEURONS below.
+  //   { id: "cf-melotts", cfModel: "@cf/myshell-ai/melotts", label: "MeloTTS",
+  //     group: "Audio", kind: "audio",
+  //     blurb: "Multilingual text-to-speech by MyShell. One voice per language; far cheaper than Aura.",
+  //     fields: [
+  //       { name: "prompt", label: "Text to speak", type: "textarea", required: true },
+  //       // Cloudflare gives 'en' and 'fr' as examples but publishes no list.
+  //       { name: "lang", label: "Language code", type: "text", default: "en", help: "e.g. en, fr" },
+  //     ] },
 ];
 
 for (const m of WORKERS_AI_MODELS) m.provider = "workers-ai";
@@ -1513,6 +1579,13 @@ const CF_NEURONS = {
   "cf-sdxl-lightning": { free: true },
   "cf-sd15-inpainting": { free: true },
   // dreamshaper-8-lcm has no published rate at all — left unpriced.
+  // Text to speech, converted from the listed dollar rates at $0.011 per 1,000
+  // neurons: Aura-2 $0.03 and Aura-1 $0.015 per 1,000 characters, MeloTTS
+  // $0.000205 per minute of audio.
+  "cf-aura-2-en": { perKChars: 2727.27 },
+  "cf-aura-2-es": { perKChars: 2727.27 },
+  "cf-aura-1": { perKChars: 1363.64 },
+  "cf-melotts": { perAudioMin: 18.64 },
 };
 
 // USD per neuron beyond the free daily allowance ($0.011 per 1,000).

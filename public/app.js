@@ -180,7 +180,7 @@ const SECTION_ORDER = [
   ["Image generation", "xai"],
   ["Video", "xai"],
 ];
-const GROUP_ORDER = ["Image editing", "Image generation", "Video", "LoRA training"];
+const GROUP_ORDER = ["Image editing", "Image generation", "Video", "Audio", "LoRA training"];
 const PROVIDER_ORDER = ["pruna", "xai", "workers-ai"];
 const PROVIDER_LABEL = { pruna: "Pruna", xai: "xAI", "workers-ai": "Workers AI" };
 
@@ -365,6 +365,32 @@ function fileToDataUri(file) {
   });
 }
 
+// Speech is priced by what is said, not by a picture's size, so the 1024x1024
+// sample the image models quote means nothing here.
+function speechRateBlurb(p) {
+  if (p.perAudioMin != null) {
+    return `Workers AI: ~${p.perAudioMin} neurons per minute of speech — the length is only known once it is spoken.`;
+  }
+  return (
+    `Workers AI: ~${Math.round(p.perKChars).toLocaleString()} neurons per 1,000 characters ` +
+    `(${fmtUsd((p.perKChars * CF_USD_PER_NEURON))} past the free allowance).`
+  );
+}
+
+// The live line under a text-to-speech box: what this text will cost as typed.
+function speechEstimateText(model, text) {
+  const p = model && model.price;
+  if (!p || p.type !== "cf_neurons") return "";
+  if (p.perAudioMin != null) return speechRateBlurb(p);
+  const n = estimateNeurons(model, { text });
+  if (!n) return speechRateBlurb(p);
+  const pct = (n / CF_FREE_NEURONS) * 100;
+  return (
+    `${text.length.toLocaleString()} characters ≈ ${Math.round(n).toLocaleString()} neurons ` +
+    `(${pct < 1 ? "<1" : Math.round(pct)}% of the daily free allowance, ${fmtUsd(n * CF_USD_PER_NEURON)} past it).`
+  );
+}
+
 function defaultSteps(model) {
   const f = model.fields.find((x) => x.name === "steps" || x.name === "num_steps");
   return f ? f.default : 0;
@@ -373,6 +399,7 @@ function defaultSteps(model) {
 function priceBlurb(model) {
   const p = model.price;
   if (!p) return "";
+  if (p.type === "cf_neurons" && (p.perKChars != null || p.perAudioMin != null)) return speechRateBlurb(p);
   if (p.type === "cf_neurons") {
     if (p.free) {
       return "Workers AI: no per-image charge listed — but still needs daily allowance left.";
@@ -805,8 +832,130 @@ function imageControl(f) {
     hint.textContent = `Up to ${maxItems} files.`;
     box.appendChild(hint);
   }
+  if (noun === "audio") box.appendChild(voicePanel(f, redraw));
   redraw();
   return box;
+}
+
+// A voice track made in place, for the video models that take audio. It runs
+// the same Workers AI speech models the picker offers, through /api/generate,
+// and the MP3 it returns becomes this field's file exactly as a picked one
+// would — replacing whatever was there, since each of these fields holds one.
+function voicePanel(f, redraw) {
+  const speech = MODELS.filter((m) => m.kind === "audio");
+  const det = document.createElement("details");
+  det.className = "tts-panel";
+  const sum = document.createElement("summary");
+  sum.textContent = "🔊 Generate voice";
+  det.appendChild(sum);
+  if (!speech.length) return det;
+
+  const text = document.createElement("textarea");
+  text.className = "tts-text";
+  text.rows = 3;
+  text.placeholder = "What should be said";
+
+  const modelSel = document.createElement("select");
+  modelSel.className = "tts-model";
+  for (const m of speech) {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = m.label;
+    modelSel.appendChild(o);
+  }
+
+  // Aura models take a named voice; MeloTTS takes a language code instead.
+  const voiceSel = document.createElement("select");
+  voiceSel.className = "tts-voice";
+  const lang = document.createElement("input");
+  lang.type = "text";
+  lang.className = "tts-lang";
+
+  const est = document.createElement("p");
+  est.className = "help tts-estimate";
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "secondary tts-go";
+  go.textContent = "Generate voice";
+
+  const model = () => speech.find((m) => m.id === modelSel.value);
+  const textField = () => model().fields.find((x) => x.type === "textarea");
+  const refresh = () => {
+    const m = model();
+    const speaker = m.fields.find((x) => x.name === "speaker");
+    const langField = m.fields.find((x) => x.name === "lang");
+    voiceSel.innerHTML = "";
+    if (speaker) {
+      for (const o of speaker.options) {
+        const opt = document.createElement("option");
+        opt.value = o.value;
+        opt.textContent = o.label;
+        opt.selected = o.value === speaker.default;
+        voiceSel.appendChild(opt);
+      }
+    }
+    voiceSel.classList.toggle("hidden", !speaker);
+    lang.classList.toggle("hidden", !langField);
+    if (langField && !lang.value) lang.value = langField.default;
+    est.textContent = speechEstimateText(m, text.value);
+  };
+  modelSel.addEventListener("change", refresh);
+  text.addEventListener("input", () => (est.textContent = speechEstimateText(model(), text.value)));
+
+  go.addEventListener("click", async () => {
+    const m = model();
+    const said = text.value.trim();
+    if (!said) {
+      setStatus("Write what the voice should say first.", "err");
+      return;
+    }
+    const input = { [textField().name]: said };
+    if (!voiceSel.classList.contains("hidden")) input.speaker = voiceSel.value;
+    if (!lang.classList.contains("hidden") && lang.value.trim()) input.lang = lang.value.trim();
+    go.disabled = true;
+    const idle = go.textContent;
+    go.textContent = "Generating…";
+    setStatus(`Generating voice with ${m.label}…`, "load");
+    try {
+      const res = await api("/api/generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: m.id, input }),
+      });
+      const data = await res.json();
+      const uri = data && Array.isArray(data.images) ? data.images[0] : null;
+      if (!res.ok || !uri) throw new Error((data && data.error) || `HTTP ${res.status}`);
+      const blob = await (await fetch(uri)).blob();
+      const file = new File([blob], `voice-${Date.now()}.mp3`, { type: blob.type || "audio/mpeg" });
+      for (const u of uploads[f.name]) releasePreview(u);
+      uploads[f.name].length = 0;
+      adoptFiles(f, [file], redraw, "Could not attach the voice");
+      redraw();
+      const n = estimateNeurons(m, input);
+      if (n) sessionNeurons += n;
+      updateSpendBar();
+      setTimeout(refreshNeurons, 4000);
+      setStatus(`Voice attached to ${f.label}.`, "ok");
+    } catch (e) {
+      setStatus("Voice failed: " + e.message, "err");
+    } finally {
+      go.disabled = false;
+      go.textContent = idle;
+    }
+  });
+
+  const pickers = document.createElement("div");
+  pickers.className = "tts-row";
+  pickers.appendChild(modelSel);
+  pickers.appendChild(voiceSel);
+  pickers.appendChild(lang);
+  det.appendChild(text);
+  det.appendChild(pickers);
+  det.appendChild(est);
+  det.appendChild(go);
+  refresh();
+  return det;
 }
 
 function renderRequired(f) {
@@ -816,12 +965,24 @@ function renderRequired(f) {
   label.className = "field-label";
   label.textContent = f.label + " *";
   field.appendChild(label);
-  field.appendChild(inputControl(f));
+  const control = inputControl(f);
+  field.appendChild(control);
   if (f.help) {
     const h = document.createElement("p");
     h.className = "help";
     h.textContent = f.help;
     field.appendChild(h);
+  }
+  // Speech bills per character, and a long script can take a real share of the
+  // day's allowance, so the cost follows the text as it is typed.
+  if (currentModel && currentModel.kind === "audio" && f.type === "textarea") {
+    const est = document.createElement("p");
+    est.className = "help tts-estimate";
+    const model = currentModel;
+    const update = () => (est.textContent = speechEstimateText(model, control.value || ""));
+    control.addEventListener("input", update);
+    update();
+    field.appendChild(est);
   }
   return field;
 }
@@ -2689,6 +2850,12 @@ async function showResult(prunaUrls, kind, meta) {
       v.muted = true;
       v.playsInline = true;
       item.appendChild(v);
+    } else if (kind === "audio") {
+      const a = document.createElement("audio");
+      a.src = src;
+      a.controls = true;
+      a.className = "result-audio";
+      item.appendChild(a);
     } else if (kind === "file") {
       // Not previewable media (e.g. a trained LoRA .zip) — just a plain link.
       const box2 = document.createElement("div");
@@ -2703,7 +2870,7 @@ async function showResult(prunaUrls, kind, meta) {
     const actions = document.createElement("div");
     actions.className = "result-actions";
     actions.appendChild(downloadButton(prunaUrl, kind, i, prunaUrls.length, blob));
-    if (blob && (kind === "image" || kind === "video")) {
+    if (blob && (kind === "image" || kind === "video" || kind === "audio")) {
       actions.appendChild(reuseButton(blob, i, prunaUrls.length, kind));
     }
     item.appendChild(actions);
@@ -2731,12 +2898,13 @@ async function showResult(prunaUrls, kind, meta) {
 
 // Where a result goes when the current model has nowhere to put it — one model
 // per kind, each of which takes that kind as its required subject.
-const REUSE_FALLBACK_MODEL = { image: "p-image-edit", video: "p-video-edit" };
+const REUSE_FALLBACK_MODEL = { image: "p-image-edit", video: "p-video-edit", audio: "p-video-avatar" };
 
 // The "image" field type is reused for audio, video and .zip slots via accept,
 // so a result only belongs in a field that takes its own kind.
 function fieldTakes(f, kind) {
   const accept = f.accept || "image/*";
+  if (kind === "audio") return accept.startsWith("audio/");
   return kind === "video" ? accept.startsWith("video/") : accept.startsWith("image/");
 }
 
@@ -2768,8 +2936,10 @@ function reuseLabel(f, kind = "image") {
     const fallback = REUSE_FALLBACK_MODEL[kind];
     const m = MODELS.find((x) => x.id === fallback);
     if (!m) return "";
+    if (kind === "audio") return `🔊 Use in ${m.label}`;
     return kind === "video" ? `🎬 Edit in ${m.label}` : `✏️ Edit in ${m.label}`;
   }
+  if (kind === "audio") return "🔊 Use as audio track";
   if (kind === "video") {
     return currentModel.group === "Video" && f.required ? "🎬 Edit this clip" : "🎬 Use as source";
   }
@@ -2784,7 +2954,7 @@ function reuseButton(blob, index, total, kind) {
   btn.type = "button";
   btn.className = "secondary reuse";
   const label = () => reuseLabel(reuseTarget(kind), kind) + (total > 1 ? ` #${index + 1}` : "");
-  btn.title = `Send this ${kind === "video" ? "clip" : "image"} into the model's input`;
+  btn.title = `Send this ${kind === "video" ? "clip" : kind === "audio" ? "audio" : "image"} into the model's input`;
   btn.addEventListener("click", () => useGeneratedAsInput(blob, index, kind));
   // The target moves as fields fill up or the mode changes, so the label is
   // re-read rather than frozen at render time. An empty label means the current
@@ -2809,9 +2979,9 @@ function generatedFileName(blob, index, kind) {
 }
 
 function useGeneratedAsInput(blob, index, kind = "image") {
-  const noun = kind === "video" ? "video" : "image";
+  const noun = kind === "video" ? "video" : kind === "audio" ? "audio" : "image";
   const file = new File([blob], generatedFileName(blob, index, kind), {
-    type: blob.type || (kind === "video" ? "video/mp4" : "image/jpeg"),
+    type: blob.type || (kind === "video" ? "video/mp4" : kind === "audio" ? "audio/mpeg" : "image/jpeg"),
   });
   const f = reuseTarget(kind);
 
@@ -2865,10 +3035,11 @@ function extFromType(type, kind) {
     "image/webp": "webp",
     "video/mp4": "mp4",
     "video/webm": "webm",
+    "audio/mpeg": "mp3",
     "application/zip": "zip",
     "application/x-zip-compressed": "zip",
   };
-  return map[(type || "").toLowerCase()] || (kind === "video" ? "mp4" : kind === "file" ? "zip" : "jpg");
+  return map[(type || "").toLowerCase()] || (kind === "video" ? "mp4" : kind === "audio" ? "mp3" : kind === "file" ? "zip" : "jpg");
 }
 
 // Saving must never navigate the page. A plain <a download> sends iOS Safari to
@@ -3767,6 +3938,8 @@ function estimateNeurons(model, input) {
   const p = model.price;
   if (!p || p.type !== "cf_neurons") return null;
   if (p.free) return 0; // Cloudflare lists these at $0.00 — unmetered.
+  if (p.perKChars != null) return (String(input.text ?? input.prompt ?? "").length / 1000) * p.perKChars;
+  if (p.perAudioMin != null) return null; // priced on the audio's length, unknown until it exists
 
   const w = Number(input.width) || 1024;
   const h = Number(input.height) || 1024;
@@ -3939,6 +4112,10 @@ function addSpend(model, input, outputCount) {
   if (model.price && model.price.type === "cf_unpriced") {
     updateSpendBar();
     return "Cloudflare does not publish a rate for this model.";
+  }
+  if (model.price && model.price.perAudioMin != null) {
+    updateSpendBar();
+    return `Priced on the speech's length, ~${model.price.perAudioMin} neurons per minute.`;
   }
 
   // xAI video jobs report their real dollar cost — use that instead of an estimate.

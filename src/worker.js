@@ -241,6 +241,19 @@ async function runWorkersAI(spec, input, env) {
     return json({ error: "Workers AI: " + (err && err.message ? err.message : String(err)) }, 502);
   }
 
+  // Speech. Aura returns a raw MP3 stream; MeloTTS documents either that or
+  // JSON {audio: "<base64 MP3>"}. Both are MP3 per Cloudflare's output schemas.
+  if (spec.kind === "audio") {
+    if (out && typeof out === "object" && typeof out.audio === "string") {
+      return json({ status: "succeeded", images: ["data:audio/mpeg;base64," + out.audio] });
+    }
+    if (out instanceof ReadableStream || out instanceof ArrayBuffer || ArrayBuffer.isView(out)) {
+      const buf = out instanceof ReadableStream ? await new Response(out).arrayBuffer() : out;
+      return json({ status: "succeeded", images: ["data:audio/mpeg;base64," + bytesToBase64(buf)] });
+    }
+    return json({ error: "Unexpected Workers AI audio response shape." }, 502);
+  }
+
   // Shape 1: JSON { image: "<base64>" } (FLUX, Leonardo). Sniff the real type
   // rather than assuming JPEG — a mislabelled data: URI can fail to render in
   // stricter browsers.

@@ -87,11 +87,16 @@ const server = createServer(async (req, res) => {
     // Held open by /__delay, to stand in for a model whose whole run happens
     // inside this one request.
     if (generateDelayMs) await new Promise((r) => setTimeout(r, generateDelayMs));
-    // Fourteen of the models never get a job id: Workers AI and xAI's image
+    // Thirteen of the image and video models never get a job id: Workers AI and xAI's image
     // endpoints run the whole generation inside this request and answer with
     // the finished image. Returning an id for them too would let the polling
     // loop cover a path that does not exist in production.
     const spec = MODELS_BY_ID.get(lastGenerate.model);
+    // Speech comes back the same way, as an MP3 data: URI. The bytes need not
+    // decode: what is under test is where the file goes, not how it sounds.
+    if (spec && spec.kind === "audio") {
+      return json(res, { status: "succeeded", images: ["data:audio/mpeg;base64," + Buffer.from("ID3stub").toString("base64")] });
+    }
     if (spec && (spec.provider === "workers-ai" || (spec.provider === "xai" && !spec.xaiAsync))) {
       return json(res, { status: "succeeded", images: ["data:image/png;base64," + PNG.toString("base64")] });
     }
