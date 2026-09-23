@@ -19,6 +19,8 @@ import {
   DEFAULT_IMPROVE_MODEL,
   DESCRIBE_MODELS,
   DEFAULT_DESCRIBE_MODEL,
+  CHAT_MODELS,
+  DEFAULT_CHAT_MODEL,
   JUDGE_USD_PER_IMAGE,
   JUDGE_MAX_IMAGES,
 } from "../src/models.js";
@@ -49,6 +51,8 @@ let statusDelayMs = 0;
 // Set by the test through /__neurons, to stand in for a day's analytics. Null
 // keeps /api/neurons unconfigured, which is what every other block expects.
 let neuronsUsed = null;
+// What the chat last sent, for the test to inspect through /__chat.
+let lastChat = null;
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
   "base64"
@@ -72,6 +76,8 @@ const server = createServer(async (req, res) => {
       defaultImproveModel: DEFAULT_IMPROVE_MODEL,
       describeModels: DESCRIBE_MODELS,
       defaultDescribeModel: DEFAULT_DESCRIBE_MODEL,
+      chatModels: CHAT_MODELS,
+      defaultChatModel: DEFAULT_CHAT_MODEL,
       judgeUsdPerImage: JUDGE_USD_PER_IMAGE,
       judgeMaxImages: JUDGE_MAX_IMAGES,
     });
@@ -136,6 +142,14 @@ const server = createServer(async (req, res) => {
     });
   }
   // Not configured in the stub, which is a case the app has to tolerate.
+  if (path === "/api/chat") {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    lastChat = JSON.parse(Buffer.concat(chunks).toString());
+    const n = lastChat.messages.filter((m) => m.role === "user").length;
+    return json(res, { reply: `STUB REPLY ${n}`, neurons: 12.3 });
+  }
+  if (path === "/__chat") return json(res, lastChat || {});
   if (path === "/api/neurons") {
     if (neuronsUsed == null) return json(res, {}, 404);
     return json(res, { day: "2026-09-23", used: neuronsUsed, limit: 10000, remaining: Math.max(0, 10000 - neuronsUsed), byModel: [] });

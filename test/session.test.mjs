@@ -1356,7 +1356,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
-// ── Describe can ask a question instead of captioning ──────────────────────
+// ── Describe captions; questions go to the chat ────────────────────────────
 {
   const context = await browser.newContext();
   const page = await open(context);
@@ -1364,82 +1364,90 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForTimeout(200);
   await page.setInputFiles(".file-input", imgPath);
   await page.waitForSelector(".thumbs .thumb img");
-
-  // Empty box: the Worker's own captioning instruction stands, so nothing is
-  // sent and the behaviour is exactly what it was.
   const posted = [];
   page.on("request", (r) => {
     if (r.url().includes("/api/describe") && r.method() === "POST") posted.push(JSON.parse(r.postData() || "{}"));
   });
   await page.locator("#prompt-describe").click();
   await page.waitForTimeout(900);
-  check("with no question, none is sent", posted.length === 1 && !("question" in posted[0]), JSON.stringify(posted[0] && Object.keys(posted[0])));
-
   check("a caption seeds the prompt, which is what captioning is for", (await page.inputValue(promptSel)) === "STUB CAPTION TEXT");
-  check(
-    "and no prompt is sent with a caption — it must describe the image, not the ask",
-    !("prompt" in posted[0]),
-    JSON.stringify(Object.keys(posted[0]))
-  );
+  check("Describe sends no question and no prompt", posted.length === 1 && !("question" in posted[0]) && !("prompt" in posted[0]), JSON.stringify(posted[0] && Object.keys(posted[0])));
+  const notes = await page.locator(".tool-notes").textContent();
+  check("the notes name no files", !notes.includes("cat.png"), notes);
+  await page.close();
+  await context.close();
+}
 
-  const ownPrompt = "a neon cat on a rooftop at dusk";
-  await page.fill(promptSel, ownPrompt);
-  await page.waitForTimeout(700);
-  await page.fill("#describe-question", "does the image match my prompt?");
-  await page.waitForTimeout(250);
-  const note = await page.locator("#describe-note").textContent();
-  check("the note says what it will ask", note.includes("does the image match my prompt?"));
-  check("and that the prompt rides along", note.includes("and your prompt"), note);
-
-  await page.locator("#prompt-describe").click();
-  await page.waitForTimeout(900);
-  check(
-    "a typed question reaches the Worker",
-    posted.length === 2 && posted[1].question === "does the image match my prompt?",
-    JSON.stringify(posted[1] && Object.keys(posted[1]))
-  );
-  check(
-    "with the prompt alongside it, so the question can be about the prompt",
-    posted[1] && posted[1].prompt === ownPrompt,
-    JSON.stringify(posted[1] && posted[1].prompt)
-  );
-  // Asking about the prompt used to overwrite the prompt asked about.
-  check("the prompt box is left alone", (await page.inputValue(promptSel)) === ownPrompt);
-  const answer = await page.locator("#describe-result").textContent();
-  check("the answer appears in its own panel", answer.includes("STUB ANSWER TEXT"), answer.slice(0, 60));
-  check("headed by the question it answers", answer.includes("does the image match my prompt?"));
-
-  // The answer can still become the prompt — offered rather than imposed.
-  await page.locator("#describe-result button", { hasText: "Use as prompt" }).click();
+// ── Chat ───────────────────────────────────────────────────────────────────
+// A thread that remembers: every Send carries the whole conversation, the
+// thread survives a reload, and a reply can become the prompt as one Undo.
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+  await page.selectOption("#model-select", "p-image-edit");
   await page.waitForTimeout(200);
-  check("Use as prompt puts it in the box", (await page.inputValue(promptSel)) === "STUB ANSWER TEXT");
-  await page.locator("#prompt-undo").click();
-  check("and that is one undo entry", (await page.inputValue(promptSel)) === ownPrompt);
-  await page.locator("#describe-result button", { hasText: "Dismiss" }).click();
-  check(
-    "Dismiss hides the panel",
-    await page.locator("#describe-result").evaluate((el) => el.classList.contains("hidden"))
-  );
+  await page.setInputFiles(".file-input", imgPath);
+  await page.waitForSelector(".thumbs .thumb img");
+  await page.fill(promptSel, "a neon cat on a rooftop");
+  await page.waitForTimeout(700);
 
-  // The box sits inside the generate form, so the browser's implicit
-  // submission made Enter start a generation — a paid one, from the return
-  // key, while typing a question.
   let generates = 0;
   page.on("request", (r) => {
     if (r.url().includes("/api/generate")) generates++;
   });
-  await page.fill(promptSel, "a prompt worth not spending");
-  await page.waitForTimeout(700);
-  await page.click("#describe-question");
-  await page.fill("#describe-question", "how many of them are there?");
+  await page.click("#chat-input");
+  await page.keyboard.type("first line");
   await page.keyboard.press("Enter");
-  await page.waitForTimeout(1200);
-  check("Enter in the question box does not start a generation", generates === 0, `${generates} generate call(s)`);
+  await page.keyboard.type("second line");
+  await page.waitForTimeout(300);
+  check("Enter in the chat box starts a new line", (await page.inputValue("#chat-input")) === "first line\nsecond line");
+  check("and sends nothing", generates === 0 && (await page.locator(".chat-msg").count()) === 0);
+
+  await page.locator("#chat-send").click();
+  await page.waitForSelector(".chat-msg.assistant:not(.pending)");
+  let sent = await (await page.request.get(BASE + "__chat")).json();
+  check("Send delivers the message", sent.messages.length === 1 && sent.messages[0].content === "first line\nsecond line", JSON.stringify(sent.messages));
+  check("with the prompt box text", sent.prompt === "a neon cat on a rooftop", JSON.stringify(sent.prompt));
+  check("and the attached image, for a model that can see", typeof sent.image_b64 === "string" && sent.image_b64.length > 0);
+  check("the reply appears in the thread", (await page.locator(".chat-msg.assistant .chat-text").first().textContent()) === "STUB REPLY 1");
+  check("with what it cost", (await page.locator(".chat-cost").first().textContent()).includes("12"));
+  check("the input box is cleared for the next message", (await page.inputValue("#chat-input")) === "");
+
+  await page.fill("#chat-input", "shorter please");
+  await page.locator("#chat-send").click();
+  await page.waitForFunction(() => document.querySelectorAll(".chat-msg.assistant:not(.pending)").length === 2);
+  sent = await (await page.request.get(BASE + "__chat")).json();
   check(
-    "it runs Describe instead",
-    posted.length === 3 && posted[2].question === "how many of them are there?",
-    JSON.stringify(posted[2])
+    "the second message carries the whole thread, so the model remembers",
+    sent.messages.length === 3 && sent.messages[1].role === "assistant" && sent.messages[1].content === "STUB REPLY 1",
+    JSON.stringify(sent.messages.map((m) => m.role))
   );
+
+  await page.locator(".chat-use").last().click();
+  await page.waitForTimeout(200);
+  check("Put in prompt box replaces the prompt with the reply", (await page.inputValue(promptSel)) === "STUB REPLY 2");
+  await page.locator("#prompt-undo").click();
+  check("and Undo brings the old prompt back", (await page.inputValue(promptSel)) === "a neon cat on a rooftop");
+
+  await page.uncheck("#chat-context");
+  await page.fill("#chat-input", "no context this time");
+  await page.locator("#chat-send").click();
+  await page.waitForFunction(() => document.querySelectorAll(".chat-msg.assistant:not(.pending)").length === 3);
+  sent = await (await page.request.get(BASE + "__chat")).json();
+  check("with the switch off, neither prompt nor image is sent", !("prompt" in sent) && !("image_b64" in sent), JSON.stringify(Object.keys(sent)));
+  await page.check("#chat-context");
+
+  await page.selectOption("#chat-model", "@cf/meta/llama-3.2-3b-instruct");
+  await page.waitForTimeout(150);
+  check("a model that cannot see says so while an image is attached", (await page.locator("#chat-note").textContent()).includes("can't see images"));
+
+  await page.close();
+  page = await open(context);
+  check("the thread survives a reload", (await page.locator(".chat-msg").count()) === 6, `${await page.locator(".chat-msg").count()} messages`);
+  page.once("dialog", (d) => d.accept());
+  await page.locator("#chat-new").click();
+  await page.waitForTimeout(150);
+  check("New chat clears it", (await page.locator(".chat-msg").count()) === 0);
   await page.close();
   await context.close();
 }

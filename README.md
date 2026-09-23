@@ -12,10 +12,11 @@ Cloudflare Workers — no server to maintain, no build step, no framework.
 | [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 13 | none |
 | [xAI (Grok)](https://docs.x.ai/) | 5 | `XAI_API_KEY` |
 
-A further 29 models run behind the three prompt tools rather than appearing in
-the picker: 25 Workers AI chat models rewrite prompts, 8 Workers AI vision
-models caption images (5 of them are also among the 25), and Pruna's `p-judger`
-scores an image against a prompt.
+A further 29 models run behind the prompt tools rather than appearing in the
+picker: 25 Workers AI chat models rewrite prompts and hold the chat, 8 Workers
+AI vision models caption images (5 of them are also among the 25, and can see
+the attached image in the chat), and Pruna's `p-judger` scores an image
+against a prompt.
 
 ## Features
 
@@ -41,22 +42,21 @@ reaches the prompt box exactly as the model produced it — the Worker does not
 rewrite it afterwards. Reverting a rewrite is the prompt Undo button's job, so
 the button stays Improve rather than turning into a one-shot undo of its own.
 
-**Image description, and asking about one.** Describe reads whatever image is
-already attached, with one of 8 Workers AI vision models, and only opens a file
-picker when there is none. It has two modes, and the note line always says which
-one is about to run.
+**Image description.** Describe captions whatever image is already attached,
+with one of 8 Workers AI vision models, and drops the caption into the prompt
+box as a starting prompt (one Undo step). It only opens a file picker when
+nothing is attached.
 
-Leave the box under the toolbar empty and it *captions*: the description drops
-into the prompt box as a starting prompt, which is what captioning is for.
-
-Type a question in that box and it *answers*. The question goes to the model
-along with your prompt, so it can be about the prompt as much as the picture —
-"does this match what I asked for", "what is missing". The answer appears in its
-own panel under the toolbar rather than in the prompt box, for the same reason
-Judge's score does not land in the output panel: asking about your prompt must
-not destroy the prompt you asked about. `↑ Use as prompt` puts it in the box if
-that is what you wanted, as one undo entry. A caption is never given the prompt
-— it has to describe the image as it is, not what was asked for.
+**Chat.** A conversation about the prompt sits under the toolbar: a thread,
+a multi-line box where Enter adds a line, and a Send button. Every message
+sends the whole thread, so the model remembers the conversation, and the
+thread stays on this device until *New chat*. With *Include the prompt box and
+attached image* on, the newest message also carries the prompt box text and,
+for a model marked 👁, the attached image. Any reply can be put in the prompt
+box as one Undo step, and each shows the neurons it actually used, as reported
+by Cloudflare. It talks to the same 25 chat models as Improve; LLaVA,
+Moondream and Llama 3.2 Vision cannot hold a conversation and stay behind
+Describe.
 
 **Prompt-match scoring.** Judge runs Pruna's `p-judger` over an image and
 returns how well it matches the prompt. It scores the image you just generated
@@ -237,6 +237,7 @@ Browser (public/)  ──►  Cloudflare Worker (src/worker.js)  ──┬──
    /api/result          streams media back, adds credentials, no-store
    /api/improve-prompt  copy-edits a prompt via Workers AI
    /api/describe        captions an image via Workers AI
+   /api/chat            the chat thread, via Workers AI
    /api/judge           scores an image against a prompt via Pruna p-judger
    /api/neurons         current-day Workers AI neuron spend
 ```
@@ -425,7 +426,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 24 Worker tests, then 198 assertions per
+are needed and nothing is billed. 26 Worker tests, then 201 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a

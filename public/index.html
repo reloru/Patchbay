@@ -83,30 +83,31 @@
                 <button id="prompt-redo" type="button" class="secondary" title="Redo the last undone prompt change" disabled>↷ Redo</button>
               </span>
             </div>
-            <!-- Describe captions by default. The Worker has always accepted a
-                 question instead; this is what reaches it. Its own row rather
-                 than a third control inside the tool wrapper, which would leave
-                 all three unreadably narrow on a phone. -->
-            <input
-              id="describe-question"
-              type="text"
-              class="tool-input"
-              placeholder="Describe: caption it, or ask something about it…"
-              aria-label="What Describe should ask about the image"
-            />
-            <!-- What the pickers and buttons above will actually do, kept out of
-                 the option names so those stay scannable. -->
+            <!-- Cost of the tool under the picker, and which image Judge will
+                 score. Only what changes what a tap does. -->
             <p class="tool-notes">
               <span id="improve-note"></span>
-              <span id="describe-note"></span>
               <span id="judge-note"></span>
             </p>
-            <!-- An answer lands here rather than in the prompt box, for the
-                 same reason p-judger's score lands below rather than in the
-                 output panel: asking about the prompt must not destroy the
-                 prompt you asked about. A caption still fills the box, since
-                 seeding the prompt is what captioning is for. -->
-            <div id="describe-result" class="answer hidden"></div>
+            <!-- A chat about the prompt. The thread is kept on the device until
+                 New chat, and every message sends the whole thread, so the
+                 model remembers the conversation. Enter adds a line; Send sends. -->
+            <section id="chat" class="chat" aria-label="Chat about the prompt">
+              <div class="chat-head">
+                <select id="chat-model" aria-label="Chat model"></select>
+                <button id="chat-new" type="button" class="secondary">New chat</button>
+              </div>
+              <label class="chat-context">
+                <input id="chat-context" type="checkbox" checked />
+                Include the prompt box and attached image
+              </label>
+              <div id="chat-thread" class="chat-thread"></div>
+              <div class="chat-compose">
+                <textarea id="chat-input" rows="3" placeholder="Ask about the prompt or the image…" aria-label="Chat message"></textarea>
+                <button id="chat-send" type="button">Send</button>
+              </div>
+              <p id="chat-note" class="chat-note"></p>
+            </section>
             <!-- p-judger's score lands here rather than in the output panel, so
                  scoring a generation does not clear the generation. -->
             <div id="judge-result" class="judge hidden"></div>
