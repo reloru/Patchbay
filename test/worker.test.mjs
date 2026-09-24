@@ -444,6 +444,25 @@ test("the Other tools send their documented inputs", async () => {
   assert.equal(unknown.status, 400);
 });
 
+test("a model with no system role gets the instruction in the user message", async () => {
+  let seen = null;
+  const aiEnv = { ...env, AI: { run: async (m, i) => ((seen = i), { response: "Sure, here is the rewritten text:\n\nAn old lighthouse." }) } };
+  const res = await call("/api/improve-prompt", {
+    password: PASSWORD,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "a old lighthouse", model: "@cf/google/gemma-7b-it-lora" }),
+  }, aiEnv);
+  assert.equal(seen.messages.length, 1);
+  assert.equal(seen.messages[0].role, "user");
+  assert.match(seen.messages[0].content, /improve its clarity[\s\S]*Text:\na old lighthouse$/);
+  assert.deepEqual(await res.json(), { prompt: "An old lighthouse." }, "the 'Sure, here is' line is dropped");
+
+  const chat = await chatWith({ model: "@cf/google/gemma-7b-it-lora", messages: [{ role: "user", content: "hi" }] });
+  assert.equal(chat.seen.input.messages[0].role, "user");
+  assert.match(chat.seen.input.messages[0].content, /refine prompts[\s\S]*\n\nhi$/);
+});
+
 test("/api/generate rejects a model outside the catalogue", async () => {
   const res = await call("/api/generate", {
     password: PASSWORD,

@@ -1698,8 +1698,12 @@ export const IMPROVE_MODELS = [
   // Neither publishes a rate. Measured on 2026-09-23, one rewrite each: Gemma
   // 2B billed 93 neurons for 93 tokens (about 1 per token); Gemma 7B reported
   // 0, and ignored the rewrite instruction to write 304 tokens of its own.
-  { id: "@cf/google/gemma-2b-it-lora", family: "Gemma", label: "Gemma 2B IT", neurons: 93 },
-  { id: "@cf/google/gemma-7b-it-lora", family: "Gemma", label: "Gemma 7B IT", neurons: 0 },
+  // Gemma's chat format has no system role. Sent one, Gemma 7B ignored the
+  // Improve instruction and explained the prompt's phrases as a bulleted list
+  // (2026-09-24); with the instruction folded into the user message it
+  // rewrites. `noSystem` makes the Worker do that fold.
+  { id: "@cf/google/gemma-2b-it-lora", family: "Gemma", label: "Gemma 2B IT", neurons: 93, noSystem: true },
+  { id: "@cf/google/gemma-7b-it-lora", family: "Gemma", label: "Gemma 7B IT", neurons: 0, noSystem: true },
   { id: "@cf/aisingapore/gemma-sea-lion-v4-27b-it", family: "SEA-LION", label: "Gemma SEA-LION v4 27B IT", neurons: 4.2 },
 ];
 

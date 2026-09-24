@@ -342,10 +342,12 @@ async function handleImprovePrompt(request, env) {
   let out;
   try {
     out = await env.AI.run(improveModel, {
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: prompt },
-      ],
+      messages: spec.noSystem
+        ? [{ role: "user", content: `${system}\n\nText:\n${prompt}` }]
+        : [
+            { role: "system", content: system },
+            { role: "user", content: prompt },
+          ],
       // 120 words runs ~170-200 tokens; 320 leaves headroom so the raised
       // word cap doesn't just get truncated at the token level instead.
       max_tokens: mine.maxTokens || spec.maxTokens || (spec.reasoning ? 1500 : 320),
@@ -355,7 +357,7 @@ async function handleImprovePrompt(request, env) {
     return json({ error: "Improve failed: " + (err && err.message ? err.message : String(err)) }, 502);
   }
 
-  const text = stripReasoning(pickText(out)).replace(/^["'\s]+|["'\s]+$/g, "");
+  const text = stripPreamble(stripReasoning(pickText(out))).replace(/^["'\s]+|["'\s]+$/g, "");
   if (!text) return json({ error: "The model returned nothing usable." }, 502);
   return json({ prompt: text });
 }
@@ -647,6 +649,13 @@ function pickText(out) {
   return "";
 }
 
+// Small models often open with a line like "Sure, here is the rewritten
+// text:" before the rewrite itself. Only a short first line of that shape,
+// ending in a colon, is dropped; the rewrite never starts that way.
+function stripPreamble(text) {
+  return String(text).replace(/^\s*(sure|certainly|okay|ok|of course|here is|here's)\b[^\n]{0,80}:\s*\n+/i, "");
+}
+
 // Distill-style reasoning models (DeepSeek R1) emit a <think> monologue before
 // the answer. Drop it so the prompt box gets the rewrite, not the thinking.
 function stripReasoning(text) {
@@ -703,7 +712,12 @@ async function handleChat(request, env) {
   if (chars > CHAT_MAX_CHARS) return json({ error: "This chat is too long to send. Start a new chat." }, 400);
 
   const mine = userSettings(body.settings, spec);
-  const messages = [{ role: "system", content: mine.system || CHAT_SYSTEM }, ...thread.map((m) => ({ role: m.role, content: m.content }))];
+  const system = mine.system || CHAT_SYSTEM;
+  const messages = [...thread.map((m) => ({ role: m.role, content: m.content }))];
+  // A model with no system role gets the instruction at the head of the
+  // thread's first message instead.
+  if (spec.noSystem) messages[0] = { ...messages[0], content: `${system}\n\n${messages[0].content}` };
+  else messages.unshift({ role: "system", content: system });
   const last = messages[messages.length - 1];
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   last.content = chatContext(prompt, last.content);
