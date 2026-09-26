@@ -452,6 +452,12 @@ function priceBlurb(model) {
   if (p.type === "per_second_flat") {
     return `List price: ${fmtUsd(p.usd)} per second of output video, at any resolution.`;
   }
+  if (p.type === "per_second_mode") {
+    return (
+      `List price: ${fmtUsd(p.usd["480p"].cost)}–${fmtUsd(p.usd["768p"].quality)}/s ` +
+      `depending on resolution and mode (mode defaults to speed).`
+    );
+  }
   if (p.type === "routed_text") {
     return (
       `List price: ${fmtUsd(p.usd.noText)} per output, or ${fmtUsd(p.usd.text)} when the model ` +
@@ -4853,6 +4859,16 @@ function estimateCost(model, input, outputCount) {
   if (p.type === "per_second_flat") {
     const secs = outputSeconds(model, input);
     return secs ? p.usd * secs : null;
+  }
+  if (p.type === "per_second_mode") {
+    const resolution = input.resolution ?? fieldDefault(model, "resolution") ?? "768p";
+    const tier = p.usd[resolution];
+    if (!tier) return null;
+    const mode = input.mode ?? fieldDefault(model, "mode") ?? "speed";
+    const rate = tier[mode];
+    if (rate == null) return null;
+    const secs = outputSeconds(model, input);
+    return secs ? rate * secs : null;
   }
   // Rate depends on whether the model finds text in the image, which it decides
   // during the run. Guessing either end would be worse than saying nothing.
