@@ -95,6 +95,150 @@ function networkErrorText(err, retried) {
 }
 
 // ---------------------------------------------------------------------------
+// Tool requests
+//
+// None of the prompt tools had a deadline: a model that never answered, or a
+// connection that died mid-request, left its button disabled until a reload.
+// Improve, Describe and the chat now answer as server-sent events (see
+// toolStream in worker.js): a ping at once and every 10 s, then the answer.
+// So the browser can tell "still working" from "gone" by silence alone, and a
+// long reply that keeps arriving is never cut off. The one-shot tools get a
+// plain deadline instead. Both paths go through api(), which is unchanged:
+// the abort signal rides in its options straight through to fetch.
+// ---------------------------------------------------------------------------
+const TOOL_CANCELLED = "__tool_cancelled__";
+// Six missed pings: the connection is gone, whatever the model is doing.
+const TOOL_IDLE_MS = Number(window.__TEST_IDLE_MS) || 60000;
+const ONE_SHOT_MS = 60000;
+
+// Posts `body` to a streaming tool route and resolves with its `done` payload.
+// `onEvent(name, data)` hears the rest (delta, reset, progress). Aborting
+// `controller` cancels; the thrown message is TOOL_CANCELLED.
+async function streamTool(path, body, { onEvent, controller } = {}) {
+  const ctl = controller || new AbortController();
+  let silent = false;
+  let timer = null;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      silent = true;
+      ctl.abort();
+    }, TOOL_IDLE_MS);
+  };
+  arm();
+  try {
+    const res = await api(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: ctl.signal,
+    });
+    // Refusals before any work starts (a bad request, a missing binding) are
+    // still plain JSON.
+    if (!(res.headers.get("content-type") || "").includes("text/event-stream")) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      arm();
+      buf += dec.decode(value, { stream: true });
+      let cut;
+      while ((cut = buf.indexOf("\n\n")) !== -1) {
+        const block = buf.slice(0, cut);
+        buf = buf.slice(cut + 2);
+        const name = (/^event: (.*)$/m.exec(block) || [])[1];
+        const raw = (/^data: (.*)$/m.exec(block) || [])[1];
+        if (!name || raw == null) continue;
+        let data;
+        try {
+          data = JSON.parse(raw);
+        } catch {
+          continue;
+        }
+        if (name === "done") {
+          reader.cancel().catch(() => {});
+          return data;
+        }
+        if (name === "error") throw new Error(data.error || "The tool failed.");
+        if (onEvent) onEvent(name, data);
+      }
+    }
+    throw new Error("The connection closed before the answer finished.");
+  } catch (e) {
+    if (silent) {
+      throw new Error(
+        `Nothing from the server for ${Math.round(TOOL_IDLE_MS / 1000)} s — the connection looks lost. ` +
+          "The model may still have run, and may still be billed."
+      );
+    }
+    if (ctl.signal.aborted) throw new Error(TOOL_CANCELLED);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// A one-shot tool call with a deadline: resolves with { res, data }.
+async function apiWithin(path, opts, ms = ONE_SHOT_MS) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    const res = await api(path, { ...opts, signal: ctl.signal });
+    const data = await res.json();
+    return { res, data };
+  } catch (e) {
+    if (ctl.signal.aborted) {
+      throw new Error(`No answer after ${Math.round(ms / 1000)} s. It may still have run and been billed — try again.`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Long edge of any image handed to a tool model. A phone photo is several
+// megabytes, and as base64 inside a JSON body that is the slow part of every
+// chat message and caption on a mobile connection. Generation uploads are not
+// touched: those go to the provider at the size chosen.
+const TOOL_IMAGE_PX = 1024;
+
+// Resolves to { b64, mime }. Anything the browser cannot decode (HEIC outside
+// Safari, say) goes as it is rather than not at all.
+function toolImage(file) {
+  return new Promise((resolve) => {
+    const asIs = () => fileToBase64(file).then((b64) => resolve({ b64, mime: file.type || "image/jpeg" }), () => resolve(null));
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const long = Math.max(img.width, img.height);
+      if (!long || long <= TOOL_IMAGE_PX) return void asIs();
+      try {
+        const scale = TOOL_IMAGE_PX / long;
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        resolve({ b64: dataUrl.split(",")[1] || "", mime: "image/jpeg" });
+      } catch {
+        asIs();
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      asIs();
+    };
+    img.src = url;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 async function boot() {
@@ -153,6 +297,7 @@ $("gate-form").addEventListener("submit", (e) => {
 
 async function startApp() {
   $("app").classList.remove("hidden");
+  initShell();
   // Before anything can build a media URL, and before the gallery is touched.
   await refreshResultToken();
   requestPersistentStorage();
@@ -502,24 +647,95 @@ function priceBlurb(model) {
 // ---------------------------------------------------------------------------
 // Field rendering
 // ---------------------------------------------------------------------------
+// The model's main text box, the one the prompt tools act on. Same order as
+// primaryPromptEl(), which finds it again once the form is built.
+function primaryFieldOf(model) {
+  for (const name of ["prompt", "voice_script", "instruction_prompt"]) {
+    const f = model.fields.find((x) => x.name === name);
+    if (f) return f;
+  }
+  return model.fields.find((x) => x.type === "textarea") || null;
+}
+
+// The prompt toolbar is one element for the life of the page, moved under
+// whichever box is the prompt each time the fields are built.
+const PROMPT_TOOLS = $("prompt-tools");
+
+function fieldSection(title, cls) {
+  const s = document.createElement("section");
+  s.className = "form-section " + cls;
+  if (title) {
+    const h = document.createElement("h2");
+    h.className = "section-title";
+    h.textContent = title;
+    s.appendChild(h);
+  }
+  return s;
+}
+
+// The form reads top to bottom in the order the work is done: the mode, when a
+// model has one, since it decides which inputs apply; every file the model
+// takes, required or not, so none of them hides among the tuning; the prompt
+// with its tools under it; any other required value; then the settings.
 function renderFields() {
   const wrap = $("fields");
+  // Out of the way first, so clearing the fields does not take it with them.
+  $("gen-form").appendChild(PROMPT_TOOLS);
   wrap.innerHTML = "";
   fieldUI = {};
   optionRows = [];
   optionsPanel = null;
   optionsBadge = null;
-
-  const optional = [];
   visibilityRows = [];
-  for (const f of currentModel.fields) {
-    if (f.required) {
-      const row = renderRequired(f);
-      wrap.appendChild(row);
-      if (f.showWhen) visibilityRows.push({ f, row });
-    } else {
-      optional.push(f);
-    }
+
+  const fields = currentModel.fields;
+  const modeNames = new Set(fields.filter((f) => f.showWhen).map((f) => f.showWhen.field));
+  const primary = primaryFieldOf(currentModel);
+  const mode = [];
+  const inputs = [];
+  const rest = [];
+  const optional = [];
+  for (const f of fields) {
+    if (f === primary) continue;
+    if (f.required && modeNames.has(f.name)) mode.push(f);
+    else if (f.type === "image") inputs.push(f);
+    else if (f.required) rest.push(f);
+    else optional.push(f);
+  }
+  const addRequired = (parent, f) => {
+    const row = renderRequired(f);
+    parent.appendChild(row);
+    if (f.showWhen) visibilityRows.push({ f, row });
+  };
+  // An optional field outside Settings keeps its option-row behaviour — the
+  // "changed" mark, its own Reset, the touched flag — and is labelled optional.
+  const addOptional = (parent, f) => parent.appendChild(buildOptionRow(f, "optional"));
+
+  if (mode.length) {
+    const s = fieldSection("", "section-mode");
+    for (const f of mode) addRequired(s, f);
+    wrap.appendChild(s);
+  }
+  if (inputs.length) {
+    const s = fieldSection("Inputs", "section-inputs");
+    for (const f of inputs) (f.required ? addRequired : addOptional)(s, f);
+    wrap.appendChild(s);
+  }
+  if (primary) {
+    const s = fieldSection("", "section-prompt");
+    (primary.required ? addRequired : addOptional)(s, primary);
+    s.appendChild(PROMPT_TOOLS);
+    wrap.appendChild(s);
+  } else {
+    wrap.appendChild(PROMPT_TOOLS);
+  }
+  // The tools need a prompt box to read and write, so a model without one
+  // offers none of them rather than buttons that can only say so.
+  PROMPT_TOOLS.classList.toggle("hidden", !primary);
+  if (rest.length) {
+    const s = fieldSection("", "section-more");
+    for (const f of rest) addRequired(s, f);
+    wrap.appendChild(s);
   }
   if (optional.length) wrap.appendChild(renderOptionsPanel(optional));
 
@@ -1044,7 +1260,7 @@ function renderOptionsPanel(fields) {
   const sum = document.createElement("summary");
   const title = document.createElement("span");
   title.className = "opt-title";
-  title.textContent = "Options";
+  title.textContent = "Settings";
   const badge = document.createElement("span");
   badge.className = "opt-badge";
   sum.appendChild(title);
@@ -1053,6 +1269,14 @@ function renderOptionsPanel(fields) {
 
   const list = document.createElement("div");
   list.className = "opt-list";
+  // Resets what is in this panel and nothing else: the inputs and the prompt
+  // above are left as they are. "Start over" is the one that clears those.
+  const resetAll = document.createElement("button");
+  resetAll.type = "button";
+  resetAll.className = "linkish opt-reset-all";
+  resetAll.textContent = "Reset all settings";
+  resetAll.addEventListener("click", resetAllSettings);
+  list.appendChild(resetAll);
   for (const f of fields) list.appendChild(buildOptionRow(f));
   det.appendChild(list);
 
@@ -1062,7 +1286,17 @@ function renderOptionsPanel(fields) {
   return det;
 }
 
-function buildOptionRow(f) {
+function resetAllSettings() {
+  for (const r of optionRows) {
+    if (r.f.type === "image" || !optionsPanel || !optionsPanel.contains(r.row)) continue;
+    resetField(r.f, r.row); // dispatches "change", which touches the row
+    r.touched = false;
+  }
+  refreshOptionState();
+  scheduleSessionSave();
+}
+
+function buildOptionRow(f, tag) {
   const row = document.createElement("div");
   row.className = "opt-row";
 
@@ -1071,6 +1305,13 @@ function buildOptionRow(f) {
   const name = document.createElement("span");
   name.className = "opt-name";
   name.textContent = f.label;
+  if (tag) {
+    const t = document.createElement("span");
+    t.className = "opt-tag";
+    t.textContent = tag;
+    name.appendChild(document.createTextNode(" "));
+    name.appendChild(t);
+  }
   const note = document.createElement("span");
   note.className = "opt-note";
   const reset = document.createElement("button");
@@ -1147,6 +1388,7 @@ function refreshOptionState() {
   // Attaching or removing an image changes what Judge and the chat would read,
   // and where a generated image would land if it were reused.
   updateJudgeNote();
+  renderChatImages();
   updateChatNote();
   refreshReuseLabels();
   let changed = 0;
@@ -1181,7 +1423,9 @@ function refreshOptionState() {
     // way -- highlighting it as "changed" there would be pure theater.
     const touchMatters = apiDefaultOf(r.f) === r.f.default;
     const isChanged = (r.touched && touchMatters) || optionChanged(r.f, r.row);
-    if (isChanged) changed++;
+    // The badge counts what is inside the Settings panel; an optional input or
+    // prompt above it is in plain view already.
+    if (isChanged && optionsPanel && optionsPanel.contains(r.row)) changed++;
     r.row.classList.toggle("changed", isChanged);
     // Uploads are cleared with the thumbnail's own ×, so no reset button there.
     const resettable = isChanged && r.f.type !== "image";
@@ -2436,11 +2680,16 @@ function galleryObjectUrl(buf, type) {
   return url;
 }
 
+// The strip's order, newest first, so the lightbox can step to the item beside
+// the one it shows without closing.
+let galleryOrder = [];
+
 async function renderRecent() {
   const wrap = $("recent");
   const strip = $("recent-strip");
   if (!wrap || !strip) return;
   const items = await galleryAll();
+  galleryOrder = items.map((r) => r.id);
   releaseGalleryUrls();
   strip.innerHTML = "";
 
@@ -2509,6 +2758,8 @@ function releaseLightboxUrl() {
 }
 
 function closeLightbox() {
+  lightboxSeq++; // an open still reading its bytes must not reopen the card
+  lightboxId = null;
   $("lightbox").classList.add("hidden");
   // Emptied rather than blanked: a <video> left in the DOM with a revoked src
   // keeps decoding against nothing.
@@ -2517,11 +2768,42 @@ function closeLightbox() {
   releaseLightboxUrl();
 }
 
+// Bumped by every open. Two quick swipes start two reads, and the slower one
+// must not paint over the item the user has already moved on to.
+let lightboxSeq = 0;
+let lightboxId = null;
+
+// The item `step` places from the one on screen, in the strip's order: -1 is
+// newer, +1 older. Null at either end.
+function lightboxNeighbour(step) {
+  const i = galleryOrder.indexOf(lightboxId);
+  const j = i + step;
+  return i >= 0 && j >= 0 && j < galleryOrder.length ? galleryOrder[j] : null;
+}
+
+function refreshLightboxNav() {
+  const i = galleryOrder.indexOf(lightboxId);
+  $("lightbox-prev").disabled = !lightboxNeighbour(-1);
+  $("lightbox-next").disabled = !lightboxNeighbour(1);
+  $("lightbox-prev").classList.toggle("hidden", galleryOrder.length < 2);
+  $("lightbox-next").classList.toggle("hidden", galleryOrder.length < 2);
+  return i;
+}
+
+function stepLightbox(step) {
+  if ($("lightbox").classList.contains("hidden")) return;
+  const id = lightboxNeighbour(step);
+  if (id) openLightbox(id);
+}
+
 async function openLightbox(id) {
+  const seq = ++lightboxSeq;
   const rec = await galleryGet(id);
+  if (seq !== lightboxSeq) return;
   if (!rec) return void renderRecent();
   // The only place the full-size bytes are read.
   const bytes = await galleryBytesGet(id);
+  if (seq !== lightboxSeq) return;
   if (!bytes) {
     // The light record outlived its image somehow; drop it rather than open an
     // empty frame.
@@ -2559,7 +2841,10 @@ async function openLightbox(id) {
       : rec.size >= 1024
         ? `${Math.round(rec.size / 1024)} KB`
         : `${rec.size} bytes`;
+  lightboxId = id;
+  const pos = refreshLightboxNav();
   $("lightbox-meta").textContent =
+    (galleryOrder.length > 1 && pos >= 0 ? `${pos + 1} of ${galleryOrder.length} · ` : "") +
     `${model ? model.label : rec.modelId || "unknown model"} · ${when.toLocaleString()} · ${size}`;
   $("lightbox-prompt").textContent = rec.prompt || "";
 
@@ -2606,10 +2891,14 @@ async function openLightbox(id) {
   del.type = "button";
   del.className = "secondary";
   del.textContent = "Delete";
+  // Goes on to the item beside it rather than closing, so clearing out a run
+  // of rejects is one tap each. Closes only when nothing is left.
   del.addEventListener("click", async () => {
+    const next = lightboxNeighbour(1) || lightboxNeighbour(-1);
     await galleryDelete(rec.id);
-    closeLightbox();
-    renderRecent();
+    await renderRecent();
+    if (next) openLightbox(next);
+    else closeLightbox();
   });
   actions.appendChild(del);
 
@@ -2720,9 +3009,33 @@ function initRecent() {
   $("lightbox").addEventListener("click", (e) => {
     if (e.target === $("lightbox")) closeLightbox();
   });
+  $("lightbox-prev").addEventListener("click", () => stepLightbox(-1));
+  $("lightbox-next").addEventListener("click", () => stepLightbox(1));
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !$("lightbox").classList.contains("hidden")) closeLightbox();
+    if ($("lightbox").classList.contains("hidden")) return;
+    if (e.key === "Escape") closeLightbox();
+    else if (e.key === "ArrowLeft") stepLightbox(-1);
+    else if (e.key === "ArrowRight") stepLightbox(1);
   });
+  // A swipe across the picture steps through the strip: left for the older
+  // item, right for the newer, matching which way the strip itself runs.
+  // Mostly-sideways only, so scrolling a tall card up and down is not a swipe.
+  let touchX = null;
+  let touchY = null;
+  const media = $("lightbox-media");
+  media.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) return void (touchX = null);
+    touchX = e.touches[0].clientX;
+    touchY = e.touches[0].clientY;
+  }, { passive: true });
+  media.addEventListener("touchend", (e) => {
+    if (touchX == null) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touchX;
+    const dy = t.clientY - touchY;
+    touchX = null;
+    if (Math.abs(dx) >= 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) stepLightbox(dx < 0 ? 1 : -1);
+  }, { passive: true });
 }
 
 // Pruna returns generation_url as a plain string for some models and as an
@@ -2893,6 +3206,13 @@ async function showResult(prunaUrls, kind, meta) {
     }
     item.appendChild(actions);
     box.appendChild(item);
+  }
+
+  // On a phone the output sits below the whole form, so a finished result would
+  // land out of sight of the Generate button that asked for it.
+  if (window.matchMedia("(max-width: 899px)").matches && !$("screen-create").classList.contains("hidden")) {
+    const r = box.getBoundingClientRect();
+    if (r.top > window.innerHeight * 0.6 || r.bottom < 0) box.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   // The strip follows the archive, and only once every result has been stored.
@@ -3232,6 +3552,11 @@ function initDescribe() {
   const btn = $("prompt-describe");
   const file = $("describe-file");
 
+  sel.addEventListener("change", () => {
+    refreshGears();
+    if (settingsOpenFor === "describe") renderToolSettings();
+  });
+
   // Prefer whatever is already attached; only fall back to the file picker
   // when nothing is.
   btn.addEventListener("click", () => {
@@ -3246,9 +3571,8 @@ function initDescribe() {
     if (f) describeFile(f);
   });
 
-  // Problems show under the toolbar, beside the button pressed: the status
-  // line sits far below it on a phone, which made a failure look like nothing.
   const note = (msg) => ($("describe-note").textContent = msg ? `🔍 ${msg}` : "");
+  let running = null;
 
   async function describeFile(f) {
     note("");
@@ -3257,36 +3581,48 @@ function initDescribe() {
       note("This model has no prompt box for the caption to go in — pick one that does.");
       return;
     }
+    if (running) return;
 
+    // The caption lands in the prompt box, so the sheet gets out of its way;
+    // progress and Cancel are on the status line meanwhile.
+    closeSheet("sheet-more");
+    running = new AbortController();
+    const cancel = () => running && running.abort();
     btn.disabled = true;
-    const idle = btn.textContent;
-    btn.textContent = "Reading…";
-    setStatus("Describing the image…", "load");
+    setStatus("Describing the image…", "load", { cancel });
     try {
-      const b64 = await fileToBase64(f);
-      const body = { image_b64: b64, mime: f.type || "image/jpeg", model: sel.value };
-      const res = await api("/api/describe", {
-        method: "POST",
-        retry: true,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.description) throw new Error(data.error || `HTTP ${res.status}`);
+      const image = await toolImage(f);
+      if (!image) throw new Error("Could not read that image.");
+      const data = await streamTool(
+        "/api/describe",
+        { image_b64: image.b64, mime: image.mime, model: sel.value, settings: toolSettingsFor("describe", sel.value) },
+        {
+          controller: running,
+          onEvent: (name, d) => {
+            if (name === "progress") {
+              setStatus(d.chars ? `Describing the image… ${d.chars} characters` : "Describing the image… thinking", "load", { cancel });
+            }
+          },
+        }
+      );
+      if (!data.description) throw new Error("The model returned no description.");
       el.value = data.description;
       el.dispatchEvent(new Event("input", { bubbles: true }));
       commitPromptHistory(); // the caption is one entry, so Undo puts back what you had
-      setStatus("Prompt filled from the image.", "ok");
-      // The prompt box is well below the toolbar; bring it into view so the
-      // caption is seen landing.
+      setStatus("Prompt filled from the image — press Undo to get yours back.", "ok");
+      if (typeof data.neurons === "number") sessionNeurons += data.neurons;
+      updateSpendBar();
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       setTimeout(refreshNeurons, 4000);
     } catch (e) {
-      setStatus("Describe failed: " + e.message, "err");
-      note("Describe failed: " + e.message);
+      if (e.message === TOOL_CANCELLED) setStatus("Describe cancelled. The prompt is unchanged.", "ok");
+      else {
+        setStatus("Describe failed: " + e.message, "err");
+        note("Describe failed: " + e.message);
+      }
     } finally {
+      running = null;
       btn.disabled = false;
-      btn.textContent = idle;
     }
   }
 }
@@ -3294,18 +3630,20 @@ function initDescribe() {
 // ---------------------------------------------------------------------------
 // Chat
 //
-// A conversation about the prompt, under the toolbar. The thread lives in this
-// browser until New chat, and every Send carries all of it, so the model sees
-// the conversation so far. With the context switch on, the newest message also
-// carries the prompt box text and — for a model that can see — the attached
-// image. A reply can be put in the prompt box as one Undo step.
+// A conversation about the prompt, in a sheet opened from the prompt toolbar.
+// The thread lives in this browser until New chat, and every Send carries all
+// of it, so the model sees the conversation so far. The newest message also
+// carries the prompt box text while "Prompt box" is ticked, and — for a model
+// that can see — each attached image whose chip is ticked. The reply streams
+// in as it is written. A reply can be put in the prompt box as one Undo step.
 // ---------------------------------------------------------------------------
 const CHAT_THREAD_KEY = "patchbay_chat_thread";
 const CHAT_MODEL_KEY = "patchbay_chat_model";
 const CHAT_CONTEXT_KEY = "patchbay_chat_context";
 
-let chatThread = []; // [{ role: "user" | "assistant", content, neurons? }]
+let chatThread = []; // [{ role: "user" | "assistant", content, neurons?, images? }]
 let chatBusy = false;
+let chatCtl = null;
 
 function loadChat() {
   try {
@@ -3329,18 +3667,81 @@ function chatModel() {
   return chatModels.find((m) => m.id === (sel && sel.value)) || null;
 }
 
+// The attached images the chat can send, numbered in field order — the same
+// order the Inputs section shows them in, so "image 2" means the same thing to
+// the user, the chips and the thread.
+function chatImageList() {
+  if (!currentModel) return [];
+  const out = [];
+  for (const f of currentModel.fields) {
+    if (f.type !== "image") continue;
+    for (const u of uploads[f.name] || []) {
+      if (u.file && u.isImage && u.preview) out.push({ file: u.file, preview: u.preview, n: out.length + 1 });
+    }
+  }
+  return out;
+}
+
+// Which images go with the next message, by File. A newly attached image
+// starts ticked; every Send unticks all of them, and one is sent again only
+// when the user ticks it again — Workers AI keeps nothing between calls, so a
+// follow-up about a picture needs the picture.
+const chatTicks = new Map();
+let chatLastError = "";
+
+function renderChatImages() {
+  const box = $("chat-images");
+  if (!box) return;
+  const list = chatImageList();
+  for (const f of [...chatTicks.keys()]) if (!list.some((x) => x.file === f)) chatTicks.delete(f);
+  for (const x of list) if (!chatTicks.has(x.file)) chatTicks.set(x.file, true);
+  const m = chatModel();
+  const canSee = Boolean(m && m.vision);
+  box.innerHTML = "";
+  for (const x of list) {
+    const on = canSee && chatTicks.get(x.file);
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chat-chip" + (on ? " on" : "");
+    b.setAttribute("aria-pressed", String(Boolean(on)));
+    b.setAttribute("aria-label", `Image ${x.n}`);
+    b.disabled = !canSee || chatBusy;
+    b.title = canSee ? `Image ${x.n} ${on ? "goes" : "does not go"} with the next message` : "This model can't see images";
+    const img = document.createElement("img");
+    img.src = x.preview;
+    img.alt = "";
+    b.appendChild(img);
+    const tag = document.createElement("span");
+    tag.className = "chat-chip-n";
+    tag.textContent = String(x.n);
+    b.appendChild(tag);
+    b.addEventListener("click", () => {
+      chatTicks.set(x.file, !chatTicks.get(x.file));
+      renderChatImages();
+      updateChatNote();
+    });
+    box.appendChild(b);
+  }
+  box.classList.toggle("hidden", !list.length);
+}
+
 function updateChatNote() {
   const el = $("chat-note");
   if (!el) return; // called before the chat exists
   const total = chatThread.reduce((n, m) => n + (m.neurons || 0), 0);
   const parts = [];
+  if (chatLastError) parts.push(chatLastError);
   if (total) parts.push(`This chat so far: ~${Math.round(total).toLocaleString()} neurons`);
   const m = chatModel();
-  const box = $("chat-context");
-  if (m && !m.vision && box && box.checked && attachedImageFile()) {
-    parts.push("This model can't see images — pick one marked 👁 to include the attached image");
+  const list = chatImageList();
+  if (list.length && m && !m.vision) {
+    parts.push("This model can't see images — pick one marked 👁 to send them");
+  } else if (list.length) {
+    const n = list.filter((x) => chatTicks.get(x.file)).length;
+    parts.push(n ? `${n === 1 ? "1 image goes" : `${n} images go`} with the next message` : "No image goes with the next message — tap one to send it");
   }
   el.textContent = parts.join(" · ");
+  el.classList.toggle("err", Boolean(chatLastError));
 }
 
 function putInPromptBox(text) {
@@ -3349,7 +3750,20 @@ function putInPromptBox(text) {
   el.value = text;
   el.dispatchEvent(new Event("input", { bubbles: true }));
   commitPromptHistory(); // one entry, so Undo puts back what you had
+  closeSheet("sheet-chat");
   setStatus("Put in the prompt box — press Undo to get the old prompt back.", "ok");
+}
+
+// The reply as it streams in, before it becomes a thread entry.
+let chatPartial = "";
+let chatThinking = false;
+
+function updatePendingBubble() {
+  const p = $("chat-pending");
+  if (!p) return;
+  p.textContent = chatPartial || (chatThinking ? "thinking…" : "…");
+  const box = $("chat-thread");
+  box.scrollTop = box.scrollHeight;
 }
 
 function renderChat({ pending = false } = {}) {
@@ -3362,6 +3776,13 @@ function renderChat({ pending = false } = {}) {
     t.className = "chat-text";
     t.textContent = m.content;
     b.appendChild(t);
+    // Which images a message carried, so the thread says what the model saw.
+    if (m.role === "user" && Array.isArray(m.images) && m.images.length) {
+      const tag = document.createElement("div");
+      tag.className = "chat-sent-images";
+      tag.textContent = `🖼 ${m.images.join(", ")}`;
+      b.appendChild(tag);
+    }
     if (m.role === "assistant") {
       const row = document.createElement("div");
       row.className = "chat-msg-actions";
@@ -3384,72 +3805,101 @@ function renderChat({ pending = false } = {}) {
   if (pending) {
     const w = document.createElement("div");
     w.className = "chat-msg assistant pending";
-    w.textContent = "…";
+    w.id = "chat-pending";
     box.appendChild(w);
+    updatePendingBubble();
   }
   box.classList.toggle("hidden", !chatThread.length && !pending);
   box.scrollTop = box.scrollHeight;
   updateChatNote();
 }
 
+// While a reply is on its way, Send is the way to cancel it.
+function setChatBusy(on) {
+  const b = $("chat-send");
+  b.textContent = on ? "Cancel" : "Send";
+  b.classList.toggle("secondary", on);
+}
+
 async function sendChat() {
-  if (chatBusy) return;
+  if (chatBusy) {
+    if (chatCtl) chatCtl.abort();
+    return;
+  }
   const input = $("chat-input");
   const text = input.value.trim();
   if (!text) return;
   const m = chatModel();
   if (!m) return void setStatus("No chat model available.", "err");
 
-  chatThread.push({ role: "user", content: text });
-  input.value = "";
-  chatBusy = true;
-  $("chat-send").disabled = true;
-  renderChat({ pending: true });
-
-  const body = {
-    model: m.id,
-    messages: chatThread.map(({ role, content }) => ({ role, content })),
-    settings: toolSettingsFor("chat", m.id),
-  };
-  if ($("chat-context").checked) {
+  const body = { model: m.id, settings: toolSettingsFor("chat", m.id) };
+  if ($("chat-prompt").checked) {
     const el = primaryPromptEl();
     if (el && el.value.trim()) body.prompt = el.value.trim();
-    const img = m.vision ? attachedImageFile() : null;
-    if (img) {
-      body.image_b64 = await fileToBase64(img);
-      body.mime = img.type || "image/jpeg";
-    }
   }
+  const ticked = m.vision ? chatImageList().filter((x) => chatTicks.get(x.file)) : [];
+  const mine = { role: "user", content: text };
+  if (ticked.length) mine.images = ticked.map((x) => x.n);
+  chatThread.push(mine);
+  body.messages = chatThread.map(({ role, content }) => ({ role, content }));
+  input.value = "";
+  // Sent with this message only; the next one carries an image when it is
+  // ticked again.
+  for (const x of ticked) chatTicks.set(x.file, false);
+  chatBusy = true;
+  chatCtl = new AbortController();
+  chatLastError = "";
+  chatPartial = "";
+  chatThinking = false;
+  setChatBusy(true);
+  renderChat({ pending: true });
+  renderChatImages();
+
   try {
-    const res = await api("/api/chat", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+    if (ticked.length) {
+      body.images = [];
+      for (const x of ticked) {
+        const im = await toolImage(x.file);
+        if (im) body.images.push(im);
+      }
+    }
+    const data = await streamTool("/api/chat", body, {
+      controller: chatCtl,
+      onEvent: (name, d) => {
+        if (name === "delta") chatPartial += d.text;
+        else if (name === "reset") chatPartial = d.text;
+        else if (name === "progress") chatThinking = d.thinking > 0;
+        updatePendingBubble();
+      },
     });
-    const data = await res.json();
-    if (!res.ok || !data.reply) throw new Error(data.error || `HTTP ${res.status}`);
+    if (!data.reply) throw new Error("The model returned nothing usable.");
     chatThread.push({ role: "assistant", content: data.reply, neurons: data.neurons });
     if (typeof data.neurons === "number") sessionNeurons += data.neurons;
     saveChat();
     updateSpendBar();
     setTimeout(refreshNeurons, 4000);
   } catch (e) {
-    // The message was not answered, so it goes back in the box to resend
-    // rather than sitting in the thread as if it had been.
+    // Not answered, so the message goes back in the box — with the images it
+    // was going to carry ticked again — rather than sitting in the thread as
+    // if it had been.
     chatThread.pop();
     input.value = text;
-    setStatus("Chat failed: " + e.message, "err");
+    for (const x of ticked) chatTicks.set(x.file, true);
+    chatLastError = e.message === TOOL_CANCELLED ? "Cancelled — your message is back in the box" : "Chat failed: " + e.message;
+    if (e.message !== TOOL_CANCELLED) setStatus("Chat failed: " + e.message, "err");
   } finally {
     chatBusy = false;
-    $("chat-send").disabled = false;
+    chatCtl = null;
+    setChatBusy(false);
     renderChat();
+    renderChatImages();
   }
 }
 
 function initChat() {
   const sel = $("chat-model");
   if (!sel) return;
-  // 👁 marks a model that can be shown the attached image.
+  // 👁 marks a model that can be shown the attached images.
   fillGroupedSelect(sel, chatModels.map((m) => ({ ...m, label: m.vision ? `${m.label} 👁` : m.label })));
   let saved = null;
   try {
@@ -3464,56 +3914,152 @@ function initChat() {
     } catch {
       /* remembered for this visit only */
     }
+    renderChatImages();
     updateChatNote();
   });
 
-  const ctx = $("chat-context");
+  // The prompt box rides along until switched off, and stays as set.
+  const withPrompt = $("chat-prompt");
   try {
-    if (localStorage.getItem(CHAT_CONTEXT_KEY) === "off") ctx.checked = false;
+    if (localStorage.getItem(CHAT_CONTEXT_KEY) === "off") withPrompt.checked = false;
   } catch {
     /* stays on */
   }
-  ctx.addEventListener("change", () => {
+  withPrompt.addEventListener("change", () => {
     try {
-      localStorage.setItem(CHAT_CONTEXT_KEY, ctx.checked ? "on" : "off");
+      localStorage.setItem(CHAT_CONTEXT_KEY, withPrompt.checked ? "on" : "off");
     } catch {
       /* remembered for this visit only */
     }
-    updateChatNote();
   });
 
   // Enter adds a line, as in any text box; only Send sends.
   $("chat-send").addEventListener("click", sendChat);
   $("chat-new").addEventListener("click", () => {
+    if (chatBusy) return;
     if (chatThread.length && !window.confirm("Start a new chat? This one will be cleared.")) return;
     chatThread = [];
+    chatLastError = "";
     saveChat();
     renderChat();
   });
 
   loadChat();
   renderChat();
+  renderChatImages();
 }
 
 // ---------------------------------------------------------------------------
-// ⚙ settings for Improve and the chat
+// ⚙ Tools: the same rows for every tool
+//
+// Each tool is described on the same five rows — the model, what it reads, how
+// it can be instructed, which limits it takes, where its answer goes — so that
+// where two tools differ, the sheet says how and why instead of leaving it to
+// be discovered. Improve, the chat and Describe run instruction-following
+// models and take an instruction; the others run models whose inputs have no
+// place for one, and their rows say which input they have instead.
 //
 // Kept in this browser only and sent with each request; the Worker bounds them
 // (instruction up to 4,000 characters, token limit 16–8,000) and applies
 // thinking and effort only to models whose schema takes them. The instruction
-// belongs to the tool; the token limit, thinking and effort belong to the
-// model, because a limit that suits Kimi wastes money on Llama.
+// belongs to the tool; the limits belong to the model, because a limit that
+// suits Kimi wastes money on Llama.
+//
+// An instruction is a draft until saved. Typing changes nothing that is sent;
+// Undo and Redo step through the draft; Revert puts the saved text back; Load
+// default puts the app's own text in the draft, where it can still be undone;
+// and every Save keeps the text it replaced among the last ten versions.
 // ---------------------------------------------------------------------------
 const TOOL_SETTINGS_KEY = "patchbay_tool_settings";
-let toolSettings = { improve: { system: "", models: {} }, chat: { system: "", models: {} } };
+const INSTRUCTABLE = ["improve", "chat", "describe"];
+const INSTRUCTION_VERSIONS = 10;
+const INSTRUCTION_COMMIT_MS = 500;
+let toolSettings = {};
+for (const t of INSTRUCTABLE) toolSettings[t] = { system: "", models: {}, versions: [] };
 let settingsOpenFor = null;
+// Unsaved instruction drafts, per tool, for as long as the page is open:
+// { text, past: [texts], at }.
+const instructionDrafts = {};
+
+const TOOL_TABS = [
+  ["improve", "✨ Improve"],
+  ["chat", "💬 Chat"],
+  ["describe", "🔍 Describe"],
+  ["translate", "🌐 Translate"],
+  ["judge", "⚖️ Judge"],
+  ["embed", "Embeddings"],
+  ["other", "Other"],
+  ["stt", "🎤 Speech to text"],
+];
+
+const TOOL_INFO = {
+  improve: {
+    where: "Picked beside ✨ Improve.",
+    reads: "The prompt box text, and nothing else: it is a copy edit.",
+    scope: "all Improve models",
+    writes: "Replaces the prompt box, as one Undo step.",
+  },
+  chat: {
+    where: "Picked at the top of the chat.",
+    reads:
+      "The whole thread, so it remembers the conversation; the prompt box text while “Prompt box” is ticked; and each attached image whose chip is ticked, for a model marked 👁. The chips untick after every Send — tick one again when a follow-up needs it.",
+    scope: "all chat models",
+    writes: "The thread. “Put in prompt box” replaces the prompt, as one Undo step.",
+  },
+  describe: {
+    where: "Picked under ⋯ More.",
+    reads: "The first attached image, or one you pick when none is attached. Not the prompt.",
+    scope: "all Describe models",
+    writes: "Replaces the prompt box, as one Undo step.",
+  },
+  translate: {
+    model: "m2m100 1.2B · @cf/meta/m2m100-1.2b — the one translation model in the catalogue.",
+    reads: "The prompt box text, and the two languages picked under ⋯ More.",
+    instruction: "None. m2m100 translates: its input is the text and two language codes, and nothing else (Cloudflare's model schema).",
+    limits: "None in its schema.",
+    writes: "Replaces the prompt box, as one Undo step.",
+  },
+  judge: {
+    model: "Pruna p-judger — the only scoring model, so there is nothing to choose between.",
+    reads: "The prompt box text, and the generated image on screen — or, from Lab, the attached images or up to 10 files you pick.",
+    instruction: "None. p-judger takes a prompt and images, and refuses any other input key (checked 2026-09-08).",
+    limits: "None.",
+    writes: "The score under the result, or in Lab. The scale is undocumented, so it is shown as a bare number.",
+  },
+  embed: {
+    reads: "Its own text box in Lab — never the prompt.",
+    instruction:
+      "None. The panel measures text as a document. Qwen3 Embedding does take an instruction, but one meant for search queries, and it is left out on purpose; the other six have no such input.",
+    limits: "None.",
+    writes: "The Embeddings panel in Lab: each version against the baseline and the one before it.",
+  },
+  other: {
+    reads: "Its own text box in Lab (Use prompt box copies the prompt in), or for image labels the attached image or one you pick.",
+    instruction:
+      "None. Llama Guard 3 takes messages only; DistilBERT takes text; ResNet-50 an image; the reranker a query and passages. None of their schemas has an instruction input.",
+    limits: "None.",
+    writes: "The Other panel in Lab.",
+  },
+  stt: {
+    reads: "A recording from 🎤 in the chat, or an audio file where the browser cannot record.",
+    instruction: "None. Audio in, text out: none of the four models takes an instruction.",
+    limits: "None.",
+    writes: "Adds the words to the chat box — not sent, so they can be corrected first.",
+  },
+};
 
 function loadToolSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(TOOL_SETTINGS_KEY) || "null");
     if (saved && typeof saved === "object") {
-      for (const t of ["improve", "chat"]) {
-        if (saved[t]) toolSettings[t] = { system: saved[t].system || "", stt: saved[t].stt || "", models: saved[t].models || {} };
+      for (const t of INSTRUCTABLE) {
+        if (!saved[t]) continue;
+        toolSettings[t] = {
+          system: saved[t].system || "",
+          stt: saved[t].stt || "",
+          models: saved[t].models || {},
+          versions: Array.isArray(saved[t].versions) ? saved[t].versions.filter((v) => v && typeof v.text === "string") : [],
+        };
       }
     }
   } catch {
@@ -3530,7 +4076,8 @@ function saveToolSettings() {
   refreshGears();
 }
 
-// What goes out with a request: only what differs from the defaults.
+// What goes out with a request: only what differs from the defaults. A draft
+// is never sent — only what was saved.
 function toolSettingsFor(tool, modelId) {
   const t = toolSettings[tool];
   const m = (t.models || {})[modelId] || {};
@@ -3542,20 +4089,25 @@ function toolSettingsFor(tool, modelId) {
   return out;
 }
 
+const TOOL_MODEL_SELECT = { improve: "improve-model", chat: "chat-model", describe: "describe-model" };
+
 function toolModel(tool) {
-  const id = $(tool === "improve" ? "improve-model" : "chat-model").value;
-  return chatModels.find((m) => m.id === id) || improveModels.find((m) => m.id === id) || null;
+  const sel = $(TOOL_MODEL_SELECT[tool]);
+  const id = sel && sel.value;
+  const list = tool === "describe" ? describeModels : tool === "chat" ? chatModels : improveModels;
+  return list.find((m) => m.id === id) || null;
 }
 
 // The limit the Worker uses when none is set here, mirroring its own defaults.
 function defaultMaxTokens(tool, m) {
   if (m.maxTokens) return m.maxTokens;
   if (tool === "improve") return m.reasoning ? 1500 : 320;
+  if (tool === "describe") return m.chat ? 1024 : 512;
   return m.reasoning ? 2000 : 1024;
 }
 
 function refreshGears() {
-  for (const tool of ["improve", "chat"]) {
+  for (const tool of INSTRUCTABLE) {
     const btn = $(`${tool}-settings`);
     const m = toolModel(tool);
     if (!btn || !m) continue;
@@ -3563,52 +4115,284 @@ function refreshGears() {
   }
 }
 
+const savedInstruction = (tool) => toolSettings[tool].system || defaultInstructions[tool] || "";
+
+function instructionDraft(tool) {
+  if (!instructionDrafts[tool]) {
+    const text = savedInstruction(tool);
+    instructionDrafts[tool] = { text, past: [text], at: 0, timer: null };
+  }
+  return instructionDrafts[tool];
+}
+
+const draftDirty = (tool) => Boolean(instructionDrafts[tool]) && instructionDrafts[tool].text !== savedInstruction(tool);
+const anyDraftDirty = () => INSTRUCTABLE.filter(draftDirty);
+
+// One history entry per burst of typing, the prompt box's own rule.
+function commitDraft(d) {
+  clearTimeout(d.timer);
+  d.timer = null;
+  if (d.past[d.at] === d.text) return;
+  d.past = d.past.slice(0, d.at + 1);
+  d.past.push(d.text);
+  d.at = d.past.length - 1;
+}
+
+function toolRow(box, name, body) {
+  const row = document.createElement("div");
+  row.className = "tool-row";
+  const n = document.createElement("div");
+  n.className = "tool-row-name";
+  n.textContent = name;
+  row.appendChild(n);
+  const b = document.createElement("div");
+  b.className = "tool-row-body";
+  if (typeof body === "string") {
+    const p = document.createElement("p");
+    p.textContent = body;
+    b.appendChild(p);
+  } else {
+    b.appendChild(body);
+  }
+  row.appendChild(b);
+  box.appendChild(row);
+  return b;
+}
+
+function button(text, cls, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = cls;
+  b.textContent = text;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function sttPicker() {
+  const t = toolSettings.chat;
+  const sel = document.createElement("select");
+  sel.className = "settings-stt";
+  sel.setAttribute("aria-label", "Speech-to-text model");
+  for (const sm of sttModels) {
+    const o = document.createElement("option");
+    o.value = sm.id;
+    o.textContent = `${sm.label} · ${sm.id}`;
+    sel.appendChild(o);
+  }
+  sel.value = t.stt || defaultSttModel;
+  sel.addEventListener("change", () => {
+    t.stt = sel.value === defaultSttModel ? "" : sel.value;
+    saveToolSettings();
+  });
+  return sel;
+}
+
+function renderToolTabs() {
+  const tabs = $("tool-tabs");
+  tabs.innerHTML = "";
+  for (const [id, label] of TOOL_TABS) {
+    const b = button(label, "tool-tab", () => {
+      settingsOpenFor = id;
+      renderToolSettings();
+    });
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", String(id === settingsOpenFor));
+    tabs.appendChild(b);
+  }
+}
+
 function renderToolSettings() {
   const box = $("tool-settings");
-  const tool = settingsOpenFor;
-  box.classList.toggle("hidden", !tool);
   box.innerHTML = "";
+  renderToolTabs();
+  const tool = settingsOpenFor;
   if (!tool) return;
+  if (INSTRUCTABLE.includes(tool)) renderInstructableTool(box, tool);
+  else renderFixedTool(box, tool);
+}
+
+function renderFixedTool(box, tool) {
+  const info = TOOL_INFO[tool];
+  const h = document.createElement("h3");
+  h.textContent = TOOL_TABS.find(([id]) => id === tool)[1];
+  box.appendChild(h);
+  if (tool === "embed") {
+    const m = embedModels.find((x) => x.id === ($("embed-model") && $("embed-model").value));
+    toolRow(box, "Model", m ? `${m.label} · ${m.id} — picked in the Embeddings panel. ${embedModels.length} to choose from; each keeps its own history, since their numbers cannot be compared.` : "Picked in the Embeddings panel.");
+  } else if (tool === "other") {
+    toolRow(box, "Model", otherTools.map((t) => `${t.label} · ${t.model}`).join("\n")).classList.add("pre");
+  } else if (tool === "stt") {
+    const wrap = document.createElement("div");
+    wrap.appendChild(sttPicker());
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = "Used by 🎤 in the chat.";
+    wrap.appendChild(p);
+    toolRow(box, "Model", wrap);
+  } else {
+    toolRow(box, "Model", info.model);
+  }
+  toolRow(box, "Reads", info.reads);
+  toolRow(box, "Instruction", info.instruction);
+  toolRow(box, "Limits", info.limits);
+  toolRow(box, "Writes to", info.writes);
+}
+
+function renderInstructableTool(box, tool) {
   const m = toolModel(tool);
   if (!m) return;
+  const info = TOOL_INFO[tool];
   const t = toolSettings[tool];
-  const mine = (t.models[m.id] = t.models[m.id] || {});
+  const mine = t.models[m.id] || {};
+  const label = TOOL_TABS.find(([id]) => id === tool)[1].replace(/^\S+\s/, "");
 
   const h = document.createElement("h3");
-  h.textContent = `${tool === "improve" ? "Improve" : "Chat"} settings · ${m.label}`;
+  h.textContent = `${label} settings · ${m.label}`;
   box.appendChild(h);
   const exact = document.createElement("p");
   exact.className = "hint model-id";
   exact.textContent = m.id;
   box.appendChild(exact);
 
-  const instr = document.createElement("label");
-  instr.textContent = `Instruction (all ${tool === "improve" ? "Improve" : "chat"} models)`;
+  let where = info.where;
+  if (tool === "describe" && m.id.includes("moondream")) {
+    where += " Moondream's caption mode takes no text, so with your own instruction it answers it as a question instead.";
+  }
+  if (tool === "chat") where += m.vision ? " This one can see images (👁)." : " This one cannot see images.";
+  toolRow(box, "Model", `${m.label} — ${where}`);
+  toolRow(box, "Reads", info.reads);
+  toolRow(box, "Instruction", instructionEditor(tool, info.scope));
+  toolRow(box, "Limits", limitsEditor(tool, m, mine));
+  toolRow(box, "Writes to", info.writes);
+  if (tool === "chat" && sttModels.length) {
+    const wrap = document.createElement("div");
+    wrap.appendChild(sttPicker());
+    toolRow(box, "Speech to text (🎤)", wrap);
+  }
+}
+
+function instructionEditor(tool, scope) {
+  const d = instructionDraft(tool);
+  const def = defaultInstructions[tool] || "";
+  const wrap = document.createElement("div");
+  wrap.className = "instruction";
+
+  const lab = document.createElement("label");
+  lab.textContent = `Shared by ${scope}`;
   const ta = document.createElement("textarea");
   ta.className = "settings-system";
-  ta.value = t.system || defaultInstructions[tool] || "";
-  ta.addEventListener("input", () => {
+  ta.value = d.text;
+  lab.appendChild(ta);
+  wrap.appendChild(lab);
+
+  const state = document.createElement("p");
+  state.className = "hint settings-dirty";
+  const undo = button("↶", "secondary instr-undo", () => {
+    commitDraft(d);
+    if (d.at > 0) setDraft(d.past[--d.at], false);
+  });
+  undo.setAttribute("aria-label", "Undo in the instruction");
+  const redo = button("↷", "secondary instr-redo", () => {
+    commitDraft(d);
+    if (d.at < d.past.length - 1) setDraft(d.past[++d.at], false);
+  });
+  redo.setAttribute("aria-label", "Redo in the instruction");
+  const save = button("Save", "instr-save", () => {
+    commitDraft(d);
+    const before = savedInstruction(tool);
+    if (d.text === before) return;
+    const t = toolSettings[tool];
+    // The text being replaced is kept, so a save made in error is one pick away.
+    t.versions = [{ text: before, at: Date.now() }, ...t.versions.filter((v) => v.text !== before && v.text !== d.text)].slice(0, INSTRUCTION_VERSIONS);
     // Saving the default text verbatim would pin it, so a later change to the
     // app's default would never reach this device. Equal to default = unset.
-    t.system = ta.value.trim() === (defaultInstructions[tool] || "").trim() ? "" : ta.value;
+    t.system = d.text.trim() === def.trim() ? "" : d.text;
     saveToolSettings();
-  });
-  instr.appendChild(ta);
-  box.appendChild(instr);
-  const resetInstr = document.createElement("button");
-  resetInstr.type = "button";
-  resetInstr.className = "secondary";
-  resetInstr.textContent = "Reset instruction to default";
-  resetInstr.addEventListener("click", () => {
-    t.system = "";
-    saveToolSettings();
+    delete instructionDrafts[tool];
     renderToolSettings();
   });
-  box.appendChild(resetInstr);
+  const revert = button("Revert to saved", "secondary instr-revert", () => setDraft(savedInstruction(tool), true));
+  const loadDefault = button("Load default", "secondary instr-default", () => setDraft(def, true));
+
+  const refresh = () => {
+    const dirty = d.text !== savedInstruction(tool);
+    state.textContent = dirty
+      ? "Not saved yet — the saved instruction is still the one sent."
+      : toolSettings[tool].system
+        ? "Saved. Your own instruction is sent."
+        : "The app's default is sent.";
+    state.classList.toggle("dirty", dirty);
+    save.disabled = !dirty;
+    revert.disabled = !dirty;
+    loadDefault.disabled = d.text === def;
+    undo.disabled = d.at <= 0 && d.past[d.at] === d.text;
+    redo.disabled = d.at >= d.past.length - 1 || d.past[d.at] !== d.text;
+  };
+  // A replacement from a button is its own history step.
+  function setDraft(text, record) {
+    if (record) commitDraft(d);
+    d.text = text;
+    ta.value = text;
+    if (record) commitDraft(d);
+    refresh();
+  }
+  ta.addEventListener("input", () => {
+    d.text = ta.value;
+    clearTimeout(d.timer);
+    d.timer = setTimeout(() => {
+      commitDraft(d);
+      refresh();
+    }, INSTRUCTION_COMMIT_MS);
+    refresh();
+  });
+
+  const row = document.createElement("div");
+  row.className = "row";
+  for (const b of [undo, redo, save, revert, loadDefault]) row.appendChild(b);
+  wrap.appendChild(row);
+  wrap.appendChild(state);
+
+  const versions = toolSettings[tool].versions;
+  if (versions.length) {
+    const sel = document.createElement("select");
+    sel.className = "settings-versions";
+    sel.setAttribute("aria-label", "Earlier versions of the instruction");
+    const ph = document.createElement("option");
+    ph.value = "";
+    ph.textContent = `Earlier versions (${versions.length})…`;
+    sel.appendChild(ph);
+    versions.forEach((v, i) => {
+      const o = document.createElement("option");
+      o.value = String(i);
+      const when = v.at ? new Date(v.at).toLocaleString() : "";
+      const text = v.text.replace(/\s+/g, " ");
+      o.textContent = `${when} — ${text.length > 60 ? text.slice(0, 60) + "…" : text}`;
+      sel.appendChild(o);
+    });
+    sel.addEventListener("change", () => {
+      const v = versions[Number(sel.value)];
+      if (v) setDraft(v.text, true);
+      sel.value = "";
+    });
+    wrap.appendChild(sel);
+  }
+  refresh();
+  return wrap;
+}
+
+function limitsEditor(tool, m, mine) {
+  const t = toolSettings[tool];
+  const wrap = document.createElement("div");
+  wrap.className = "limits";
+  const store = () => {
+    t.models[m.id] = mine;
+    if (!Object.keys(mine).length) delete t.models[m.id];
+    saveToolSettings();
+  };
 
   const def = defaultMaxTokens(tool, m);
   const tok = document.createElement("label");
-  tok.textContent = "Token limit (this model)";
+  tok.textContent = `Token limit — ${m.label} only`;
   const num = document.createElement("input");
   num.type = "number";
   num.min = "16";
@@ -3628,12 +4412,12 @@ function renderToolSettings() {
     const n = Math.floor(Number(num.value));
     if (n >= 16) mine.maxTokens = Math.min(n, 8000);
     else delete mine.maxTokens;
-    saveToolSettings();
+    store();
     showCost();
   });
   tok.appendChild(num);
-  box.appendChild(tok);
-  box.appendChild(cost);
+  wrap.appendChild(tok);
+  wrap.appendChild(cost);
   showCost();
 
   const row = document.createElement("div");
@@ -3654,7 +4438,7 @@ function renderToolSettings() {
     sel.addEventListener("change", () => {
       if (sel.value === "") delete mine.thinking;
       else mine.thinking = sel.value === "on";
-      saveToolSettings();
+      store();
     });
     lab.appendChild(sel);
     row.appendChild(lab);
@@ -3677,77 +4461,56 @@ function renderToolSettings() {
     sel.addEventListener("change", () => {
       if (sel.value) mine.effort = sel.value;
       else delete mine.effort;
-      saveToolSettings();
+      store();
     });
     lab.appendChild(sel);
     row.appendChild(lab);
   }
-  if (row.children.length) box.appendChild(row);
+  if (row.children.length) wrap.appendChild(row);
   else {
     const p = document.createElement("p");
     p.className = "hint";
     p.textContent = "This model takes no thinking or effort setting.";
-    box.appendChild(p);
+    wrap.appendChild(p);
   }
-
-  if (tool === "chat" && sttModels.length) {
-    const lab = document.createElement("label");
-    lab.textContent = "Speech-to-text model (🎤)";
-    const sel = document.createElement("select");
-    sel.className = "settings-stt";
-    for (const sm of sttModels) {
-      const o = document.createElement("option");
-      o.value = sm.id;
-      o.textContent = sm.label;
-      sel.appendChild(o);
-    }
-    sel.value = t.stt || defaultSttModel;
-    sel.addEventListener("change", () => {
-      t.stt = sel.value === defaultSttModel ? "" : sel.value;
+  // Scoped to the model in its own label, so it cannot be mistaken for
+  // resetting the instruction as well.
+  wrap.appendChild(
+    button(`Reset ${m.label} limits`, "secondary reset-limits", () => {
+      delete t.models[m.id];
       saveToolSettings();
-    });
-    lab.appendChild(sel);
-    box.appendChild(lab);
-  }
+      renderToolSettings();
+    })
+  );
+  return wrap;
+}
 
-  const actions = document.createElement("div");
-  actions.className = "row";
-  const resetModel = document.createElement("button");
-  resetModel.type = "button";
-  resetModel.className = "secondary";
-  resetModel.textContent = "Reset this model";
-  resetModel.addEventListener("click", () => {
-    delete t.models[m.id];
-    saveToolSettings();
-    renderToolSettings();
-  });
-  const close = document.createElement("button");
-  close.type = "button";
-  close.className = "secondary";
-  close.textContent = "Close";
-  close.addEventListener("click", () => {
-    settingsOpenFor = null;
-    renderToolSettings();
-  });
-  actions.appendChild(resetModel);
-  actions.appendChild(close);
-  box.appendChild(actions);
+function openTools(tool) {
+  settingsOpenFor = tool;
+  renderToolSettings();
+  openSheet("sheet-tools");
 }
 
 function initToolSettings() {
   loadToolSettings();
-  for (const tool of ["improve", "chat"]) {
+  for (const tool of INSTRUCTABLE) {
     const btn = $(`${tool}-settings`);
-    if (!btn) continue;
-    btn.addEventListener("click", () => {
-      settingsOpenFor = settingsOpenFor === tool ? null : tool;
-      renderToolSettings();
-    });
-    $(tool === "improve" ? "improve-model" : "chat-model").addEventListener("change", () => {
+    if (btn) btn.addEventListener("click", () => openTools(tool));
+    $(TOOL_MODEL_SELECT[tool]).addEventListener("change", () => {
       refreshGears();
       if (settingsOpenFor === tool) renderToolSettings();
     });
   }
+  $("open-tools").addEventListener("click", () => openTools("judge"));
+  // An unsaved instruction is asked about rather than lost, or kept by accident.
+  sheetGuards["sheet-tools"] = () => {
+    const dirty = anyDraftDirty();
+    if (!dirty.length) return true;
+    const names = dirty.map((t) => TOOL_TABS.find(([id]) => id === t)[1]).join(", ");
+    if (!window.confirm(`Discard the unsaved instruction changes (${names})?`)) return false;
+    for (const t of dirty) delete instructionDrafts[t];
+    return true;
+  };
   refreshGears();
 }
 
@@ -3793,14 +4556,14 @@ function initTranslate() {
     if (!text) return void setStatus("Nothing to translate — write a prompt first.", "err");
     if (from.value === to.value) return void setStatus("Pick two different languages.", "err");
     btn.disabled = true;
+    closeSheet("sheet-more");
     setStatus("Translating…", "load");
     try {
-      const res = await api("/api/translate", {
+      const { res, data } = await apiWithin("/api/translate", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text, source_lang: from.value, target_lang: to.value }),
       });
-      const data = await res.json();
       if (!res.ok || !data.text) throw new Error(data.error || `HTTP ${res.status}`);
       el.value = data.text;
       el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -3826,7 +4589,7 @@ async function transcribeBlob(blob) {
   setStatus("Transcribing…", "load");
   try {
     const file = new File([blob], "speech", { type: blob.type || "audio/mp4" });
-    const res = await api("/api/transcribe", {
+    const { res, data } = await apiWithin("/api/transcribe", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -3835,7 +4598,6 @@ async function transcribeBlob(blob) {
         mime: file.type,
       }),
     });
-    const data = await res.json();
     if (!res.ok || !data.text) throw new Error(data.error || `HTTP ${res.status}`);
     const input = $("chat-input");
     input.value = input.value.trim() ? `${input.value.trim()} ${data.text}` : data.text;
@@ -3933,7 +4695,9 @@ async function runOther(imageFile) {
   if (t.input === "image") {
     const f = imageFile || attachedImageFile();
     if (!f) return void $("other-file").click();
-    body.image_b64 = await fileToBase64(f);
+    const im = await toolImage(f);
+    if (!im) return void ($("other-result").textContent = "Failed: could not read that image.");
+    body.image_b64 = im.b64;
   } else {
     body.text = $("other-text").value;
     if (t.input === "rerank") body.passages = $("other-passages").value.split("\n");
@@ -3942,12 +4706,11 @@ async function runOther(imageFile) {
   btn.disabled = true;
   $("other-result").textContent = "…";
   try {
-    const res = await api("/api/other", {
+    const { res, data } = await apiWithin("/api/other", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     showOtherResult(t, data.result);
     setTimeout(refreshNeurons, 4000);
@@ -4136,12 +4899,11 @@ async function measureEmbed() {
   embedBusy = true;
   const model = $("embed-model").value;
   try {
-    const res = await api("/api/embed", {
+    const { res, data } = await apiWithin("/api/embed", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model, text }),
     });
-    const data = await res.json();
     if (!res.ok || !Array.isArray(data.vector)) throw new Error(data.error || `HTTP ${res.status}`);
     const hist = embedStore[model] || (embedStore[model] = { baseline: 0, versions: [] });
     hist.versions.push({ text, vec: data.vector.map((x) => Math.round(x * 1e4) / 1e4) });
@@ -4262,6 +5024,9 @@ function judgeTarget() {
 }
 
 function updateJudgeNote() {
+  // Score sits under a generated image, and only while one is on screen.
+  const scoreBtn = $("prompt-judge");
+  if (scoreBtn) scoreBtn.classList.toggle("hidden", !(lastResult.urls.length && lastResult.kind === "image"));
   const noteEl = $("judge-note");
   if (!noteEl) return; // called before the toolbar exists
   noteEl.innerHTML = "";
@@ -4284,10 +5049,13 @@ function updateJudgeNote() {
 }
 
 function clearJudgeResult() {
-  const box = $("judge-result");
-  if (!box) return;
-  box.innerHTML = "";
-  box.classList.add("hidden");
+  for (const id of ["judge-result", "lab-judge-result"]) {
+    const box = $(id);
+    if (!box) continue;
+    box.innerHTML = "";
+    box.classList.add("hidden");
+  }
+  updateJudgeNote();
 }
 
 // p-judger takes URIs, and the ones it accepts are Pruna file URLs. An upload
@@ -4345,22 +5113,27 @@ async function attachedImageUrls() {
   return out;
 }
 
+// Two ways in: Score under a generated image, which scores what is on screen,
+// and the Lab card, which scores whatever judgeTarget() names or files picked
+// there — batch mode included. Each shows its score where it was asked for.
 function initJudge() {
   const btn = $("prompt-judge");
+  const labBtn = $("lab-judge");
   const picker = $("judge-file");
 
-  btn.addEventListener("click", () => {
-    if (judgeTarget()) runJudge();
+  btn.addEventListener("click", () => runJudge(null, btn, "judge-result"));
+  labBtn.addEventListener("click", () => {
+    if (judgeTarget()) runJudge(null, labBtn, "lab-judge-result");
     else picker.click();
   });
 
   picker.addEventListener("change", () => {
     const files = Array.from(picker.files || []).slice(0, judgeMaxImages);
     picker.value = "";
-    if (files.length) runJudge(files);
+    if (files.length) runJudge(files, labBtn, "lab-judge-result");
   });
 
-  async function runJudge(files) {
+  async function runJudge(files, btn, boxId) {
     const promptEl = primaryPromptEl();
     const prompt = promptEl ? promptEl.value.trim() : "";
     if (!prompt) {
@@ -4383,16 +5156,15 @@ function initJudge() {
       }
       if (!images.length) throw new Error("No image to score.");
 
-      const res = await api("/api/judge", {
+      const { res, data } = await apiWithin("/api/judge", {
         method: "POST",
         retry: true,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ prompt, images }),
       });
-      const data = await res.json();
       if (!res.ok || !Array.isArray(data.scores)) throw new Error(data.error || `HTTP ${res.status}`);
 
-      renderJudge(data.scores, data.raw);
+      renderJudge(data.scores, data.raw, boxId);
       const cost = judgeUsdPerImage * images.length;
       if (cost > 0) {
         sessionSpend += cost;
@@ -4417,8 +5189,8 @@ function initJudge() {
 // means any of those appearing later is visible without a code change, rather
 // than silently dropped. The scale is undocumented, so the number is shown as
 // a number — never a percentage or a bar.
-function renderJudge(scores, raw) {
-  const box = $("judge-result");
+function renderJudge(scores, raw, boxId = "judge-result") {
+  const box = $(boxId);
   box.innerHTML = "";
 
   const list = document.createElement("div");
@@ -4647,7 +5419,8 @@ function initPromptLibrary() {
     el.value = p.text;
     el.dispatchEvent(new Event("input", { bubbles: true }));
     commitPromptHistory(); // one entry for the whole load, undoable in one press
-    setStatus(`Loaded prompt "${p.name}".`, "ok");
+    closeSheet("sheet-prompts");
+    setStatus(`Loaded prompt "${p.name}" — press Undo to get yours back.`, "ok");
   });
 
   $("prompt-save").addEventListener("click", () => {
@@ -4679,9 +5452,13 @@ function initPromptLibrary() {
   // Undo button's job — and that one is not one-shot, does not go stale when you
   // type, and covers Describe and saved prompts the same way. So the button
   // stays Improve and only ever improves.
+  // Improve reads the prompt text and nothing else: it is a copy edit, and the
+  // instruction it runs under says so. While it runs the button is its Cancel.
   const improveBtn = $("prompt-improve");
   const improveIdle = improveBtn.textContent;
+  let improving = null;
   improveBtn.addEventListener("click", async () => {
+    if (improving) return void improving.abort();
     const el = primaryPromptEl();
     if (!el) return;
 
@@ -4691,45 +5468,43 @@ function initPromptLibrary() {
       return;
     }
 
-    improveBtn.disabled = true;
-    improveBtn.textContent = "Improving…";
+    improving = new AbortController();
+    const cancel = () => improving && improving.abort();
+    improveBtn.textContent = "✕ Cancel";
+    improveBtn.classList.add("running");
+    setStatus("Improving the prompt…", "load", { cancel });
+    const modelId = $("improve-model").value;
     try {
-      // Whether an image field actually has something in it — a text-only
-      // model can't see the source image, so editing/i2v prompts need a much
-      // more conservative rewrite than from-scratch generation prompts do.
-      const hasImage = currentModel.fields.some(
-        (f) => f.type === "image" && (uploads[f.name] || []).length > 0
+      const data = await streamTool(
+        "/api/improve-prompt",
+        { prompt: text, model: modelId, settings: toolSettingsFor("improve", modelId) },
+        {
+          controller: improving,
+          onEvent: (name, d) => {
+            if (name === "progress") setStatus(d.chars ? `Improving the prompt… ${d.chars} characters` : "Improving the prompt… thinking", "load", { cancel });
+          },
+        }
       );
-      const res = await api("/api/improve-prompt", {
-        method: "POST",
-        retry: true,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          prompt: text,
-          kind: currentModel.kind,
-          hasImage,
-          model: $("improve-model").value,
-          settings: toolSettingsFor("improve", $("improve-model").value),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.prompt) throw new Error(data.error || `HTTP ${res.status}`);
+      if (!data.prompt) throw new Error("The model returned nothing usable.");
       el.value = data.prompt;
       el.dispatchEvent(new Event("input", { bubbles: true }));
       commitPromptHistory(); // the rewrite is one entry, so Undo reverses it whole
       setStatus("Prompt improved — press Undo to revert.", "ok");
       // A reasoning rewrite can cost hundreds of neurons, enough to move the
-      // daily meter on its own, so it counts like a generation does.
-      const im = improveModels.find((m) => m.id === $("improve-model").value);
-      if (im && im.neurons) sessionNeurons += im.neurons;
+      // daily meter on its own, so it counts like a generation does. The
+      // stream reports what this one actually used; the list figure stands in
+      // where it does not.
+      const im = improveModels.find((m) => m.id === modelId);
+      if (typeof data.neurons === "number") sessionNeurons += data.neurons;
+      else if (im && im.neurons) sessionNeurons += im.neurons;
       updateSpendBar();
       setTimeout(refreshNeurons, 4000);
     } catch (e) {
-      setStatus("Improve failed: " + e.message, "err");
+      if (e.message === TOOL_CANCELLED) setStatus("Improve cancelled. The prompt is unchanged.", "ok");
+      else setStatus("Improve failed: " + e.message, "err");
     } finally {
-      // Restored here rather than on the success path alone: a failed rewrite
-      // used to leave the button reading "Improving…" until a model switch.
-      improveBtn.disabled = false;
+      improving = null;
+      improveBtn.classList.remove("running");
       improveBtn.textContent = improveIdle;
     }
   });
@@ -5042,14 +5817,133 @@ function updateSpendBar() {
   if (!parts.length) parts.push("no usage recorded yet");
   if (sessionRuns > 0) parts.push(`${sessionRuns} run${sessionRuns === 1 ? "" : "s"} this session`);
   el.textContent = parts.join(" · ");
-  el.classList.remove("hidden");
+
+  // The same in a few characters, for the top bar; the sentence above opens
+  // from it.
+  const pill = $("spend-pill");
+  if (pill) {
+    let short = "";
+    if (actualNeurons) {
+      const over = actualNeurons.used - actualNeurons.limit;
+      short = over >= 0 ? `+${Math.round(over).toLocaleString()} over` : `${Math.round((actualNeurons.used / actualNeurons.limit) * 100)}%`;
+    } else if (sessionNeurons > 0) {
+      short = `~${Math.round(sessionNeurons).toLocaleString()} neurons`;
+    }
+    if (sessionSpend > 0) short += `${short ? " · " : ""}${fmtUsd(sessionSpend)}`;
+    pill.textContent = `⚡ ${short || "Usage"}`;
+    pill.dataset.level = level;
+  }
 }
 
 
 // ---------------------------------------------------------------------------
+// Shell: the two screens, the sheets, the usage pill and the bottom bar
+//
+// Create holds what making a picture needs, in the order it is done; Lab holds
+// the tools that work on their own text or images. The chat, saved prompts,
+// Describe and Translate, and the ⚙ Tools page open as sheets over whichever
+// screen is showing, so nothing has to be scrolled past to reach the prompt.
+// The bottom bar is always on screen: the status line is where every tool and
+// every run reports, and Generate never scrolls out of reach.
+// ---------------------------------------------------------------------------
+const SCREEN_KEY = "patchbay_screen";
+// Per sheet, a check run before it closes; false keeps it open.
+const sheetGuards = {};
+
+function openSheet(id) {
+  const el = $(id);
+  if (!el) return;
+  el.classList.remove("hidden");
+  document.body.classList.add("sheet-open");
+}
+
+function closeSheet(id) {
+  const el = $(id);
+  if (!el || el.classList.contains("hidden")) return true;
+  if (sheetGuards[id] && !sheetGuards[id]()) return false;
+  el.classList.add("hidden");
+  if (!document.querySelector(".sheet:not(.hidden)")) document.body.classList.remove("sheet-open");
+  return true;
+}
+
+function showScreen(which) {
+  const lab = which === "lab";
+  $("screen-create").classList.toggle("hidden", lab);
+  $("screen-lab").classList.toggle("hidden", !lab);
+  $("tab-create").setAttribute("aria-selected", String(!lab));
+  $("tab-lab").setAttribute("aria-selected", String(lab));
+  // Generate belongs to Create; the status line stays, since Lab reports there too.
+  $("action-row").classList.toggle("hidden", lab);
+  try {
+    localStorage.setItem(SCREEN_KEY, lab ? "lab" : "create");
+  } catch {
+    /* this visit only */
+  }
+}
+
+function initShell() {
+  for (const sheet of document.querySelectorAll(".sheet")) {
+    // The backdrop closes; the card itself does not.
+    sheet.addEventListener("click", (e) => {
+      if (e.target === sheet) closeSheet(sheet.id);
+    });
+    for (const b of sheet.querySelectorAll(".sheet-close")) b.addEventListener("click", () => closeSheet(sheet.id));
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const open = [...document.querySelectorAll(".sheet:not(.hidden)")].pop();
+    if (open) closeSheet(open.id);
+  });
+  $("open-chat").addEventListener("click", () => {
+    openSheet("sheet-chat");
+    renderChatImages();
+    updateChatNote();
+    const box = $("chat-thread");
+    box.scrollTop = box.scrollHeight;
+  });
+  $("open-prompts").addEventListener("click", () => openSheet("sheet-prompts"));
+  $("open-more").addEventListener("click", () => openSheet("sheet-more"));
+
+  $("tab-create").addEventListener("click", () => showScreen("create"));
+  $("tab-lab").addEventListener("click", () => showScreen("lab"));
+  let screen = "create";
+  try {
+    screen = localStorage.getItem(SCREEN_KEY) || "create";
+  } catch {
+    /* Create */
+  }
+  showScreen(screen);
+
+  const pill = $("spend-pill");
+  pill.addEventListener("click", () => {
+    const open = $("spend").classList.toggle("hidden") === false;
+    pill.setAttribute("aria-expanded", String(open));
+  });
+
+  // The bar is fixed, so the page keeps room for it at the bottom, following
+  // its height as the status line comes and goes.
+  const bar = $("bottombar");
+  const pad = () => document.body.style.setProperty("--bar-h", `${bar.offsetHeight}px`);
+  if (window.ResizeObserver) new ResizeObserver(pad).observe(bar);
+  pad();
+
+  // A long message is clamped to two lines: a tap shows all of it, and a tap
+  // on a finished message clears it. A running one stays.
+  $("status").addEventListener("click", () => {
+    const el = $("status");
+    if (el.dataset.mode === "load") return;
+    const text = el.querySelector(".status-text");
+    if (!el.classList.contains("expanded") && text && text.scrollHeight > text.clientHeight + 2) el.classList.add("expanded");
+    else setStatus("", "hide");
+  });
+  updateSpendBar();
+}
+
+// ---------------------------------------------------------------------------
 // UI helpers
 // ---------------------------------------------------------------------------
-function setStatus(msg, mode) {
+// `opts.cancel`, on a "load" status, adds a Cancel beside the text that calls it.
+function setStatus(msg, mode, opts = {}) {
   const el = $("status");
   if (mode === "hide" || !msg) {
     el.classList.add("hidden");
@@ -5058,13 +5952,29 @@ function setStatus(msg, mode) {
     return;
   }
   const cls = "status" + (mode === "err" ? " err" : mode === "ok" ? " ok" : "");
+  const placeCancel = () => {
+    const old = el.querySelector(".status-cancel");
+    if (old) old.remove();
+    if (!opts.cancel) return;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "linkish status-cancel";
+    b.textContent = "Cancel";
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      opts.cancel();
+    });
+    el.appendChild(b);
+  };
   // A progress line is rewritten every second now. Rebuilding the spinner on
   // each one restarts its CSS animation, so it twitches at the top of every
   // rotation instead of turning — keep the element and swap only the text
   // while the mode is unchanged.
-  if (el.dataset.mode === mode && el.lastChild) {
-    el.className = cls;
-    el.lastChild.textContent = msg;
+  const text = el.querySelector(".status-text");
+  if (el.dataset.mode === mode && text) {
+    el.className = cls + (el.classList.contains("expanded") ? " expanded" : "");
+    text.textContent = msg;
+    if (Boolean(opts.cancel) !== Boolean(el.querySelector(".status-cancel")) || opts.cancel) placeCancel();
     el.classList.remove("hidden");
     return;
   }
@@ -5077,8 +5987,10 @@ function setStatus(msg, mode) {
     el.appendChild(sp);
   }
   const t = document.createElement("span");
+  t.className = "status-text";
   t.textContent = msg;
   el.appendChild(t);
+  placeCancel();
   el.classList.remove("hidden");
 }
 

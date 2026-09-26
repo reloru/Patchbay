@@ -20,15 +20,31 @@ Embeddings panel, and Pruna's `p-judger` scores an image against a prompt.
 
 ## Features
 
+**Two screens, in the order the work is done.** *Create* holds what making a
+picture needs, top to bottom: the model; the mode, where a model has one, since
+it decides which inputs apply; every file the model takes, required or not,
+under *Inputs*; the prompt with its tools directly under it; then *Settings*.
+The output follows the form on a phone and sits beside it on a wide screen, and
+a finished result is scrolled into view. *Lab* holds the tools that work on
+their own text or images — scoring images, Embeddings and Other — so they no
+longer sit between the prompt tools and the prompt. A bar fixed to the bottom
+of the screen carries the status line and Generate, so neither a run's
+progress nor the button that starts one is ever scrolled out of reach; a long
+message is clamped to two lines and opens on a tap.
+
 **One picker, grouped by task.** Models are filed under Image editing, Image
 generation, Video, Audio and LoRA training, each split by provider — provider decides
 what a model costs and which key it needs, and two of them ship FLUX.2 Klein 4B
 under the same name.
 
-**Options panel.** Every optional parameter is visible and pre-filled. Modified
+**Settings panel.** Every optional parameter is visible and pre-filled. Modified
 rows get an accent bar and their own Reset, and the header counts what has
-changed. A parameter is sent only when it differs from the provider's default,
-so what you see is what the provider would do anyway.
+changed; *Reset all settings* puts the panel back without touching the inputs
+or the prompt (*Start over*, beside the model, is the one that clears those). A
+parameter is sent only when it differs from the provider's default, so what you
+see is what the provider would do anyway. Optional *files* — start and end
+frames, audio tracks, reference images, a pose — are not settings: they sit
+with the required inputs, marked optional, where they cannot be missed.
 
 **Mode switching.** Grok's video model reaches three different endpoints —
 generate, edit, extend. Picking a mode changes which fields apply, and fields
@@ -37,58 +53,95 @@ belonging to another mode are never sent.
 **Prompt rewriting.** Improve runs the prompt through one of 30 Workers AI chat
 models as a copy edit: grammar, phrasing and punctuation only. It adds nothing,
 drops nothing, keeps your pronouns and your grammatical mood, and avoids commas,
-which image models read as tag separators rather than punctuation. The result
-reaches the prompt box exactly as the model produced it — the Worker does not
-rewrite it afterwards. Reverting a rewrite is the prompt Undo button's job, so
-the button stays Improve rather than turning into a one-shot undo of its own.
+which image models read as tag separators rather than punctuation. It reads the
+prompt text and nothing else. Its model picker sits beside the button, since it
+is the tool used most. While it runs the button is its Cancel. Reverting a
+rewrite is the prompt Undo button's job, so the button stays Improve rather than
+turning into a one-shot undo of its own.
 
-**Image description.** Describe captions whatever image is already attached,
-with one of 9 Workers AI vision models, and drops the caption into the prompt
-box as a starting prompt (one Undo step). It only opens a file picker when
-nothing is attached.
+**Image description.** Describe, under *⋯ More*, captions whatever image is
+already attached, with one of 9 Workers AI vision models, and drops the caption
+into the prompt box as a starting prompt (one Undo step). It only opens a file
+picker when nothing is attached. Its instruction is editable like Improve's and
+the chat's. Moondream's caption mode takes no text, so with an instruction of
+your own it is asked as a question through its `query` mode instead.
 
-**Chat.** A conversation about the prompt sits under the toolbar: a thread,
-a multi-line box where Enter adds a line, and a Send button. Every message
-sends the whole thread, so the model remembers the conversation, and the
-thread stays on this device until *New chat*. With *Include the prompt box and
-attached image* on, the newest message also carries the prompt box text and,
-for a model marked 👁, the attached image. Any reply can be put in the prompt
-box as one Undo step, and each shows the neurons it actually used, as reported
-by Cloudflare. It talks to the same 30 chat models as Improve; LLaVA,
-Moondream and Llama 3.2 Vision cannot hold a conversation and stay behind
-Describe.
+**Chat.** A conversation about the prompt, in a sheet opened from 💬 under the
+prompt: a thread, a multi-line box where Enter adds a line, and a Send button.
+Every message sends the whole thread, so the model remembers the conversation,
+and the thread stays on this device until *New chat*. What else the next
+message carries is set by two separate controls. *Prompt box* adds the prompt
+text, and stays as set. Each attached image has a chip of its own, numbered as
+the Inputs show them; a ticked chip sends that image with the next message, to
+a model marked 👁. Every Send unticks all the chips — Workers AI keeps nothing
+between calls, so a follow-up about a picture has to carry the picture, and a
+tap ticks it again. All six vision chat models were checked with two images in
+one message and named each correctly, so several go at once, each as its own
+part. The thread notes which images each message carried. The reply streams in
+as it is written; while it does, Send is Cancel, and a cancelled or failed
+message goes back into the box with its images ticked again. Any reply can be
+put in the prompt box as one Undo step, and each shows the neurons it actually
+used, as reported by Cloudflare. It talks to the same 30 chat models as
+Improve; LLaVA, Moondream and Llama 3.2 Vision cannot hold a conversation and
+stay behind Describe. Images sent to any tool are scaled to 1,024 pixels on the
+long edge first: a phone photo is several megabytes as base64, which was the
+slow part of every message on a mobile connection.
 
-**⚙ settings, on this device.** A ⚙ beside the Improve picker and the chat's
-model picker opens that tool's settings: its instruction (shared by all its
-models, with *Reset instruction to default*), and for the picked model a token
-limit with the most a reply can cost at it, plus Thinking and Reasoning effort
-where the model's schema takes them — DeepSeek V4, Gemma 4, GLM 4.7 Flash and
-5.x, Kimi and Qwen 3.8 take both, Nemotron takes thinking only, the rest take
-neither. Nothing is stored server-side: the settings live in this browser and
-ride along with each request, and the Worker caps them (instruction 4,000
-characters, token limit 16–8,000). An orange ⚙ means the picked model has
-something set.
+**⚙ Tools: the same rows for every tool.** Each tool is described on the same
+five rows — *Model*, *Reads*, *Instruction*, *Limits*, *Writes to* — so where
+two tools differ, the sheet says how and why. Improve, the chat and Describe
+run instruction-following models and take an instruction, shared by all of
+that tool's models, and per-model limits: a token limit with the most a reply
+can cost at it, plus Thinking and Reasoning effort where the model's schema
+takes them — DeepSeek V4, Gemma 4, GLM 4.7 Flash and 5.x, Kimi and Qwen 3.8
+take both, Nemotron takes thinking only, the rest take neither. The other
+tools' rows name the input their model has instead of an instruction:
+m2m100 takes text and two language codes; p-judger a prompt and images, and
+refuses any other key; Llama Guard, DistilBERT, ResNet-50 and the reranker
+have no instruction input in their schemas; the embedding models measure text
+as a document. An instruction is a draft until saved: typing changes nothing
+that is sent, ↶ and ↷ step through the draft, *Revert to saved* puts the saved
+text back, *Load default* puts the app's own text in the draft (still
+undoable), and every Save keeps the text it replaced among the last ten
+versions. Closing over an unsaved draft asks first. *Reset … limits* names
+the model it resets and leaves the instruction alone. Nothing is stored
+server-side: the settings live in this browser and ride along with each
+request, and the Worker caps them (instruction 4,000 characters, token limit
+16–8,000). An orange ⚙ means the picked model has something set.
 
-**Translate.** Two language pickers and 🌐 Translate rewrite the prompt box
-into another language with Meta's m2m100 (English, Spanish, French, German,
+**Deadlines and streaming.** Improve, Describe and the chat answer as
+server-sent events, following Cloudflare's guidance to stream "especially for
+larger models or reasoning models": a ping at once and every 10 seconds, the
+text as it arrives, then the result. `env.AI.run()` takes no timeout of its
+own, so the deadline is kept on silence rather than on the total: the Worker
+gives up when the model sends nothing for 60 seconds (120 for LLaVA and
+Moondream, which answer in one piece), and the browser gives up after 60
+seconds with no word at all, which only a lost connection explains. A long
+answer that keeps arriving is never cut off. Translate, speech to text,
+Embeddings, Other and Judge are one-shot calls with a 60-second deadline. Each
+failure says so in words, and says the call may still have been billed.
+
+**Translate.** Under *⋯ More*, two language pickers and 🌐 Translate rewrite
+the prompt box into another language with Meta's m2m100 (English, Spanish, French, German,
 Portuguese, Russian, Arabic, Hindi, Chinese, Japanese — the languages
 Cloudflare lists for it). Undo brings the original back.
 
 **Speaking to the chat.** 🎤 beside Send records a message and transcribes it
 into the chat box — added, not sent, so it can be corrected first. Tap ■ to
 stop. Where a browser cannot record, it opens a picker for a recording
-instead. The model is chosen in the chat's ⚙: Whisper Large v3 Turbo (the
+instead. The model is chosen in ⚙ Tools, from the chat's ⚙ or the *Speech to
+text* tab: Whisper Large v3 Turbo (the
 default), Whisper, Whisper Tiny EN or Deepgram Nova-3, each sent the audio in
 the form its schema documents. All four transcribed both an iPhone-style
 AAC/MP4 clip and a WebM/Opus clip in testing. Deepgram Flux is not offered:
 Cloudflare serves it over a WebSocket only.
 
-**Other.** A collapsed section for the catalogue models that fit nowhere else:
+**Other.** In Lab, a section for the catalogue models that fit nowhere else:
 a safety check with Llama Guard 3 8B, sentiment with DistilBERT SST-2, image
 labels with ResNet-50 (on the attached image, or a picked one), and ranking
 passages against a query with the BGE reranker.
 
-**Embeddings.** A panel of its own, with its own text box: write something,
+**Embeddings.** In Lab, a panel of its own, with its own text box: write something,
 change it, and watch the numbers move. About a second after you stop typing
 the text is measured by one of 6 Workers AI embedding models, which turns it
 into a list of numbers placed by meaning (384 to 2,048 of them, by model).
@@ -103,12 +156,11 @@ models, as Cloudflare recommends. A measurement costs about a tenth of a
 neuron.
 
 **Prompt-match scoring.** Judge runs Pruna's `p-judger` over an image and
-returns how well it matches the prompt. It scores the image you just generated
-if one is on screen, otherwise the one attached to the model's inputs, and the
-note under the toolbar always says which — with an inline link to a file picker
-for anything else, which also reaches batch mode (up to 10 images against a
-shared prompt). The score lands under the toolbar rather than in the output
-panel, so scoring a generation does not clear the generation.
+returns how well it matches the prompt. *⚖️ Score against prompt* appears under
+a generated image and scores it, with the score beneath. The Lab card scores
+the image on screen or, failing that, the attached ones, and its note always
+says which — with an inline link to a file picker for anything else, which also
+reaches batch mode (up to 10 images against a shared prompt).
 
 **Uploads.** Init images, edit references, start and end frames, masks, and
 source video or audio are proxied to the provider and referenced by URL.
@@ -119,13 +171,14 @@ The button names its target before you press it — Edit this when the image
 becomes an editing model's subject, Use as reference when it joins a prompt,
 and Edit in P-Image-Edit when the current model has nowhere to put it, which
 switches and carries the image across. The receiving field is scrolled into
-view and named in the status line, and the Options panel opens if that is where
-the field lives, so the tap never reads as having done nothing. A reused image
+view and named in the status line — every file field is under Inputs, in plain
+view — so the tap never reads as having done nothing. A reused image
 is an ordinary upload from there on: it gets the provider encoding that model
 needs, and the saved session keeps it.
 
 **Cost visibility.** List prices per model, live estimates that follow your
-settings, and Workers AI neuron consumption against the free daily allowance.
+settings, and Workers AI neuron consumption against the free daily allowance —
+in a few characters on the ⚡ pill at the top, which opens the full line.
 The account is on Workers Paid, where use past the 10,000 free neurons is
 billed at $0.011 per 1,000 rather than refused, so the meter turns amber at
 8,000 and red at 10,000, and past that shows the overage and what it has cost
@@ -163,8 +216,8 @@ reported rather than repeated. That includes pulling the finished result down,
 which is the largest transfer the app makes: losing those bytes costs the
 archive too, since nothing is kept without them.
 
-**Prompt undo/redo.** Undo and Redo buttons in the prompt toolbar cover the main
-prompt box and nothing else. Typing is grouped into one entry per burst rather
+**Prompt undo/redo.** Undo and Redo buttons under the prompt box cover the main
+prompt box and nothing else (the instruction editor has its own). Typing is grouped into one entry per burst rather
 than one per keystroke, and an Improve rewrite, a Describe caption, a loaded
 saved prompt or a Reset is a single entry, so one press reverses the whole
 replacement. Editing after an undo drops the redo tail, as it does in any
@@ -192,7 +245,10 @@ else.
 one you did not save in the moment is not gone: the strip under the output opens
 any of them full size — a clip in a player, with its own poster frame in the
 strip — to save, to send back in as an input, or to put the whole setup that
-produced it back on screen. Clear empties it immediately.
+produced it back on screen. The open item steps to its neighbours without
+closing — ‹ and ›, a sideways swipe, or the arrow keys, in the strip's own
+order, newest first — and Delete moves on to the next one rather than closing.
+Clear empties it immediately.
 
 Bounded by count, age and bytes, but **per kind**, because the two are nothing
 alike: one clip outweighs a hundred stills, and under a single shared ceiling it
@@ -279,9 +335,9 @@ Browser (public/)  ──►  Cloudflare Worker (src/worker.js)  ──┬──
    /api/status          polls async jobs (Pruna, xAI video)
    /api/upload          proxies file uploads
    /api/result          streams media back, adds credentials, no-store
-   /api/improve-prompt  copy-edits a prompt via Workers AI
-   /api/describe        captions an image via Workers AI
-   /api/chat            the chat thread, via Workers AI
+   /api/improve-prompt  copy-edits a prompt via Workers AI      (event stream)
+   /api/describe        captions an image via Workers AI       (event stream)
+   /api/chat            the chat thread, via Workers AI        (event stream)
    /api/embed           embeds text for the Embeddings panel
    /api/translate       translates the prompt via m2m100
    /api/transcribe      speech to text for the chat's 🎤
@@ -513,7 +569,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 33 Worker tests, then 240 assertions per
+are needed and nothing is billed. 38 Worker tests, then 290 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a

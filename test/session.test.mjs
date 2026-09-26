@@ -316,8 +316,10 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForSelector("#app:not(.hidden)");
   await page.waitForTimeout(400);
   const before = await page.inputValue(promptSel);
+  await page.locator("#open-prompts").click();
   await page.selectOption("#prompt-select", "0");
   check("saved prompt loaded", (await page.inputValue(promptSel)) === "a saved prompt body");
+  check("and the sheet gets out of the way", await page.locator("#sheet-prompts").isHidden());
   await page.locator("#prompt-undo").click();
   check("loading a saved prompt is undoable", (await page.inputValue(promptSel)) === before, `back to "${await page.inputValue(promptSel)}" want "${before}"`);
 
@@ -560,9 +562,8 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForTimeout(200);
   await page.fill(promptSel, "a harbour at dusk");
   await page.waitForTimeout(700);
-  // This model's image field is optional, so it sits inside the Options panel;
-  // open it to clear what carried over and make room.
-  await page.locator(".options > summary").click();
+  // This model's image field is optional; it sits with the other inputs,
+  // outside Settings. Clear what carried over to make room.
   while ((await page.locator(".thumbs .thumb .rm").count()) > 0) {
     await page.locator(".thumbs .thumb .rm").first().click();
   }
@@ -576,7 +577,10 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForTimeout(300);
   const ref = await page.evaluate(() => (uploads.images || []).length);
   check("landed in the reference field", ref === 1, String(ref));
-  check("the Options panel was opened so the landing is visible", await page.locator(".options").evaluate((d) => d.open));
+  check(
+    "an optional input sits in Inputs, in plain view, not inside Settings",
+    (await page.locator(".section-inputs .thumbs .thumb").count()) === 1 && (await page.locator(".options .thumbs .thumb").count()) === 0
+  );
 
   // The reused image is an ordinary upload, so the session store keeps it.
   await settle(page);
@@ -1077,6 +1081,8 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("no horizontal overflow at 390px", overflow <= 0, `overflow=${overflow}px`);
   const box = await page.locator("#prompt-undo").boundingBox();
   check("undo is a usable tap target", box.height >= 36 && box.width >= 60, JSON.stringify(box));
+  const bar = await page.locator("#generate-btn").boundingBox();
+  check("Generate is on screen without scrolling", bar && bar.y + bar.height <= 844, JSON.stringify(bar));
   await page.close();
   await context.close();
 }
@@ -1368,21 +1374,23 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   page.on("request", (r) => {
     if (r.url().includes("/api/describe") && r.method() === "POST") posted.push(JSON.parse(r.postData() || "{}"));
   });
+  await page.locator("#open-more").click();
   await page.locator("#prompt-describe").click();
   await page.waitForTimeout(900);
   check("a caption seeds the prompt, which is what captioning is for", (await page.inputValue(promptSel)) === "STUB CAPTION TEXT");
   check("Describe sends no question and no prompt", posted.length === 1 && !("question" in posted[0]) && !("prompt" in posted[0]), JSON.stringify(posted[0] && Object.keys(posted[0])));
+  check("and closes its sheet so the caption is seen landing", await page.locator("#sheet-more").isHidden());
   const notes = await page.locator(".tool-notes").textContent();
   check("the notes name no files", !notes.includes("cat.png"), notes);
 
-  // A model with no prompt box used to swallow the tap without a word.
+  // A model with no prompt box used to swallow a tool's tap without a word;
+  // now it offers no prompt tools at all.
   await page.selectOption("#model-select", "p-image-rmbg");
   await page.waitForTimeout(300);
-  await page.setInputFiles(".file-input", imgPath);
-  await page.waitForSelector(".thumbs .thumb img");
-  await page.locator("#prompt-describe").click();
+  check("a model with no prompt box offers no prompt tools", await page.locator("#prompt-tools").isHidden());
+  await page.selectOption("#model-select", "p-image-edit");
   await page.waitForTimeout(300);
-  check("with no prompt box, Describe says so beside the button", (await page.locator("#describe-note").textContent()).includes("no prompt box"));
+  check("and they come back with the next model that has one", await page.locator("#prompt-tools").isVisible());
   await page.close();
   await context.close();
 }
@@ -1404,6 +1412,8 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   page.on("request", (r) => {
     if (r.url().includes("/api/generate")) generates++;
   });
+  await page.locator("#open-chat").click();
+  check("the attached image has a chip, ticked to start", (await page.locator(".chat-chip.on").count()) === 1);
   await page.click("#chat-input");
   await page.keyboard.type("first line");
   await page.keyboard.press("Enter");
@@ -1417,7 +1427,12 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   let sent = await (await page.request.get(BASE + "__chat")).json();
   check("Send delivers the message", sent.messages.length === 1 && sent.messages[0].content === "first line\nsecond line", JSON.stringify(sent.messages));
   check("with the prompt box text", sent.prompt === "a neon cat on a rooftop", JSON.stringify(sent.prompt));
-  check("and the attached image, for a model that can see", typeof sent.image_b64 === "string" && sent.image_b64.length > 0);
+  check(
+    "and the ticked image, for a model that can see",
+    Array.isArray(sent.images) && sent.images.length === 1 && sent.images[0].b64.length > 0,
+    JSON.stringify(sent.images && sent.images.map((i) => i.mime))
+  );
+  check("after Send the image chip unticks", (await page.locator(".chat-chip.on").count()) === 0);
   check("the reply appears in the thread", (await page.locator(".chat-msg.assistant .chat-text").first().textContent()) === "STUB REPLY 1");
   check("with what it cost", (await page.locator(".chat-cost").first().textContent()).includes("12"));
   check("the input box is cleared for the next message", (await page.inputValue("#chat-input")) === "");
@@ -1431,20 +1446,23 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     sent.messages.length === 3 && sent.messages[1].role === "assistant" && sent.messages[1].content === "STUB REPLY 1",
     JSON.stringify(sent.messages.map((m) => m.role))
   );
+  check("but not the image, which was unticked", !("images" in sent) && sent.prompt === "a neon cat on a rooftop", JSON.stringify(Object.keys(sent)));
 
   await page.locator(".chat-use").last().click();
   await page.waitForTimeout(200);
   check("Put in prompt box replaces the prompt with the reply", (await page.inputValue(promptSel)) === "STUB REPLY 2");
+  check("and closes the chat so the prompt is in view", await page.locator("#sheet-chat").isHidden());
   await page.locator("#prompt-undo").click();
   check("and Undo brings the old prompt back", (await page.inputValue(promptSel)) === "a neon cat on a rooftop");
 
-  await page.uncheck("#chat-context");
+  await page.locator("#open-chat").click();
+  await page.uncheck("#chat-prompt");
   await page.fill("#chat-input", "no context this time");
   await page.locator("#chat-send").click();
   await page.waitForFunction(() => document.querySelectorAll(".chat-msg.assistant:not(.pending)").length === 3);
   sent = await (await page.request.get(BASE + "__chat")).json();
-  check("with the switch off, neither prompt nor image is sent", !("prompt" in sent) && !("image_b64" in sent), JSON.stringify(Object.keys(sent)));
-  await page.check("#chat-context");
+  check("with the prompt box unticked and no image ticked, neither is sent", !("prompt" in sent) && !("images" in sent), JSON.stringify(Object.keys(sent)));
+  await page.check("#chat-prompt");
 
   await page.selectOption("#chat-model", "@cf/meta/llama-3.2-3b-instruct");
   await page.waitForTimeout(150);
@@ -1454,6 +1472,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   page = await open(context);
   check("the thread survives a reload", (await page.locator(".chat-msg").count()) === 6, `${await page.locator(".chat-msg").count()} messages`);
   page.once("dialog", (d) => d.accept());
+  await page.locator("#open-chat").click();
   await page.locator("#chat-new").click();
   await page.waitForTimeout(150);
   check("New chat clears it", (await page.locator(".chat-msg").count()) === 0);
@@ -1594,12 +1613,16 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("the exact model id is shown", (await page.locator("#tool-settings .model-id").textContent()) === "@cf/zai-org/glm-5.3");
 
   await page.fill(".settings-system", "Rewrite it as a haiku.");
+  check("an edited instruction is a draft until saved", (await page.locator(".settings-dirty").textContent()).includes("Not saved"));
+  await page.locator("#tool-settings .instr-save").click();
+  check("Save makes it the one sent", (await page.locator(".settings-dirty").textContent()).includes("Saved"));
   await page.fill(".settings-tokens", "900");
   await page.selectOption(".settings-thinking", "off");
   await page.selectOption(".settings-effort", "high");
   check("the cost of the limit is shown", (await page.locator("#tool-settings .settings-cost").textContent()).includes("360"));
   check("the ⚙ marks a customised model", await page.locator("#improve-settings").evaluate((el) => el.classList.contains("custom")));
 
+  await page.locator("#sheet-tools .sheet-close").click();
   await page.fill(promptSel, "a cat");
   await page.waitForTimeout(700);
   await page.locator("#prompt-improve").click();
@@ -1610,9 +1633,11 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     JSON.stringify(sent.settings) === JSON.stringify({ system: "Rewrite it as a haiku.", maxTokens: 900, thinking: false, effort: "high" }),
     JSON.stringify(sent.settings)
   );
+  check("and the prompt text only", !("kind" in sent) && !("hasImage" in sent), JSON.stringify(Object.keys(sent)));
 
   await page.selectOption("#improve-model", "@cf/meta/llama-3.2-3b-instruct");
   await page.waitForTimeout(150);
+  await page.locator("#improve-settings").click();
   check("a model without thinking says so", (await page.locator(".settings-thinking").count()) === 0 && (await page.locator("#tool-settings").textContent()).includes("no thinking"));
   check("the instruction is shared by the tool's models", (await page.inputValue(".settings-system")) === "Rewrite it as a haiku.");
   check("the token limit belongs to the other model", (await page.inputValue(".settings-tokens")) === "");
@@ -1622,14 +1647,61 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.selectOption("#improve-model", "@cf/zai-org/glm-5.3");
   await page.locator("#improve-settings").click();
   check("settings survive a reload", (await page.inputValue(".settings-tokens")) === "900");
-  await page.locator("#tool-settings button", { hasText: "Reset this model" }).click();
-  await page.locator("#tool-settings button", { hasText: "Reset instruction" }).click();
-  check("Reset puts the defaults back", (await page.inputValue(".settings-tokens")) === "" && (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION");
-  check("and the ⚙ is plain again", !(await page.locator("#improve-settings").evaluate((el) => el.classList.contains("custom"))));
+  await page.locator("#tool-settings button", { hasText: "Reset GLM 5.3 limits" }).click();
+  check("resetting the model's limits leaves the instruction alone", (await page.inputValue(".settings-tokens")) === "" && (await page.inputValue(".settings-system")) === "Rewrite it as a haiku.");
 
+  // Undo inside the instruction, then Revert, then Load default.
+  await page.locator(".settings-system").pressSequentially(" Short.", { delay: 10 });
+  await page.waitForTimeout(700);
+  await page.locator("#tool-settings .instr-undo").click();
+  check("the instruction has its own Undo", (await page.inputValue(".settings-system")) === "Rewrite it as a haiku.");
+  await page.locator("#tool-settings .instr-default").click();
+  check("Load default only fills the draft", (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION" && (await page.locator(".settings-dirty").textContent()).includes("Not saved"));
+  await page.locator("#tool-settings .instr-revert").click();
+  check("Revert puts the saved text back", (await page.inputValue(".settings-system")) === "Rewrite it as a haiku.");
+  await page.locator("#tool-settings .instr-default").click();
+  await page.locator("#tool-settings .instr-save").click();
+  check("saving the default puts the defaults back", (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION");
+  check("and the ⚙ is plain again", !(await page.locator("#improve-settings").evaluate((el) => el.classList.contains("custom"))));
+  await page.selectOption(".settings-versions", { index: 1 });
+  check("the replaced instruction is one pick away", (await page.inputValue(".settings-system")) === "Rewrite it as a haiku.");
+
+  // Closing over an unsaved draft asks first.
+  page.once("dialog", (d) => d.dismiss());
+  await page.locator("#sheet-tools .sheet-close").click();
+  check("an unsaved draft keeps the sheet open when the question is declined", await page.locator("#sheet-tools").isVisible());
+  page.once("dialog", (d) => d.accept());
+  await page.locator("#sheet-tools .sheet-close").click();
+  check("and is discarded when it is accepted", await page.locator("#sheet-tools").isHidden());
+  await page.locator("#improve-settings").click();
+  check("so the saved instruction is what shows next time", (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION");
+
+  // Every tool on the same rows.
+  const rows = [];
+  for (const tab of await page.locator(".tool-tab").all()) {
+    await tab.click();
+    rows.push((await page.locator(".tool-row-name").allTextContents()).slice(0, 5).join("|"));
+  }
+  check(
+    "every tool is described on the same five rows",
+    rows.length === 8 && rows.every((r) => r.toLowerCase() === "model|reads|instruction|limits|writes to"),
+    JSON.stringify(rows)
+  );
+  await page.locator(".tool-tab", { hasText: "Describe" }).click();
+  check("Describe's instruction is editable now, from its own default", (await page.inputValue(".settings-system")) === "DEFAULT DESCRIBE INSTRUCTION");
+  await page.fill(".settings-system", "Name the colours only.");
+  await page.locator("#tool-settings .instr-save").click();
+  await page.locator("#sheet-tools .sheet-close").click();
+  await page.setInputFiles("#describe-file", imgPath);
+  await page.waitForFunction((s) => document.querySelector(s).value === "STUB CAPTION TEXT", promptSel);
+  const described = await (await page.request.get(BASE + "__describe")).json();
+  check("and Describe sends it", described.settings && described.settings.system === "Name the colours only.", JSON.stringify(described.settings));
+
+  await page.locator("#open-chat").click();
   await page.locator("#chat-settings").click();
   check("the chat's ⚙ opens its own settings", (await page.inputValue(".settings-system")) === "DEFAULT CHAT INSTRUCTION");
   await page.fill(".settings-tokens", "300");
+  await page.locator("#sheet-tools .sheet-close").click();
   await page.fill("#chat-input", "hi");
   await page.locator("#chat-send").click();
   await page.waitForSelector(".chat-msg.assistant:not(.pending)");
@@ -1647,6 +1719,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForTimeout(200);
   await page.fill(promptSel, "a lighthouse at dusk");
   await page.waitForTimeout(700);
+  await page.locator("#open-more").click();
   await page.selectOption("#translate-to", "fr");
   await page.locator("#prompt-translate").click();
   await page.waitForSelector("#status.ok");
@@ -1661,6 +1734,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   let sent = await (await page.request.get(BASE + "__tool")).json();
   check("with the default speech model", sent.body.model === "@cf/openai/whisper-large-v3-turbo" && sent.body.mime === "audio/mp4", JSON.stringify(sent.body).slice(0, 120));
 
+  await page.locator("#open-chat").click();
   await page.locator("#chat-settings").click();
   await page.selectOption(".settings-stt", "@cf/deepgram/nova-3");
   await page.setInputFiles("#chat-audio-file", { name: "b.webm", mimeType: "audio/webm", buffer: Buffer.from("x") });
@@ -1668,6 +1742,10 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   sent = await (await page.request.get(BASE + "__tool")).json();
   check("the speech model follows the chat's ⚙ setting, and text is appended", sent.body.model === "@cf/deepgram/nova-3");
 
+  await page.locator("#sheet-tools .sheet-close").click();
+  await page.locator("#sheet-chat .sheet-close").click();
+  await page.locator("#tab-lab").click();
+  check("Lab holds what is not part of making a picture", await page.locator("#other").isVisible() && (await page.locator("#generate-btn").isHidden()));
   await page.locator("#other > summary").click();
   await page.selectOption("#other-tool", "sentiment");
   await page.locator("#other-use-prompt").click();
@@ -1687,6 +1765,136 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
+// ── Chat images: a chip each, unticked after Send; Cancel; silence ─────────
+// Workers AI keeps nothing between calls, so an image goes with a message only
+// when it is ticked; every Send unticks them. A reply that never comes used to
+// leave Send disabled until a reload.
+{
+  const context = await browser.newContext();
+  const page = await open(context, () => {
+    window.__TEST_IDLE_MS = 1500;
+  });
+  await page.selectOption("#model-select", "p-image-edit");
+  await page.waitForTimeout(200);
+  const second = join(dir, "second.png");
+  writeFileSync(second, PNG);
+  await page.setInputFiles(".file-input", [imgPath, second]);
+  await page.waitForFunction(() => document.querySelectorAll(".section-inputs .thumbs .thumb img").length === 2);
+  await page.locator("#open-chat").click();
+  check("one chip per attached image, ticked to start", (await page.locator(".chat-chip").count()) === 2 && (await page.locator(".chat-chip.on").count()) === 2);
+
+  await page.fill("#chat-input", "compare these");
+  await page.locator("#chat-send").click();
+  await page.waitForSelector(".chat-msg.assistant:not(.pending)");
+  let sent = await (await page.request.get(BASE + "__chat")).json();
+  check("both images go, each on its own", Array.isArray(sent.images) && sent.images.length === 2, JSON.stringify(sent.images && sent.images.length));
+  check("the thread says which images a message carried", (await page.locator(".chat-sent-images").first().textContent()).includes("1, 2"));
+  check("every chip unticks after Send", (await page.locator(".chat-chip.on").count()) === 0);
+  check("the reply streamed in whole", (await page.locator(".chat-msg.assistant .chat-text").last().textContent()) === "STUB REPLY 1");
+
+  await page.locator(".chat-chip").nth(1).click();
+  await page.fill("#chat-input", "and the second one?");
+  await page.locator("#chat-send").click();
+  await page.waitForFunction(() => document.querySelectorAll(".chat-msg.assistant:not(.pending)").length === 2);
+  sent = await (await page.request.get(BASE + "__chat")).json();
+  check("a re-ticked image goes again, and only that one", Array.isArray(sent.images) && sent.images.length === 1, JSON.stringify(sent.images && sent.images.length));
+
+  await page.request.get(BASE + "__chatstall?on=1");
+  await page.fill("#chat-input", "are you there?");
+  await page.locator("#chat-send").click();
+  await page.waitForTimeout(300);
+  check("while a reply is on its way, Send is Cancel", (await page.locator("#chat-send").textContent()) === "Cancel");
+  await page.locator("#chat-send").click();
+  await page.waitForFunction(() => document.querySelector("#chat-send").textContent === "Send", null, { timeout: 5000 });
+  check("Cancel puts the message back in the box", (await page.inputValue("#chat-input")) === "are you there?");
+  check("and says it was cancelled", (await page.locator("#chat-note").textContent()).includes("Cancelled"));
+  check("and the thread holds only answered messages", (await page.locator(".chat-msg").count()) === 4);
+
+  await page.locator("#chat-send").click();
+  await page.waitForFunction(() => document.querySelector("#chat-send").textContent === "Send", null, { timeout: 8000 });
+  check(
+    "silence ends the wait with a message instead of hanging",
+    /connection looks lost/.test(await page.locator("#chat-note").textContent()),
+    await page.locator("#chat-note").textContent()
+  );
+  check("with the message back in the box to send again", (await page.inputValue("#chat-input")) === "are you there?");
+  await page.request.get(BASE + "__chatstall?on=0");
+  await page.close();
+  await context.close();
+}
+
+// ── Settings: Reset all leaves the inputs and the prompt alone ────────────
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  await page.selectOption("#model-select", "p-video");
+  await page.waitForTimeout(200);
+  check(
+    "p-video's start image, end frame and audio are inputs, not settings",
+    (await page.locator('.section-inputs [data-field], .section-inputs .file-input').count()) >= 3 &&
+      (await page.locator(".options .file-input").count()) === 0
+  );
+  await page.fill(promptSel, "a slow pan");
+  await page.setInputFiles(".section-inputs .file-input >> nth=0", imgPath);
+  await page.waitForSelector(".section-inputs .thumbs .thumb img");
+  await page.locator(".options > summary").click();
+  await page.fill('[data-field="duration"]', "7");
+  await page.waitForTimeout(200);
+  check("a changed setting is counted", (await page.locator(".opt-badge").textContent()) === "1 changed", await page.locator(".opt-badge").textContent());
+  await page.locator(".opt-reset-all").click();
+  await page.waitForTimeout(200);
+  check("Reset all settings puts the settings back", (await page.locator(".opt-badge").textContent()) === "");
+  check("and leaves the prompt", (await page.inputValue(promptSel)) === "a slow pan");
+  check("and the attached image", (await page.locator(".section-inputs .thumbs .thumb").count()) === 1);
+  await page.close();
+  await context.close();
+}
+
+// ── The lightbox steps through the strip ───────────────────────────────────
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  await page.selectOption("#model-select", "cf-flux-1-schnell");
+  await page.waitForTimeout(200);
+  for (const text of ["first", "second", "third"]) {
+    await page.fill(promptSel, text);
+    await page.waitForTimeout(100);
+    await page.locator("#generate-btn").click();
+    await page.waitForSelector("#status.ok");
+    await page.waitForFunction((n) => document.querySelectorAll(".recent-strip .thumb").length === n, ["first", "second", "third"].indexOf(text) + 1);
+  }
+  await page.locator(".recent-strip .thumb").first().click();
+  await page.waitForSelector("#lightbox:not(.hidden)");
+  const prompt = () => page.locator("#lightbox-prompt").textContent();
+  check("the newest opens first, and says where it is", (await prompt()) === "third" && (await page.locator("#lightbox-meta").textContent()).startsWith("1 of 3"));
+  check("nothing newer than the newest", await page.locator("#lightbox-prev").isDisabled());
+  await page.locator("#lightbox-next").click();
+  await page.waitForFunction(() => document.querySelector("#lightbox-prompt").textContent === "second");
+  check("› steps to the older one without closing", !(await page.locator("#lightbox").isHidden()));
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(() => document.querySelector("#lightbox-prompt").textContent === "first");
+  check("→ does the same", (await page.locator("#lightbox-meta").textContent()).startsWith("3 of 3"));
+  check("and stops at the oldest", await page.locator("#lightbox-next").isDisabled());
+  await page.keyboard.press("ArrowLeft");
+  await page.waitForFunction(() => document.querySelector("#lightbox-prompt").textContent === "second");
+  check("← goes back", true);
+  // A swipe right-to-left moves on to the older item, as the strip runs.
+  await page.evaluate(() => {
+    const el = document.querySelector("#lightbox-media");
+    const touch = (x) => new Touch({ identifier: 1, target: el, clientX: x, clientY: 200 });
+    el.dispatchEvent(new TouchEvent("touchstart", { touches: [touch(300)], changedTouches: [touch(300)], bubbles: true }));
+    el.dispatchEvent(new TouchEvent("touchend", { touches: [], changedTouches: [touch(150)], bubbles: true }));
+  });
+  await page.waitForFunction(() => document.querySelector("#lightbox-prompt").textContent === "first");
+  check("a swipe steps too", true);
+  await page.locator("#lightbox-actions button", { hasText: "Delete" }).click();
+  await page.waitForFunction(() => document.querySelector("#lightbox-prompt").textContent === "second");
+  check("Delete moves on to the neighbour instead of closing", (await page.locator("#lightbox-meta").textContent()).startsWith("2 of 2"));
+  check("and the strip follows", (await page.locator(".recent-strip .thumb").count()) === 2);
+  await page.close();
+  await context.close();
+}
+
 // ── Embeddings ─────────────────────────────────────────────────────────────
 // Measured a moment after typing stops, compared against the baseline and the
 // previous version, paused on request, kept per model across a reload.
@@ -1694,6 +1902,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   const context = await browser.newContext();
   let page = await open(context);
   const calls = async () => (await (await page.request.get(BASE + "__embed")).json()).embedCalls;
+  await page.locator("#tab-lab").click();
   await page.locator("#embed > summary").click();
   const before = await calls();
   await page.fill("#embed-text", "a red fox in the snow");
