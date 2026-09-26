@@ -17,8 +17,10 @@
     "binding": "AI",
     "remote": true
   },
+  // Off because Workers Logs invocation logs record every request header in
+  // plain text, and x-app-password is a request header.
   "observability": {
-    "enabled": true
+    "enabled": false
   }
   // Secrets are NOT stored here. They are set with `wrangler secret put`:
   //   PRUNA_API_KEY  (required) — your Pruna API key
