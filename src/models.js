@@ -1014,6 +1014,58 @@ export const MODELS = [
     ],
   },
   {
+    id: "p-video-2-pro",
+    label: "P-Video-2-Pro",
+    group: "Video",
+    kind: "video",
+    blurb: "Pruna's video model at 480p/768p, 5-15s, 24fps with generated audio; speed/quality/cost recipes.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      { name: "image", label: "Starting image (optional)", type: "image" },
+      { name: "last_frame_image", label: "Ending image (optional)", type: "image" },
+      { name: "duration", label: "Length (seconds)", type: "int", default: 5, min: 5, max: 15 },
+      {
+        name: "resolution",
+        label: "Resolution",
+        type: "enum",
+        default: "768p",
+        options: [{ value: "480p", label: "480p" }, { value: "768p", label: "768p" }],
+      },
+      {
+        name: "mode",
+        label: "Generation recipe",
+        type: "enum",
+        default: "speed",
+        options: [
+          { value: "cost", label: "Cost (cheapest)" },
+          { value: "speed", label: "Speed" },
+          { value: "quality", label: "Quality" },
+        ],
+      },
+      {
+        name: "prompt_upsampler",
+        label: "Expand prompt before generation",
+        type: "enum",
+        default: "turbo",
+        options: [
+          { value: "off", label: "Off" },
+          { value: "turbo", label: "Turbo" },
+          { value: "max", label: "Max" },
+        ],
+      },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "16:9",
+        options: AR_COMMON,
+        disabledWhen: "image",
+        disabledNote: "using the reference image's aspect ratio",
+      },
+      SEED,
+    ],
+  },
+  {
     id: "p-video-infiniteworlds",
     label: "P-Video-InfiniteWorlds",
     group: "Video",
@@ -1513,6 +1565,16 @@ const PRICING = {
     usd: {
       "720p": { normal: 0.025, draft: 0.015 },
       "1080p": { normal: 0.05, draft: 0.03 },
+    },
+  },
+  // Priced by resolution x mode; omitted mode bills as speed. Pruna's listed
+  // 50%-off promo on this model ran through 2026-09-24, so by today's date
+  // (2026-09-26) the billed rate is back to these list prices.
+  "p-video-2-pro": {
+    type: "per_second_mode",
+    usd: {
+      "480p": { cost: 0.01, speed: 0.02, quality: 0.04 },
+      "768p": { cost: 0.025, speed: 0.035, quality: 0.075 },
     },
   },
   // One rate at every resolution — the model exposes no resolution setting.
