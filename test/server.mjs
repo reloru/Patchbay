@@ -72,6 +72,17 @@ const json = (res, obj, status = 200) => {
   res.end(JSON.stringify(obj));
 };
 
+// Improve, Describe and the chat answer as server-sent events, as the Worker
+// does: a ping first, then whatever the route streams, then done.
+let chatStall = false;
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+const sseOpen = (res) => {
+  res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store" });
+  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  send("ping", {});
+  return send;
+};
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   const path = url.pathname;
@@ -91,7 +102,7 @@ const server = createServer(async (req, res) => {
       sttModels: STT_MODELS,
       defaultSttModel: DEFAULT_STT_MODEL,
       otherTools: OTHER_TOOLS,
-      instructions: { improve: "DEFAULT IMPROVE INSTRUCTION", chat: "DEFAULT CHAT INSTRUCTION" },
+      instructions: { improve: "DEFAULT IMPROVE INSTRUCTION", chat: "DEFAULT CHAT INSTRUCTION", describe: "DEFAULT DESCRIBE INSTRUCTION" },
       defaultEmbedModel: DEFAULT_EMBED_MODEL,
       defaultChatModel: DEFAULT_CHAT_MODEL,
       judgeUsdPerImage: JUDGE_USD_PER_IMAGE,
@@ -150,7 +161,10 @@ const server = createServer(async (req, res) => {
     const chunks = [];
     for await (const c of req) chunks.push(c);
     lastImprove = JSON.parse(Buffer.concat(chunks).toString() || "{}");
-    return json(res, { prompt: "IMPROVED PROMPT TEXT" });
+    const send = sseOpen(res);
+    await sleepMs(30);
+    send("done", { prompt: "IMPROVED PROMPT TEXT", neurons: 5 });
+    return res.end();
   }
   if (path === "/__improve") return json(res, lastImprove || {});
   if (path === "/api/describe") {
@@ -159,9 +173,10 @@ const server = createServer(async (req, res) => {
     lastDescribe = JSON.parse(Buffer.concat(chunks).toString());
     // Echoes whether the prompt rode along, so a test can tell the two modes
     // apart without the real Worker's composition in front of it.
-    return json(res, {
-      description: lastDescribe.question ? "STUB ANSWER TEXT" : "STUB CAPTION TEXT",
-    });
+    const send = sseOpen(res);
+    await sleepMs(30);
+    send("done", { description: lastDescribe.question ? "STUB ANSWER TEXT" : "STUB CAPTION TEXT", neurons: 3 });
+    return res.end();
   }
   // Not configured in the stub, which is a case the app has to tolerate.
   if (path === "/api/chat") {
@@ -169,9 +184,23 @@ const server = createServer(async (req, res) => {
     for await (const c of req) chunks.push(c);
     lastChat = JSON.parse(Buffer.concat(chunks).toString());
     const n = lastChat.messages.filter((m) => m.role === "user").length;
-    return json(res, { reply: `STUB REPLY ${n}`, neurons: 12.3 });
+    const send = sseOpen(res);
+    // Stalled: the ping went out and then nothing, the way a dead connection or
+    // a model that never answers looks from the browser. Held until the
+    // browser gives up and closes it.
+    if (chatStall) return void req.on("close", () => res.end());
+    await sleepMs(30);
+    send("delta", { text: "STUB " });
+    await sleepMs(30);
+    send("delta", { text: `REPLY ${n}` });
+    send("done", { reply: `STUB REPLY ${n}`, neurons: 12.3, sawImages: (lastChat.images || []).length });
+    return res.end();
   }
   if (path === "/__chat") return json(res, lastChat || {});
+  if (path === "/__chatstall") {
+    chatStall = url.searchParams.get("on") === "1";
+    return json(res, { chatStall });
+  }
   if (path === "/api/translate" || path === "/api/transcribe" || path === "/api/other") {
     const chunks = [];
     for await (const c of req) chunks.push(c);

@@ -132,27 +132,48 @@ test("with no gate configured /api/result needs no token at all", async () => {
   assert.equal(res.status, 400, "no gate to pass, so it stops on the missing url param");
 });
 
-// /api/describe builds a different payload per vision model, and the browser
-// suite stubs this file, so the payloads themselves can only be checked here.
-// A fake AI binding records what the model was handed.
-const describeWith = async (body) => {
-  let seen = null;
-  const aiEnv = {
-    ...env,
-    AI: {
-      run: async (model, input) => {
-        seen = { model, input };
-        return { description: "ok" };
-      },
-    },
-  };
-  const res = await call("/api/describe", {
+// Improve, Describe and the chat answer as server-sent events. A model asked to
+// stream answers with Workers AI's own SSE body; these build one from chunks
+// and read the Worker's events back.
+const sse = (...chunks) =>
+  new Response(chunks.map((c) => `data: ${typeof c === "string" ? c : JSON.stringify(c)}\n\n`).join("")).body;
+
+const readEvents = async (res) =>
+  (await res.text())
+    .split("\n\n")
+    .filter((b) => b.trim())
+    .map((b) => ({ event: /^event: (.*)$/m.exec(b)[1], data: JSON.parse(/^data: (.*)$/m.exec(b)[1]) }));
+
+// The `done` payload, or the `error` one, whichever ended the stream.
+const outcome = (events) => events.find((e) => e.event === "done" || e.event === "error");
+
+// A fake binding: streamed calls get `chunks` as SSE, buffered ones `buffered`.
+const fakeAI = (chunks, buffered, record) => ({
+  run: async (model, input) => {
+    record({ model, input });
+    return input.stream ? sse(...chunks) : buffered;
+  },
+});
+
+const postTool = (path, body, aiEnv) =>
+  call(path, {
     password: PASSWORD,
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   }, aiEnv);
-  assert.equal(res.status, 200, JSON.stringify(await res.json()));
+
+// /api/describe builds a different payload per vision model, and the browser
+// suite stubs this file, so the payloads themselves can only be checked here.
+// A fake AI binding records what the model was handed.
+const describeWith = async (body) => {
+  let seen = null;
+  const aiEnv = { ...env, AI: fakeAI([{ response: "ok" }, { response: "", usage: { neurons: 2 } }, "[DONE]"], { description: "ok" }, (s) => (seen = s)) };
+  const res = await postTool("/api/describe", body, aiEnv);
+  assert.equal(res.status, 200);
+  const end = outcome(await readEvents(res));
+  assert.equal(end.event, "done", JSON.stringify(end.data));
+  assert.equal(end.data.description, "ok");
   return seen;
 };
 
@@ -199,24 +220,29 @@ test("a vision model with thinking off says so, and one with an effort sends it"
   assert.equal(glm.input.max_tokens, 3072);
 });
 
+test("Describe's instruction is editable, for every kind of vision model", async () => {
+  const settings = { system: "Name the colours only." };
+  const llava = await describeWith({ image_b64: PIXEL, model: "@cf/llava-hf/llava-1.5-7b-hf", settings });
+  assert.equal(llava.input.prompt, "Name the colours only.");
+  assert.equal(llava.input.stream, undefined, "LLaVA ignores stream, so it is never asked to");
+  const scout = await describeWith({ image_b64: PIXEL, model: "@cf/meta/llama-4-scout-17b-16e-instruct", settings: { ...settings, maxTokens: 300 } });
+  assert.equal(scout.input.messages[0].content[0].text, "Name the colours only.");
+  assert.equal(scout.input.max_tokens, 300);
+  assert.equal(scout.input.stream, true);
+  // Moondream's caption task takes no text, so a custom instruction becomes a query.
+  const moon = await describeWith({ image_b64: PIXEL, model: "@cf/moondream/moondream3.1-9B-A2B", settings });
+  assert.equal(moon.input.task, "query");
+  assert.equal(moon.input.question, "Name the colours only.");
+  assert.equal(moon.input.reasoning, false);
+});
+
 const improveWith = async (model, settings) => {
   let seen = null;
-  const aiEnv = {
-    ...env,
-    AI: {
-      run: async (m, input) => {
-        seen = { model: m, input };
-        return { choices: [{ message: { content: "rewritten" } }] };
-      },
-    },
-  };
-  const res = await call("/api/improve-prompt", {
-    password: PASSWORD,
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt: "a old lighthouse", model, settings }),
-  }, aiEnv);
-  assert.equal(res.status, 200, JSON.stringify(await res.json()));
+  const chunks = [{ choices: [{ delta: { content: "rewritten" } }] }, { response: "", usage: { neurons: 3 } }, "[DONE]"];
+  const aiEnv = { ...env, AI: fakeAI(chunks, null, (s) => (seen = s)) };
+  const res = await postTool("/api/improve-prompt", { prompt: "a old lighthouse", model, settings }, aiEnv);
+  assert.equal(res.status, 200);
+  assert.deepEqual(outcome(await readEvents(res)), { event: "done", data: { prompt: "rewritten", neurons: 3 } });
   return seen;
 };
 
@@ -267,16 +293,14 @@ test("Aura's raw MP3 stream comes back as an audio data URI", async () => {
   assert.equal(body.images[0], "data:audio/mpeg;base64,SUQzBA==");
 });
 
-const chatWith = async (body, output = { choices: [{ message: { content: "a reply" } }], usage: { neurons: 7.5 } }) => {
+const chatWith = async (body, chunks = [{ choices: [{ delta: { content: "a reply" } }] }, { response: "", usage: { neurons: 7.5 } }, "[DONE]"], extraEnv = {}) => {
   let seen = null;
-  const aiEnv = { ...env, AI: { run: async (m, i) => ((seen = { model: m, input: i }), output) } };
-  const res = await call("/api/chat", {
-    password: PASSWORD,
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  }, aiEnv);
-  return { seen, status: res.status, body: await res.json() };
+  const aiEnv = { ...env, ...extraEnv, AI: fakeAI(chunks, null, (s) => (seen = s)) };
+  const res = await postTool("/api/chat", body, aiEnv);
+  if (res.headers.get("content-type").includes("application/json")) return { seen, status: res.status, body: await res.json() };
+  const events = await readEvents(res);
+  const end = outcome(events);
+  return { seen, status: res.status, events, body: end.data, ended: end.event };
 };
 
 test("chat sends the system instruction and the whole thread, and reports neurons", async () => {
@@ -292,7 +316,59 @@ test("chat sends the system instruction and the whole thread, and reports neuron
   assert.equal(seen.input.messages[0].role, "system");
   assert.match(seen.input.messages[0].content, /refine prompts for image and video generation/);
   assert.deepEqual(seen.input.messages.slice(1).map((m) => m.content), ["hi", "hello", "shorter"]);
-  assert.deepEqual(body, { reply: "a reply", neurons: 7.5, sawImage: false });
+  assert.equal(seen.input.stream, true);
+  assert.deepEqual(body, { reply: "a reply", neurons: 7.5, sawImages: 0 });
+});
+
+test("chat streams the reply as it arrives, with reasoning kept out of it", async () => {
+  // DeepSeek R1 writes its thinking inline, and the <think> tag can arrive split.
+  const inline = await chatWith(
+    { model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", messages: [{ role: "user", content: "hi" }] },
+    [{ response: "<thi" }, { response: "nk>pondering" }, { response: "</think>Hel" }, { response: "lo" }, { response: "", usage: { neurons: 4 } }, "[DONE]"]
+  );
+  assert.equal(inline.events[0].event, "ping", "a ping goes out before anything else");
+  assert.equal(inline.ended, "done");
+  assert.equal(inline.body.reply, "Hello");
+  let shown = "";
+  for (const e of inline.events) {
+    if (e.event === "delta") shown += e.data.text;
+    if (e.event === "reset") shown = e.data.text;
+  }
+  assert.equal(shown, "Hello", "what the browser assembled matches the reply");
+
+  // The OpenAI-style shape carries reasoning in its own delta field.
+  const split = await chatWith(
+    { model: "@cf/zai-org/glm-4.7-flash", messages: [{ role: "user", content: "hi" }] },
+    [
+      { choices: [{ delta: { reasoning_content: "hmm" } }] },
+      { choices: [{ delta: { content: "Hi " } }] },
+      { choices: [{ delta: { content: "there" } }] },
+      { response: "", usage: { neurons: 6 } },
+      "[DONE]",
+    ]
+  );
+  assert.deepEqual(split.body, { reply: "Hi there", neurons: 6, sawImages: 0 });
+});
+
+test("a model that goes quiet ends the chat with an error instead of hanging", async () => {
+  const silent = { run: async () => new ReadableStream({ start() {} }) };
+  const aiEnv = { ...env, AI: silent, MODEL_IDLE_MS: "60" };
+  const res = await postTool("/api/chat", { model: "@cf/meta/llama-3.2-3b-instruct", messages: [{ role: "user", content: "hi" }] }, aiEnv);
+  const end = outcome(await readEvents(res));
+  assert.equal(end.event, "error");
+  assert.match(end.data.error, /stopped responding/);
+});
+
+test("chat hands every ticked image to a model that can see", async () => {
+  const { seen, body } = await chatWith({
+    model: "@cf/google/gemma-4-26b-a4b-it",
+    messages: [{ role: "user", content: "compare them" }],
+    images: [{ b64: PIXEL, mime: "image/png" }, { b64: PIXEL, mime: "image/jpeg" }],
+  });
+  const parts = seen.input.messages[1].content;
+  assert.deepEqual(parts.map((p) => p.type), ["text", "image_url", "image_url"]);
+  assert.equal(parts[2].image_url.url, "data:image/jpeg;base64," + PIXEL);
+  assert.equal(body.sawImages, 2);
 });
 
 test("chat puts the prompt and image on the newest message only", async () => {
@@ -320,7 +396,7 @@ test("chat never hands an image to a model that cannot see", async () => {
     image_b64: PIXEL,
   });
   assert.equal(typeof seen.input.messages[1].content, "string");
-  assert.equal(body.sawImage, false);
+  assert.equal(body.sawImages, 0);
 });
 
 test("chat refuses a malformed thread", async () => {
@@ -446,17 +522,12 @@ test("the Other tools send their documented inputs", async () => {
 
 test("a model with no system role gets the instruction in the user message", async () => {
   let seen = null;
-  const aiEnv = { ...env, AI: { run: async (m, i) => ((seen = i), { response: "Sure, here is the rewritten text:\n\nAn old lighthouse." }) } };
-  const res = await call("/api/improve-prompt", {
-    password: PASSWORD,
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt: "a old lighthouse", model: "@cf/google/gemma-7b-it-lora" }),
-  }, aiEnv);
+  const aiEnv = { ...env, AI: fakeAI([{ response: "Sure, here is the rewritten text:\n\nAn old lighthouse." }, "[DONE]"], null, (s) => (seen = s.input)) };
+  const res = await postTool("/api/improve-prompt", { prompt: "a old lighthouse", model: "@cf/google/gemma-7b-it-lora" }, aiEnv);
   assert.equal(seen.messages.length, 1);
   assert.equal(seen.messages[0].role, "user");
   assert.match(seen.messages[0].content, /improve its clarity[\s\S]*Text:\na old lighthouse$/);
-  assert.deepEqual(await res.json(), { prompt: "An old lighthouse." }, "the 'Sure, here is' line is dropped");
+  assert.deepEqual(outcome(await readEvents(res)).data, { prompt: "An old lighthouse.", neurons: null }, "the 'Sure, here is' line is dropped");
 
   const chat = await chatWith({ model: "@cf/google/gemma-7b-it-lora", messages: [{ role: "user", content: "hi" }] });
   assert.equal(chat.seen.input.messages[0].role, "user");

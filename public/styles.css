@@ -9,6 +9,8 @@
   --accent-2: #ffb072;
   --danger: #ff6b6b;
   --ok: #4ade80;
+  /* Height of the fixed bottom bar, kept current by initShell(). */
+  --bar-h: 72px;
 }
 
 * { box-sizing: border-box; }
@@ -22,6 +24,10 @@ body {
 }
 
 .hidden { display: none !important; }
+
+/* A long page must not scroll horizontally on a phone, whatever a row holds. */
+html, body { max-width: 100%; overflow-x: hidden; }
+select, input, textarea, button { max-width: 100%; }
 
 /* Gate */
 .gate {
@@ -46,19 +52,89 @@ body {
 .gate-card p { margin: 0; color: var(--muted); }
 .gate-card input { text-align: center; }
 
-/* App shell */
-.app { max-width: 1200px; margin: 0 auto; padding: 24px 20px 60px; }
-header h1 { margin: 0 0 4px; font-size: 26px; }
-.subtitle { margin: 0 0 20px; color: var(--muted); }
+/* ── App shell ─────────────────────────────────────────────────────────── */
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 20px calc(var(--bar-h) + 24px);
+}
 
-main {
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.brand { margin: 0; font-size: 18px; white-space: nowrap; }
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+}
+.tab {
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-weight: 600;
+}
+.tab:hover { background: var(--panel-2); }
+.tab[aria-selected="true"] { background: var(--accent); color: #1a1206; }
+.pill {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pill:hover { border-color: var(--accent); background: var(--panel); }
+.pill[data-level="warn"] { border-color: var(--accent); color: var(--accent); }
+.pill[data-level="over"] { border-color: var(--danger); color: var(--danger); }
+
+.spend {
+  margin: -6px 0 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+}
+.spend[data-level="warn"] { border-color: var(--accent); color: var(--accent); }
+.spend[data-level="over"] { border-color: var(--danger); color: var(--danger); }
+
+.screen-create {
   display: grid;
-  grid-template-columns: minmax(0, 440px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 460px) minmax(0, 1fr);
   gap: 20px;
   align-items: start;
 }
-@media (max-width: 860px) {
-  main { grid-template-columns: 1fr; }
+.screen-lab {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 760px;
+  margin: 0 auto;
+}
+@media (max-width: 899px) {
+  .screen-create { grid-template-columns: 1fr; }
 }
 
 .panel {
@@ -66,14 +142,44 @@ main {
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 18px;
+  min-width: 0;
 }
-.output { position: sticky; top: 20px; min-height: 260px; }
+.output { position: sticky; top: 70px; min-height: 260px; }
+@media (max-width: 899px) {
+  .output { position: static; min-height: 0; }
+}
 
-.blurb { color: var(--muted); font-size: 13px; margin: 8px 2px 16px; }
+.blurb { color: var(--muted); font-size: 13px; margin: 8px 2px 14px; overflow-wrap: anywhere; }
+
+/* Model row: the picker takes the room, Start over sits at its end. */
+.model-row { display: flex; align-items: flex-end; gap: 8px; }
+.model-row .model-field { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
+.model-row #reset-btn { flex: 0 0 auto; }
+
+/* ── Form sections ─────────────────────────────────────────────────────── */
+.form-section { margin-bottom: 16px; }
+.form-section + .form-section { border-top: 1px solid var(--border); padding-top: 14px; }
+.section-title {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.section-inputs .opt-row { margin-left: 0; padding-left: 0; border-left: 0; margin-bottom: 14px; }
+.opt-tag {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 7px;
+}
 
 /* Fields */
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
-.field-label { font-size: 13px; color: var(--muted); }
+.field-label { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 
 input, select, textarea, button {
   font: inherit;
@@ -132,6 +238,7 @@ textarea { resize: vertical; min-height: 74px; }
 }
 
 .opt-list { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 14px; }
+.opt-reset-all { align-self: flex-end; font-size: 12px; }
 .opt-row {
   border-left: 2px solid transparent;
   padding-left: 10px;
@@ -146,7 +253,7 @@ textarea { resize: vertical; min-height: 74px; }
   gap: 4px 10px;
   margin-bottom: 6px;
 }
-.opt-name { font-size: 13px; color: var(--muted); }
+.opt-name { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .opt-row.changed .opt-name { color: var(--text); font-weight: 600; }
 .opt-note { font-size: 11px; color: var(--muted); }
 .opt-reset {
@@ -217,18 +324,25 @@ textarea { resize: vertical; min-height: 74px; }
 .toggle-text { font-size: 13px; color: var(--muted); min-width: 26px; }
 .toggle input:checked ~ .toggle-text { color: var(--text); }
 
+/* Upload thumbnails. The remove target is large enough to hit on a phone. */
 .thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .thumbs .thumb {
-  position: relative; width: 64px; height: 64px; border-radius: 8px;
+  position: relative; width: 72px; height: 72px; border-radius: 8px;
   overflow: hidden; border: 1px solid var(--border); background: #000;
 }
 .thumbs .thumb img { width: 100%; height: 100%; object-fit: cover; }
 .thumbs .thumb.file { display: grid; place-items: center; font-size: 22px; }
 .thumbs .thumb .rm {
-  position: absolute; top: 2px; right: 2px; width: 18px; height: 18px;
+  position: absolute; top: 3px; right: 3px; width: 26px; height: 26px;
   border-radius: 50%; background: rgba(0,0,0,.7); color: #fff; border: none;
-  font-size: 12px; line-height: 1; cursor: pointer; padding: 0;
+  font-size: 16px; line-height: 1; cursor: pointer; padding: 0;
 }
+
+/* Styled file picker: the native control kept showing "no file selected"
+   after a choice and gave no way to swap an image. */
+.file-input { display: none; }
+.file-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.file-status { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 
 /* Buttons */
 button {
@@ -243,191 +357,124 @@ button:disabled { opacity: .55; cursor: default; }
 button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); font-weight: 500; }
 button.secondary:hover { border-color: var(--accent); }
 
-.actions { display: flex; gap: 10px; margin-top: 8px; }
+/* An inline action inside a note line — reads as text, behaves as a button. */
+.linkish {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.linkish:hover { background: none; }
 
-/* Status + result */
+/* ── Prompt toolbar: directly under the prompt it acts on ──────────────── */
+.prompt-tools { margin: -4px 0 4px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; }
+.toolbar button { padding: 9px 12px; white-space: nowrap; }
+.undo-redo { display: flex; gap: 8px; flex: 0 0 auto; }
+.undo-redo button { min-width: 72px; }
+.tool { display: flex; gap: 8px; min-width: 0; }
+.tool select { flex: 1 1 auto; min-width: 0; }
+/* A row of its own: the tool used most, with its model beside it. */
+.improve-tool { flex: 1 1 100%; }
+.improve-tool #prompt-improve { flex: 0 0 auto; }
+#prompt-improve.running { border-color: var(--accent); color: var(--accent); }
+.gear { padding: 9px 10px; flex: 0 0 auto; }
+.gear.custom { border-color: var(--accent); color: var(--accent); }
+.tool-notes { margin: 6px 2px 0; font-size: 12px; color: var(--muted); }
+.tool-notes span { display: block; overflow-wrap: anywhere; }
+.tool-notes span:empty { display: none; }
+.tool-notes .describe-note { color: var(--danger); }
+@media (max-width: 560px) {
+  .toolbar > button { flex: 1 1 auto; }
+}
+
+/* ── Bottom bar: status and Generate, always on screen ─────────────────── */
+.bottombar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
+  padding: 10px max(16px, calc((100vw - 1200px) / 2 + 20px)) 12px;
+  background: rgba(15, 17, 21, .96);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.action-row { display: flex; gap: 10px; }
+.action-row #generate-btn { flex: 1; padding: 12px 18px; font-size: 16px; }
+/* Beside Generate only while something is running. Sized so it cannot be
+   mistaken for the primary action, but stays a comfortable tap target. */
+.action-row #stop-btn { flex: 0 0 auto; padding: 12px 16px; font-size: 15px; }
+@media (min-width: 900px) {
+  /* Under the form's own column, where Generate belongs. */
+  .action-row { max-width: 460px; }
+}
+
+/* Status */
 .status {
   display: flex; align-items: center; gap: 10px;
-  padding: 12px 14px; border-radius: 10px;
+  padding: 9px 12px; border-radius: 10px;
   background: var(--panel-2); border: 1px solid var(--border);
-  margin-bottom: 14px; font-size: 14px;
+  font-size: 14px;
+  cursor: pointer;
 }
+.status-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.status.expanded .status-text { display: block; max-height: 40vh; overflow-y: auto; }
 .status.err { border-color: var(--danger); color: var(--danger); }
 .status.ok { border-color: var(--ok); }
+.status-cancel { flex: 0 0 auto; font-size: 13px; }
 .spinner {
+  flex: 0 0 auto;
   width: 16px; height: 16px; border-radius: 50%;
   border: 2px solid var(--border); border-top-color: var(--accent);
   animation: spin .8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Output ────────────────────────────────────────────────────────────── */
 .result:empty::after {
   content: "Output appears here.";
   color: var(--muted); font-size: 14px;
 }
 .result img, .result video { max-width: 100%; border-radius: 10px; display: block; }
 .result .download { display: inline-block; }
-
+.result-item + .result-item { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 18px; }
 /* Save and the reuse action sit on one row and wrap together on a narrow
    screen rather than stacking one per line. */
 .result-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .result-actions button { flex: 1 1 auto; }
-
-.prompt-lib {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-.prompt-lib select { flex: 1; min-width: 0; }
-.prompt-lib button { padding: 9px 12px; }
-.result-item + .result-item { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 18px; }
-
-footer { margin-top: 28px; color: var(--muted); font-size: 12px; }
-.spend {
-  display: inline-block;
-  margin-bottom: 8px;
-  padding: 5px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--panel);
-  color: var(--text);
-}
-.gear { padding: 9px 10px; flex: 0 0 auto; }
-.gear.custom { border-color: var(--accent); color: var(--accent); }
-/* Beats the phone rule that stretches every toolbar button to half a row. */
-.prompt-lib .gear { flex: 0 0 auto; }
-.tool-settings { margin-top: 10px; border: 1px solid var(--accent); border-radius: 12px; padding: 10px; background: var(--panel); display: flex; flex-direction: column; gap: 8px; }
-.tool-settings h3 { margin: 0; font-size: 14px; }
-.tool-settings label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
-.tool-settings textarea { min-height: 120px; }
-.tool-settings .row { display: flex; gap: 8px; flex-wrap: wrap; }
-.tool-settings .hint { font-size: 12px; color: var(--muted); margin: 0; }
-.chat { margin-top: 10px; border: 1px solid var(--border); border-radius: 12px; padding: 10px; background: var(--panel); }
-.chat-head { display: flex; gap: 8px; }
-.chat-head select { flex: 1; min-width: 0; }
-.chat-context { display: flex; align-items: center; gap: 6px; margin: 8px 0; font-size: 13px; color: var(--muted); }
-.chat-thread { max-height: 55vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
-.chat-msg { padding: 8px 10px; border-radius: 12px; max-width: 88%; white-space: pre-wrap; overflow-wrap: anywhere; }
-.chat-msg.user { align-self: flex-end; background: var(--accent); color: #111; }
-.chat-msg.assistant { align-self: flex-start; background: var(--bg); border: 1px solid var(--border); }
-.chat-msg.pending { color: var(--muted); }
-.chat-msg-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.chat-cost { font-size: 12px; color: var(--muted); }
-.chat-use { padding: 5px 10px; font-size: 13px; }
-.chat-compose { display: flex; gap: 8px; align-items: flex-end; }
-.chat-compose textarea { flex: 1; min-width: 0; resize: vertical; }
-.chat-buttons { display: flex; flex-direction: column; gap: 6px; }
-#chat-mic.recording { border-color: var(--danger); color: var(--danger); }
-.tool button { white-space: nowrap; }
-/* Language names need the room: the pickers share a row, the button gets the
-   next one. */
-.translate-tool { flex-wrap: wrap; }
-.translate-tool select { flex: 1 1 40%; }
-.prompt-lib .translate-tool button { flex: 1 1 100%; }
-.other textarea { width: 100%; margin-top: 8px; }
-.other-result { margin-top: 8px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.other-result:empty { display: none; }
-.chat-note { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
-.chat-note:empty { display: none; }
-.embed { margin-top: 10px; border: 1px solid var(--border); border-radius: 12px; padding: 10px; background: var(--panel); }
-.embed > summary { cursor: pointer; font-weight: 600; }
-.embed-head { display: flex; margin: 10px 0 8px; }
-.embed-head select { flex: 1; min-width: 0; }
-.embed textarea { width: 100%; }
-.embed-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-.embed-pause { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); margin-right: auto; }
-.embed-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
-.embed-row { border: 1px solid var(--border); border-radius: 10px; padding: 8px; background: var(--bg); }
-.embed-row.baseline { border-color: var(--accent); }
-.embed-text { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 6px; }
-.embed-scores { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
-.embed-scores b { color: var(--text); }
-.embed-strip { display: block; width: 100%; height: 16px; border-radius: 3px; margin-bottom: 4px; image-rendering: pixelated; }
-.embed-strip-label { font-size: 11px; color: var(--muted); margin: 0 0 2px; }
-.embed-row button { padding: 4px 10px; font-size: 12px; }
-.tts-panel { margin-top: 8px; }
-.tts-panel summary { cursor: pointer; color: var(--muted); font-size: 13px; }
-.tts-panel .tts-text { width: 100%; margin-top: 8px; }
-.tts-row { display: flex; gap: 8px; margin-top: 8px; }
-.tts-row select, .tts-row input { flex: 1; min-width: 0; }
 .result-audio { width: 100%; }
-.spend[data-level="warn"] { border-color: var(--accent); color: var(--accent); }
-.spend[data-level="over"] { border-color: var(--danger); color: var(--danger); }
-.error { color: var(--danger); font-size: 13px; }
+.judge-btn { width: 100%; margin-top: 10px; }
 
-
-/* ── Mobile fixes ─────────────────────────────────────────────────────────
-   The prompt toolbar grew past the viewport once Improve/Describe and their
-   model pickers were added, which pushed the whole page sideways. */
-html, body { max-width: 100%; overflow-x: hidden; }
-.panel { min-width: 0; }
-.blurb, .field-label, .opt-name { overflow-wrap: anywhere; }
-select, input, textarea, button { max-width: 100%; }
-
-.tool-notes { margin: -6px 2px 14px; font-size: 12px; color: var(--muted); }
-.tool-notes span { display: block; overflow-wrap: anywhere; }
-.tool-notes span:empty { display: none; }
-.tool-notes .describe-note { color: var(--danger); }
-/* Judge's note carries an inline action, so its own children stay on the line
-   the rule above puts the note itself on. */
-#judge-note > span, #judge-note > button { display: inline; }
-
-.prompt-lib { flex-wrap: wrap; }
-.prompt-lib > * { flex: 1 1 auto; min-width: 0; }
-.prompt-lib select { flex: 1 1 160px; }
-.prompt-lib button { flex: 0 0 auto; }
-
-/* A tool and its model picker wrap as one unit. */
-.tool { display: flex; gap: 8px; flex: 1 1 260px; min-width: 0; }
-.tool select { flex: 1 1 auto; min-width: 0; }
-
-/* Undo and Redo travel together for the same reason. */
-.undo-redo { display: flex; gap: 8px; flex: 0 0 auto; }
-.undo-redo button { flex: 1 1 auto; }
-
-/* Reset sits with the parameter heading, well away from Generate, so it is
-   no longer a mis-tap target. */
-.params-head {
+.file-result {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin: 4px 2px 10px;
-  font-size: 13px;
-  color: var(--muted);
-}
-button.tiny { padding: 4px 10px; font-size: 12px; }
-
-.actions { margin-top: 14px; }
-.actions #generate-btn { flex: 1; padding: 12px 18px; font-size: 16px; }
-/* Sits beside Generate only while something is running. Sized so it cannot be
-   mistaken for the primary action, but stays a comfortable tap target. */
-.actions #stop-btn { flex: 0 0 auto; padding: 12px 16px; font-size: 15px; }
-
-/* Styled file picker: the native control kept showing "no file selected"
-   after a choice and gave no way to swap an image. */
-.file-input { display: none; }
-.file-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.file-status { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
-
-/* Bigger remove target — the old one was hard to hit on a phone. */
-.thumbs .thumb { width: 72px; height: 72px; }
-.thumbs .thumb .rm {
-  width: 26px; height: 26px; font-size: 16px;
-  top: 3px; right: 3px; line-height: 1;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  font-size: 14px;
+  color: var(--text);
 }
 
-@media (max-width: 560px) {
-  .app { padding: 16px 12px 48px; }
-  .prompt-lib > * { flex: 1 1 100%; }
-  .prompt-lib button { flex: 1 1 48%; }
-}
-
-
-/* Judge (p-judger). The score sits under the prompt toolbar rather than in the
-   output panel, so scoring a generation leaves the generation on screen. */
+/* Judge (p-judger). The score sits where it was asked for: under the result,
+   or on the Lab card. */
 .judge {
-  margin: 0 0 14px;
+  margin: 12px 0 0;
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -451,35 +498,12 @@ button.tiny { padding: 4px 10px; font-size: 12px; }
   font-size: 12px;
   line-height: 1.45;
 }
+#judge-note > span, #judge-note > button { display: inline; }
 
-/* An inline action inside a note line — reads as text, behaves as a button. */
-.linkish {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--accent);
-  font: inherit;
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-.file-result {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 16px;
-  border: 1px dashed var(--border);
-  border-radius: 10px;
-  background: var(--panel-2);
-  font-size: 14px;
-  color: var(--text);
-}
-
-/* ── Recent generations ───────────────────────────────────────────────────
-   A strip of the last few results under the output, reusing the thumbnail
-   language of the upload fields so it reads as part of the app rather than a
-   separate feature. Horizontal scroll rather than wrapping: it must never grow
-   tall enough to push the output off the screen. */
+/* Recent generations: a strip of the last few results under the output,
+   reusing the thumbnail language of the upload fields. Horizontal scroll
+   rather than wrapping: it must never grow tall enough to push the output off
+   the screen. */
 .recent { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
 .recent-head {
   display: flex;
@@ -521,7 +545,6 @@ button.tiny { padding: 4px 10px; font-size: 12px; }
   font-size: 24px;
   opacity: .5;
 }
-
 /* A clip's tile is a still frame, so without this it is indistinguishable from
    an image and which one opens a player is a surprise. */
 .thumb-kind {
@@ -537,12 +560,185 @@ button.tiny { padding: 4px 10px; font-size: 12px; }
   pointer-events: none;
 }
 
-/* ── Lightbox ─────────────────────────────────────────────────────────────
-   Same fixed-overlay shape as the password gate. */
+/* Voice panel inside audio fields */
+.tts-panel { margin-top: 8px; }
+.tts-panel summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.tts-panel .tts-text { width: 100%; margin-top: 8px; }
+.tts-row { display: flex; gap: 8px; margin-top: 8px; }
+.tts-row select, .tts-row input { flex: 1; min-width: 0; }
+
+/* ── Sheets: bottom sheet on a phone, centred card on a wide screen ────── */
+body.sheet-open { overflow: hidden; }
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0, 0, 0, .6);
+}
+.sheet.sheet-over { z-index: 32; }
+.sheet-card {
+  width: 100%;
+  max-width: 640px;
+  max-height: 92vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  padding: 14px 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+/* The card scrolls as a whole; without this its scrolling children (the tool
+   tabs, the chat thread) shrink to nothing to fit its height instead. */
+.sheet-card > * { flex-shrink: 0; }
+@media (min-width: 900px) {
+  .sheet { align-items: center; }
+  .sheet-card { border-radius: 16px; border-bottom: 1px solid var(--border); }
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  position: sticky;
+  top: -14px;
+  margin: -14px -16px 0;
+  padding: 14px 16px 8px;
+  background: var(--panel);
+  z-index: 1;
+}
+.sheet-head h2 { margin: 0; font-size: 17px; }
+.sheet-close { padding: 6px 12px; }
+.sheet-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.sheet-actions button { flex: 1 1 auto; }
+.more-tool { display: flex; flex-direction: column; gap: 8px; }
+.more-tool + .more-tool { border-top: 1px solid var(--border); padding-top: 12px; }
+.more-tool h3 { margin: 0; font-size: 15px; }
+.more-tool .chat-note { margin: 0; }
+/* Language names need the room. */
+.translate-tool select { flex: 1 1 40%; }
+
+/* Chat */
+.chat { display: flex; flex-direction: column; gap: 8px; }
+.chat-head { display: flex; gap: 8px; }
+.chat-head select { flex: 1; min-width: 0; }
+.chat-thread { max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.chat-msg { padding: 8px 10px; border-radius: 12px; max-width: 88%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-msg.user { align-self: flex-end; background: var(--accent); color: #111; }
+.chat-msg.assistant { align-self: flex-start; background: var(--bg); border: 1px solid var(--border); }
+.chat-msg.pending { color: var(--muted); }
+.chat-sent-images { margin-top: 4px; font-size: 12px; opacity: .8; }
+.chat-msg-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.chat-cost { font-size: 12px; color: var(--muted); }
+.chat-use { padding: 5px 10px; font-size: 13px; }
+.chat-context { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.chat-prompt-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.chat-images { display: flex; gap: 6px; flex-wrap: wrap; }
+/* One chip per attached image: ticked ones go with the next message. */
+.chat-chip {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+  border: 2px solid var(--border);
+  opacity: .45;
+}
+.chat-chip.on { border-color: var(--accent); opacity: 1; }
+.chat-chip img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.chat-chip-n {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, .72);
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+.chat-chip.on .chat-chip-n { background: var(--accent); color: #1a1206; }
+.chat-compose { display: flex; gap: 8px; align-items: flex-end; }
+.chat-compose textarea { flex: 1; min-width: 0; resize: vertical; }
+.chat-buttons { display: flex; flex-direction: column; gap: 6px; }
+#chat-mic.recording { border-color: var(--danger); color: var(--danger); }
+.chat-note { margin: 6px 0 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.chat-note:empty { display: none; }
+.chat-note.err { color: var(--danger); }
+
+/* ── ⚙ Tools sheet ─────────────────────────────────────────────────────── */
+.tool-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
+.tool-tab {
+  flex: 0 0 auto;
+  background: var(--panel-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.tool-tab:hover { background: var(--panel-2); border-color: var(--accent); }
+.tool-tab[aria-selected="true"] { color: #1a1206; background: var(--accent); border-color: var(--accent); }
+.tool-settings { display: flex; flex-direction: column; gap: 10px; }
+.tool-settings h3 { margin: 4px 0 0; font-size: 15px; }
+.tool-settings .hint { font-size: 12px; color: var(--muted); margin: 0; }
+.tool-settings .model-id { margin-top: -6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.tool-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 4px 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.tool-row-name { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding-top: 2px; }
+.tool-row-body { min-width: 0; font-size: 13px; }
+.tool-row-body p { margin: 0; overflow-wrap: anywhere; }
+.tool-row-body.pre p { white-space: pre-line; }
+@media (max-width: 560px) {
+  .tool-row { grid-template-columns: 1fr; }
+}
+.tool-settings label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.tool-settings textarea { min-height: 120px; width: 100%; }
+.tool-settings .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.instruction, .limits { display: flex; flex-direction: column; gap: 6px; }
+.instruction .row button { padding: 7px 11px; }
+.settings-dirty.dirty { color: var(--accent); }
+.reset-limits { align-self: flex-start; margin-top: 4px; }
+
+/* ── Lab ───────────────────────────────────────────────────────────────── */
+.lab-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.lab-head .blurb { margin: 0; }
+.lab-card h2 { margin: 0 0 6px; font-size: 16px; }
+.embed > summary { cursor: pointer; font-weight: 600; font-size: 16px; }
+.embed-head { display: flex; margin: 10px 0 8px; }
+.embed-head select { flex: 1; min-width: 0; }
+.embed textarea { width: 100%; }
+.embed-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.embed-pause { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); margin-right: auto; }
+.embed-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.embed-row { border: 1px solid var(--border); border-radius: 10px; padding: 8px; background: var(--bg); }
+.embed-row.baseline { border-color: var(--accent); }
+.embed-text { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 6px; }
+.embed-scores { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+.embed-scores b { color: var(--text); }
+.embed-strip { display: block; width: 100%; height: 16px; border-radius: 3px; margin-bottom: 4px; image-rendering: pixelated; }
+.embed-strip-label { font-size: 11px; color: var(--muted); margin: 0 0 2px; }
+.embed-row button { padding: 4px 10px; font-size: 12px; }
+.other textarea { width: 100%; margin-top: 8px; }
+.other-result { margin-top: 8px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.other-result:empty { display: none; }
+.error { color: var(--danger); font-size: 13px; }
+
+/* ── Lightbox ──────────────────────────────────────────────────────────── */
 .lightbox {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: 40;
   display: grid;
   place-items: center;
   padding: 16px;
@@ -557,10 +753,28 @@ button.tiny { padding: 4px 10px; font-size: 12px; }
   max-height: 92vh;
   overflow-y: auto;
 }
+.lightbox-stage { position: relative; }
 .lightbox-media img,
 .lightbox-media video { width: 100%; border-radius: 10px; display: block; background: #000; }
 /* A tall portrait clip must not push the buttons under it off the card. */
 .lightbox-media video { max-height: 60vh; }
+/* Over the picture's edges, clear of a video's own controls at the bottom. */
+.lightbox-nav {
+  position: absolute;
+  top: calc(50% - 40px);
+  width: 40px;
+  height: 56px;
+  padding: 0;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, .55);
+  color: #fff;
+  font-size: 28px;
+  line-height: 1;
+}
+.lightbox-nav:hover { background: rgba(0, 0, 0, .75); }
+.lightbox-nav:disabled { opacity: .2; }
+.lightbox-nav.prev { left: 6px; }
+.lightbox-nav.next { right: 6px; }
 .lightbox-meta { margin: 10px 2px 0; font-size: 12px; color: var(--muted); }
 .lightbox-prompt {
   margin: 6px 2px 0;
@@ -570,3 +784,14 @@ button.tiny { padding: 4px 10px; font-size: 12px; }
 .lightbox-prompt:empty { display: none; }
 .lightbox-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .lightbox-actions button { flex: 1 1 auto; }
+
+@media (max-width: 480px) {
+  /* The icon says it; the tabs and the usage need the width. */
+  .brand-name { display: none; }
+}
+@media (max-width: 560px) {
+  .app { padding: 0 12px calc(var(--bar-h) + 20px); }
+  .panel { padding: 14px; }
+  .brand { font-size: 16px; }
+  .tab { padding: 6px 11px; }
+}

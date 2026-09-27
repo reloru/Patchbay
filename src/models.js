@@ -2164,10 +2164,17 @@ const OUT_NEURONS_PER_M = {
   "@cf/qwen/qwq-32b": 90909,
   "@cf/aisingapore/gemma-sea-lion-v4-27b-it": 50488,
 };
-for (const m of IMPROVE_MODELS) {
+for (const m of [...IMPROVE_MODELS, ...DESCRIBE_MODELS]) {
   m.canThink = THINKING.includes(m.id);
   m.efforts = EFFORTS[m.id] || null;
   m.outPerM = OUT_NEURONS_PER_M[m.id] || null;
+}
+// Answer in one piece rather than as a stream. LLaVA ignores `stream: true`
+// and returns an empty result (tested 2026-09-26). Moondream does stream, but
+// as a running caption rather than deltas, and a caption takes about half a
+// second (Cloudflare's Moondream 3.1 changelog), so there is nothing to gain.
+for (const m of DESCRIBE_MODELS) {
+  if (m.id.includes("llava") || m.id.includes("moondream")) m.noStream = true;
 }
 
 export const IMPROVE_MODEL_IDS = new Set(IMPROVE_MODELS.map((m) => m.id));

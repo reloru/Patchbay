@@ -136,7 +136,7 @@ export default {
           describeModels: DESCRIBE_MODELS,
           chatModels: CHAT_MODELS,
           defaultChatModel: DEFAULT_CHAT_MODEL,
-          instructions: { improve: IMPROVE_SYSTEM, chat: CHAT_SYSTEM },
+          instructions: { improve: IMPROVE_SYSTEM, chat: CHAT_SYSTEM, describe: CAPTION_REQUEST },
           embedModels: EMBED_MODELS,
           defaultEmbedModel: DEFAULT_EMBED_MODEL,
           translateLanguages: TRANSLATE_LANGUAGES,
@@ -339,27 +339,24 @@ async function handleImprovePrompt(request, env) {
   // generation changes nothing about copy-editing the sentence.
   const system = mine.system || IMPROVE_SYSTEM;
 
-  let out;
-  try {
-    out = await env.AI.run(improveModel, {
-      messages: spec.noSystem
-        ? [{ role: "user", content: `${system}\n\nText:\n${prompt}` }]
-        : [
-            { role: "system", content: system },
-            { role: "user", content: prompt },
-          ],
-      // 120 words runs ~170-200 tokens; 320 leaves headroom so the raised
-      // word cap doesn't just get truncated at the token level instead.
-      max_tokens: mine.maxTokens || spec.maxTokens || (spec.reasoning ? 1500 : 320),
-      ...withUserKnobs(reasoningKnobs(spec), mine),
-    });
-  } catch (err) {
-    return json({ error: "Improve failed: " + (err && err.message ? err.message : String(err)) }, 502);
-  }
-
-  const text = stripPreamble(stripReasoning(pickText(out))).replace(/^["'\s]+|["'\s]+$/g, "");
-  if (!text) return json({ error: "The model returned nothing usable." }, 502);
-  return json({ prompt: text });
+  const input = {
+    messages: spec.noSystem
+      ? [{ role: "user", content: `${system}\n\nText:\n${prompt}` }]
+      : [
+          { role: "system", content: system },
+          { role: "user", content: prompt },
+        ],
+    // 120 words runs ~170-200 tokens; 320 leaves headroom so the raised
+    // word cap doesn't just get truncated at the token level instead.
+    max_tokens: mine.maxTokens || spec.maxTokens || (spec.reasoning ? 1500 : 320),
+    ...withUserKnobs(reasoningKnobs(spec), mine),
+  };
+  return toolStream(env, async (send) => {
+    const out = await runModel(env, improveModel, input, spec, send, "Improve failed");
+    const text = stripPreamble(stripReasoning(out.text)).replace(/^["'\s]+|["'\s]+$/g, "");
+    if (!text) throw new Error("The model returned nothing usable.");
+    return { prompt: text, neurons: out.neurons };
+  });
 }
 
 // Actual Workers AI neuron usage for the current UTC day, from Cloudflare's
@@ -669,12 +666,173 @@ function stripReasoning(text) {
   return t.trim();
 }
 
+// ── Streaming the chat-format tools ─────────────────────────────────────────
+// Improve, Describe and the chat answer as server-sent events rather than one
+// JSON body, following Cloudflare's guidance: "Use streaming to avoid buffering
+// and delaying responses, especially for larger models or reasoning models"
+// (developers.cloudflare.com/agents/runtime/operations/using-ai-models). A
+// buffered call to a slow model gave the browser nothing to go on — a reply
+// still being written and a connection that had died looked the same, and the
+// chat sat with Send disabled until a reload.
+//
+// The browser sees, in order:
+//   ping      at once and every PING_MS while nothing else is sent, so it can
+//             tell a slow model from a dead connection
+//   delta     visible reply text as it arrives (the chat only)
+//   progress  characters of answer and of thinking so far, at most once a second
+//   done      the cleaned-up result — exactly what the buffered route returned
+//   error     { error } — also sent when the model goes quiet for MODEL_IDLE_MS
+//
+// env.AI.run() takes no timeout (its documented options are the AI Gateway
+// ones), so the deadline is kept here, on the silence between chunks rather than
+// on the total: a long answer that keeps arriving is never cut off.
+const PING_MS = 10000;
+const MODEL_IDLE_MS = 60000;
+// A model that answers in one piece gives no chunks to measure silence by.
+const MODEL_BUFFERED_MS = 120000;
+
+// Two chunk shapes, both measured on 2026-09-26: {"response": text} (Llama,
+// DeepSeek R1 with its <think> inline) and OpenAI-style
+// {"choices":[{"delta":{content | reasoning_content | reasoning}}]} (GPT-OSS,
+// Qwen3, GLM, Llama 3.1 8B Fast). Every stream ends with {"response":"",
+// "usage":{...}} carrying the whole call's usage, then [DONE].
+function chunkParts(ev) {
+  const choice = Array.isArray(ev.choices) ? ev.choices[0] : null;
+  if (choice && choice.delta) {
+    const d = choice.delta;
+    return { text: typeof d.content === "string" ? d.content : "", thinking: d.reasoning_content || d.reasoning || "" };
+  }
+  return { text: typeof ev.response === "string" ? ev.response : "", thinking: "" };
+}
+
+// Resolves with `promise`, or rejects once `ms` pass without it.
+function withDeadline(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// Wraps a tool's work in an event-stream response. `work(send)` returns the
+// `done` payload or throws; either way the stream is closed.
+function toolStream(env, work) {
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const enc = new TextEncoder();
+  let open = true;
+  let lastSent = 0;
+  const send = (event, data) => {
+    if (!open) return;
+    lastSent = Date.now();
+    writer.write(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)).catch(() => {
+      open = false; // the browser went away; stop writing
+    });
+  };
+  send.isOpen = () => open;
+  const pingMs = Number(env.PING_MS) || PING_MS;
+  const ping = setInterval(() => {
+    if (Date.now() - lastSent >= pingMs - 50) send("ping", {});
+  }, pingMs);
+  send("ping", {});
+  (async () => {
+    try {
+      send("done", await work(send));
+    } catch (err) {
+      send("error", { error: err && err.message ? err.message : String(err) });
+    } finally {
+      clearInterval(ping);
+      open = false;
+      writer.close().catch(() => {});
+    }
+  })();
+  return new Response(readable, {
+    headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
+// Runs one chat-format model and collects its answer, streaming unless the
+// model is marked noStream. `onVisible(text)` receives the answer so far with
+// any reasoning removed, for the chat to show as it grows.
+async function runModel(env, model, input, spec, send, label, onVisible) {
+  const idleMs = Number(env.MODEL_IDLE_MS) || MODEL_IDLE_MS;
+  const quiet = (s) => `${label}: the model stopped responding for ${Math.round(s / 1000)} s. It may still be billed.`;
+
+  if (spec.noStream) {
+    let out;
+    try {
+      out = await withDeadline(env.AI.run(model, input), Number(env.MODEL_BUFFERED_MS) || MODEL_BUFFERED_MS, quiet(MODEL_BUFFERED_MS));
+    } catch (err) {
+      throw new Error(err.message.startsWith(label) ? err.message : `${label}: ${err.message}`);
+    }
+    const neurons = out && out.usage && typeof out.usage.neurons === "number" ? out.usage.neurons : null;
+    return { text: pickText(out), neurons };
+  }
+
+  let stream;
+  try {
+    stream = await withDeadline(env.AI.run(model, { ...input, stream: true }), idleMs, quiet(idleMs));
+  } catch (err) {
+    throw new Error(err.message.startsWith(label) ? err.message : `${label}: ${err.message}`);
+  }
+  if (!(stream instanceof ReadableStream)) {
+    // A model that answered in one piece after all.
+    const neurons = stream && stream.usage && typeof stream.usage.neurons === "number" ? stream.usage.neurons : null;
+    return { text: pickText(stream), neurons };
+  }
+
+  const reader = stream.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let text = "";
+  let thinking = 0;
+  let neurons = null;
+  let lastProgress = 0;
+  try {
+    for (;;) {
+      if (!send.isOpen()) throw new Error(`${label}: cancelled.`);
+      const { value, done } = await withDeadline(reader.read(), idleMs, quiet(idleMs));
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let cut;
+      while ((cut = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, cut).trim();
+        buf = buf.slice(cut + 1);
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let ev;
+        try {
+          ev = JSON.parse(payload);
+        } catch {
+          continue;
+        }
+        if (ev.error) throw new Error(`${label}: ${typeof ev.error === "string" ? ev.error : JSON.stringify(ev.error)}`);
+        if (ev.usage && typeof ev.usage.neurons === "number") neurons = ev.usage.neurons;
+        const part = chunkParts(ev);
+        text += part.text;
+        thinking += part.thinking.length;
+        if (part.text && onVisible) onVisible(stripReasoning(text));
+        if (Date.now() - lastProgress >= 1000) {
+          lastProgress = Date.now();
+          send("progress", { chars: stripReasoning(text).length, thinking: thinking + (text.length - stripReasoning(text).length) });
+        }
+      }
+    }
+  } catch (err) {
+    reader.cancel().catch(() => {});
+    throw err;
+  }
+  return { text, neurons };
+}
+
 // The chat under the prompt toolbar. The browser keeps the thread and sends all
 // of it every time, so the model sees the conversation so far; the Worker adds
-// the system instruction, and — when the context switch is on — the prompt
-// box's text and the attached image to the newest message only. Earlier
-// messages go as plain text: resending the image with every turn would bill
-// it again each time for nothing the model had not already seen.
+// the system instruction, the prompt box's text when that box is ticked, and
+// the images ticked beside it — all to the newest message only. Workers AI
+// keeps nothing between calls, so an image not sent with a message is not seen
+// with it; the browser unticks the images after each Send and the user ticks
+// them again when a follow-up needs them.
 const CHAT_SYSTEM =
   `You are helping the user write and refine prompts for image and video generation models. ` +
   `Their current prompt and any attached image are included for context. ` +
@@ -686,6 +844,7 @@ const CHAT_SYSTEM =
 // clear message rather than as an opaque model error or a huge bill.
 const CHAT_MAX_MESSAGES = 60;
 const CHAT_MAX_CHARS = 60000;
+const CHAT_MAX_IMAGES = 6;
 
 function chatContext(prompt, text) {
   return prompt ? `My current prompt:\n"""\n${prompt}\n"""\n\n${text}` : text;
@@ -722,32 +881,50 @@ async function handleChat(request, env) {
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   last.content = chatContext(prompt, last.content);
 
-  // An image only reaches a model that can see one; the knobs that make those
-  // answer at all are the Describe entry's, measured with an image attached.
-  const b64 = typeof body.image_b64 === "string" ? body.image_b64 : "";
+  // Images only reach a model that can see; the knobs that make those answer
+  // at all are the Describe entry's, measured with an image attached. Each
+  // image is its own part: all six vision chat models named the colour of the
+  // first and the second of two images correctly on 2026-09-26. `image_b64`
+  // alone is the single-image form an older tab still sends.
+  const images = (Array.isArray(body.images) ? body.images : [])
+    .filter((im) => im && typeof im.b64 === "string" && im.b64)
+    .slice(0, CHAT_MAX_IMAGES);
+  if (!images.length && typeof body.image_b64 === "string" && body.image_b64) {
+    images.push({ b64: body.image_b64, mime: body.mime });
+  }
   let knobs = spec;
-  if (b64 && spec.vision) {
+  const seen = spec.vision ? images.length : 0;
+  if (seen) {
     knobs = DESCRIBE_MODELS.find((m) => m.id === model) || spec;
     last.content = [
       { type: "text", text: last.content },
-      { type: "image_url", image_url: { url: `data:${body.mime || "image/jpeg"};base64,${b64}` } },
+      ...images.map((im) => ({ type: "image_url", image_url: { url: `data:${im.mime || "image/jpeg"};base64,${im.b64}` } })),
     ];
   }
 
-  let out;
-  try {
-    out = await env.AI.run(model, {
-      messages,
-      max_tokens: mine.maxTokens || knobs.maxTokens || (spec.reasoning ? 2000 : 1024),
-      ...withUserKnobs(reasoningKnobs(knobs), mine),
-    });
-  } catch (err) {
-    return json({ error: "Chat failed: " + (err && err.message ? err.message : String(err)) }, 502);
-  }
-  const text = stripReasoning(pickText(out));
-  if (!text) return json({ error: "The model returned nothing usable. Try again or pick another model." }, 502);
-  const neurons = out && out.usage && typeof out.usage.neurons === "number" ? out.usage.neurons : null;
-  return json({ reply: text, neurons, sawImage: Boolean(b64 && spec.vision) });
+  const input = {
+    messages,
+    max_tokens: mine.maxTokens || knobs.maxTokens || (spec.reasoning ? 2000 : 1024),
+    ...withUserKnobs(reasoningKnobs(knobs), mine),
+  };
+  return toolStream(env, async (send) => {
+    // Only what is new goes out. The visible text can shrink — a "<think>" tag
+    // arriving in pieces reads as text until it closes — and then the whole of
+    // it is sent again as a reset.
+    let shown = "";
+    const onVisible = (visible) => {
+      if (visible.startsWith(shown)) {
+        if (visible.length > shown.length) send("delta", { text: visible.slice(shown.length) });
+      } else {
+        send("reset", { text: visible });
+      }
+      shown = visible;
+    };
+    const out = await runModel(env, model, input, spec, send, "Chat failed", onVisible);
+    const text = stripReasoning(out.text);
+    if (!text) throw new Error("The model returned nothing usable. Try again or pick another model.");
+    return { reply: text, neurons: out.neurons, sawImages: seen };
+  });
 }
 
 const aiError = (label, err) => json({ error: `${label}: ` + (err && err.message ? err.message : String(err)) }, 502);
@@ -882,11 +1059,13 @@ async function handleDescribe(request, env) {
   if (!b64) return json({ error: "No image provided." }, 400);
 
   const model = DESCRIBE_MODEL_IDS.has(body.model) ? body.model : DEFAULT_DESCRIBE_MODEL;
-  // Captions only. Questions about an image are asked in the chat, which keeps
-  // the thread; this route used to take one too, and threw the answer away.
-  const asking = CAPTION_REQUEST;
-
   const spec = DESCRIBE_MODELS.find((m) => m.id === model) || {};
+  // The instruction is editable from the ⚙ panel like Improve's and the chat's,
+  // and the per-model limits apply the same way. It is still a request for a
+  // caption: questions about an image belong in the chat, which keeps the thread.
+  const mine = userSettings(body.settings, spec);
+  const asking = mine.system || CAPTION_REQUEST;
+
   let input;
   if (spec.chat) {
     input = {
@@ -899,35 +1078,35 @@ async function handleDescribe(request, env) {
           ],
         },
       ],
-      max_tokens: spec.maxTokens || 1024,
-      ...reasoningKnobs(spec),
+      max_tokens: mine.maxTokens || spec.maxTokens || 1024,
+      ...withUserKnobs(reasoningKnobs(spec), mine),
     };
   } else if (model.includes("moondream")) {
     const image = `data:${body.mime || "image/jpeg"};base64,${b64}`;
-    // Streams by default; disabled so a single JSON body comes back.
+    // Moondream's `caption` task takes no text at all, so a custom instruction
+    // is asked through its `query` task as the question instead; the default
+    // stays a caption, which is what was measured for the note in the picker.
     // https://developers.cloudflare.com/workers-ai/models/moondream3.1-9B-A2B/
-    input = {
-      task: "caption",
-      image,
-      caption_length: body.caption_length || "normal",
-      stream: false,
-      max_tokens: 512,
-    };
+    input = mine.system
+      ? { task: "query", question: asking, reasoning: false, image, stream: false, max_tokens: mine.maxTokens || 512 }
+      : {
+          task: "caption",
+          image,
+          caption_length: body.caption_length || "normal",
+          stream: false,
+          max_tokens: mine.maxTokens || 512,
+        };
   } else {
     // llava and llama-3.2-11b-vision both want raw bytes as 8-bit ints.
-    input = { image: base64ToBytes(b64), prompt: asking, max_tokens: 512 };
+    input = { image: base64ToBytes(b64), prompt: asking, max_tokens: mine.maxTokens || 512 };
   }
 
-  let out;
-  try {
-    out = await env.AI.run(model, input);
-  } catch (err) {
-    return json({ error: "Describe failed: " + (err && err.message ? err.message : String(err)) }, 502);
-  }
-
-  const text = pickText(out);
-  if (!text) return json({ error: "The model returned no description." }, 502);
-  return json({ description: text });
+  return toolStream(env, async (send) => {
+    const out = await runModel(env, model, input, spec, send, "Describe failed");
+    const text = stripReasoning(out.text);
+    if (!text) throw new Error("The model returned no description.");
+    return { description: text, neurons: out.neurons };
+  });
 }
 
 // Scores one or more images against a prompt with p-judger. This does not go
