@@ -1740,9 +1740,11 @@ export const IMPROVE_MODELS = [
   { id: "@cf/meta/llama-3.2-1b-instruct", family: "Llama", label: "Llama 3.2 1B Instruct", neurons: 3.9 },
   // Offered on request, with a warning: on 2026-09-28 every call returned
   // unrelated tokens — through `messages`, a plain `prompt`, and a `raw` prompt
-  // in its own [INST] template — and billed 0 neurons.
+  // in its full <s>[INST] <<SYS>> template, streamed or not — and billed 0
+  // neurons. Its schema (sync-input.json and streaming-input.json) documents
+  // `prompt` only, no `messages`, so that is what it is sent.
   {
-    id: "@cf/meta-llama/llama-2-7b-chat-hf-lora", family: "Llama", label: "Llama 2 7B Chat HF LoRA ⚠", neurons: 0,
+    id: "@cf/meta-llama/llama-2-7b-chat-hf-lora", family: "Llama", label: "Llama 2 7B Chat HF LoRA ⚠", neurons: 0, format: "prompt",
     warning: "On 2026-09-28 every test call returned unrelated tokens instead of an answer, in every input form, and billed nothing.",
   },
   // A vision model, here on text alone: its schema's `messages` form takes the

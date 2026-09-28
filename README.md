@@ -140,8 +140,11 @@ failure says so in words, and says the call may still have been billed.
 
 **Llama 2 7B Chat LoRA** is in Improve and the chat on request, marked ⚠: on
 2026-09-28 every test call returned unrelated tokens instead of an answer —
-through `messages`, a plain `prompt`, and a `raw` prompt in its own `[INST]`
-template — and billed 0 neurons. Its note says so where it is picked.
+through `messages` (Cloudflare's own usage example included), a plain `prompt`,
+and a `raw` prompt in its full `<s>[INST] <<SYS>>` template, streamed or not —
+and billed 0 neurons. Its note says so where it is picked. Its schema documents
+`prompt` alone, with no `messages`, so it is sent a prompt: the conversation as
+a transcript in the chat, the instruction and the text together for Improve.
 
 **Translate.** Under *⋯ More*, two language pickers and 🌐 Translate rewrite
 the prompt box into another language with Meta's m2m100 (English, Spanish, French, German,
@@ -591,7 +594,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 41 Worker tests, then 306 assertions per
+are needed and nothing is billed. 42 Worker tests, then 306 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a
