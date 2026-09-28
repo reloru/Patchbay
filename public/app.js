@@ -238,6 +238,60 @@ function toolImage(file) {
   });
 }
 
+function loadImage(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(null);
+    };
+    img.src = url;
+  });
+}
+
+// For a model that takes one image per message (Llama 3.2 Vision, Moondream,
+// LLaVA): the ticked images side by side in one picture, each numbered as its
+// chip is, so "image 2" still names the same one. Resolves to { b64, mime }.
+async function combinedImage(list) {
+  const tiles = [];
+  for (const x of list) {
+    const img = await loadImage(x.file);
+    if (img && img.width && img.height) tiles.push({ img, n: x.n });
+  }
+  if (!tiles.length) return null;
+  const H = 768;
+  const GAP = 12;
+  const widths = tiles.map(({ img }) => Math.round((img.width * H) / img.height));
+  const scale = Math.min(1, 2048 / (widths.reduce((a, b) => a + b, 0) + GAP * (tiles.length - 1)));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round((widths.reduce((a, b) => a + b, 0) + GAP * (tiles.length - 1)) * scale));
+  canvas.height = Math.max(1, Math.round(H * scale));
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const r = Math.max(12, Math.round(26 * scale));
+  let x = 0;
+  tiles.forEach(({ img, n }, i) => {
+    const w = Math.round(widths[i] * scale);
+    ctx.drawImage(img, x, 0, w, canvas.height);
+    ctx.fillStyle = "rgba(0, 0, 0, .75)";
+    ctx.fillRect(x + 6, 6, r * 2, r * 2);
+    ctx.fillStyle = "#fff";
+    ctx.font = `bold ${Math.round(r * 1.3)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(n), x + 6 + r, 6 + r);
+    x += w + Math.round(GAP * scale);
+  });
+  const url = canvas.toDataURL("image/jpeg", 0.85);
+  return { b64: url.split(",")[1] || "", mime: "image/jpeg" };
+}
+
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
@@ -3738,7 +3792,11 @@ function updateChatNote() {
     parts.push("This model can't see images — pick one marked 👁 to send them");
   } else if (list.length) {
     const n = list.filter((x) => chatTicks.get(x.file)).length;
-    parts.push(n ? `${n === 1 ? "1 image goes" : `${n} images go`} with the next message` : "No image goes with the next message — tap one to send it");
+    if (!n && m && m.needsImage) parts.push(`${m.label} needs an image with every message — tap one to send it`);
+    else parts.push(n ? `${n === 1 ? "1 image goes" : `${n} images go`} with the next message` : "No image goes with the next message — tap one to send it");
+    if (n > 1 && m && m.maxImages === 1) parts.push("combined into one numbered picture, since this model takes one");
+  } else if (m && m.needsImage) {
+    parts.push(`${m.label} needs an image with every message — attach one first`);
   }
   el.textContent = parts.join(" · ");
   el.classList.toggle("err", Boolean(chatLastError));
@@ -3838,6 +3896,11 @@ async function sendChat() {
     if (el && el.value.trim()) body.prompt = el.value.trim();
   }
   const ticked = m.vision ? chatImageList().filter((x) => chatTicks.get(x.file)) : [];
+  if (m.needsImage && !ticked.length) {
+    chatLastError = `${m.label} needs an image with every message — tick one, then Send`;
+    updateChatNote();
+    return;
+  }
   const mine = { role: "user", content: text };
   if (ticked.length) mine.images = ticked.map((x) => x.n);
   chatThread.push(mine);
@@ -3856,7 +3919,10 @@ async function sendChat() {
   renderChatImages();
 
   try {
-    if (ticked.length) {
+    if (ticked.length > 1 && m.maxImages === 1) {
+      const im = await combinedImage(ticked);
+      body.images = im ? [im] : [];
+    } else if (ticked.length) {
       body.images = [];
       for (const x of ticked) {
         const im = await toolImage(x.file);
@@ -4259,6 +4325,14 @@ function renderInstructableTool(box, tool) {
     where += " Moondream's caption mode takes no text, so with your own instruction it answers it as a question instead.";
   }
   if (tool === "chat") where += m.vision ? " This one can see images (👁)." : " This one cannot see images.";
+  if (tool === "chat" && (m.format === "question" || m.format === "prompt")) {
+    where += " It answers one question at a time, so the conversation goes to it as a transcript.";
+  }
+  if (tool === "chat" && m.maxImages === 1) where += " It takes one image per message: several ticked images go combined into one numbered picture.";
+  if (tool === "chat" && m.needsImage) where += " It needs an image with every message.";
+  if (tool === "improve" && m.format === "question") {
+    where += " Moondream answers one question, so the instruction and your text go to its query mode together.";
+  }
   toolRow(box, "Model", `${m.label} — ${where}`);
   toolRow(box, "Reads", info.reads);
   toolRow(box, "Instruction", instructionEditor(tool, info.scope));

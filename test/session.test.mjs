@@ -1823,6 +1823,52 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
+// ── Every vision model is in the chat; the two that can work on text alone
+//    are in Improve too ─────────────────────────────────────────────────────
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  const improveIds = await page.locator("#improve-model option").evaluateAll((os) => os.map((o) => o.value));
+  check(
+    "Improve offers Llama 3.2 Vision and Moondream",
+    improveIds.includes("@cf/meta/llama-3.2-11b-vision-instruct") && improveIds.includes("@cf/moondream/moondream3.1-9B-A2B")
+  );
+  check("but not LLaVA, which cannot run without an image", !improveIds.includes("@cf/llava-hf/llava-1.5-7b-hf"));
+  const chatOpts = await page.locator("#chat-model option").evaluateAll((os) => os.map((o) => o.textContent));
+  check("the chat offers all nine vision models, marked 👁", chatOpts.filter((t) => t.includes("👁")).length === 9, JSON.stringify(chatOpts.filter((t) => t.includes("👁"))));
+
+  await page.selectOption("#model-select", "p-image-edit");
+  await page.waitForTimeout(200);
+  await page.locator("#open-chat").click();
+  await page.selectOption("#chat-model", "@cf/llava-hf/llava-1.5-7b-hf");
+  await page.fill("#chat-input", "what is this?");
+  await page.locator("#chat-send").click();
+  await page.waitForTimeout(300);
+  check(
+    "LLaVA with no image says so and sends nothing",
+    (await page.locator("#chat-note").textContent()).includes("needs an image") && (await page.locator(".chat-msg").count()) === 0,
+    await page.locator("#chat-note").textContent()
+  );
+  await page.locator("#sheet-chat .sheet-close").click();
+  const other = join(dir, "other.png");
+  writeFileSync(other, PNG);
+  await page.setInputFiles(".file-input", [imgPath, other]);
+  await page.waitForFunction(() => document.querySelectorAll(".section-inputs .thumbs .thumb img").length === 2);
+  await page.locator("#open-chat").click();
+  check("two ticked images for a one-image model are to be combined", (await page.locator("#chat-note").textContent()).includes("combined"));
+  await page.locator("#chat-send").click();
+  await page.waitForSelector(".chat-msg.assistant:not(.pending)");
+  const sent = await (await page.request.get(BASE + "__chat")).json();
+  check(
+    "and go as one picture",
+    Array.isArray(sent.images) && sent.images.length === 1 && sent.images[0].mime === "image/jpeg",
+    JSON.stringify(sent.images && sent.images.map((i) => i.mime))
+  );
+  check("while the thread still names both", (await page.locator(".chat-sent-images").first().textContent()).includes("1, 2"));
+  await page.close();
+  await context.close();
+}
+
 // ── Settings: Reset all leaves the inputs and the prompt alone ────────────
 {
   const context = await browser.newContext();
