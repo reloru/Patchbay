@@ -1869,6 +1869,50 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
+// ── Sampling settings follow each model's schema ───────────────────────────
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(200);
+  await page.selectOption("#improve-model", "@cf/meta/llama-3.2-3b-instruct");
+  await page.locator("#improve-settings").click();
+  const all = ["temperature", "top_p", "top_k", "seed", "repetition_penalty", "frequency_penalty", "presence_penalty"];
+  check("a Llama model offers every sampling setting its schema takes", JSON.stringify(await page.locator(".sampling-name").allTextContents()) === JSON.stringify(all));
+  check("with the schema's default as the placeholder", (await page.getAttribute(".settings-temperature", "placeholder")) === "default 0.6");
+  await page.fill(".settings-temperature", "0.3");
+  await page.fill(".settings-top-k", "12");
+  await page.fill(".settings-top-p", "7");
+  check("a value outside the documented range is flagged", await page.locator(".settings-top-p").evaluate((el) => el.classList.contains("invalid")));
+  await page.locator("#sheet-tools .sheet-close").click();
+  await page.fill(promptSel, "a cat");
+  await page.waitForTimeout(700);
+  await page.locator("#prompt-improve").click();
+  await page.waitForTimeout(500);
+  const sent = await (await page.request.get(BASE + "__improve")).json();
+  check(
+    "and the valid ones are sent, the invalid one withheld",
+    sent.settings.temperature === 0.3 && sent.settings.top_k === 12 && !("top_p" in sent.settings),
+    JSON.stringify(sent.settings)
+  );
+  await page.selectOption("#improve-model", "@cf/zai-org/glm-5.3");
+  await page.locator("#improve-settings").click();
+  const glm = await page.locator(".sampling-name").allTextContents();
+  check("GLM 5.3 offers only what its schema takes", !glm.includes("top_k") && !glm.includes("repetition_penalty") && glm.includes("temperature"), JSON.stringify(glm));
+  await page.locator("#sheet-tools .sheet-close").click();
+  await page.selectOption("#improve-model", "@cf/meta/llama-3.1-8b-fast-v2");
+  await page.locator("#improve-settings").click();
+  check("a model with no published schema says so", (await page.locator("#tool-settings").textContent()).includes("no input schema"));
+  await page.locator("#sheet-tools .sheet-close").click();
+  const llama2 = "@cf/meta-llama/llama-2-7b-chat-hf-lora";
+  check("Llama 2 7B Chat LoRA is in Improve", (await page.locator(`#improve-model option[value="${llama2}"]`).count()) === 1);
+  check("and in the chat", (await page.locator(`#chat-model option[value="${llama2}"]`).count()) === 1);
+  await page.selectOption("#improve-model", llama2);
+  check("with its test result in plain view", (await page.locator("#improve-note").textContent()).includes("unrelated tokens"));
+  await page.close();
+  await context.close();
+}
+
 // ── Settings: Reset all leaves the inputs and the prompt alone ────────────
 {
   const context = await browser.newContext();
