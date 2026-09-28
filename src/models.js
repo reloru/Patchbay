@@ -1738,6 +1738,11 @@ export const IMPROVE_MODELS = [
   { id: "@cf/moonshotai/kimi-k2.6", family: "Kimi", label: "Kimi K2.6", neurons: 199, reasoning: true, paid: true, thinking: false },
   { id: "@cf/moonshotai/kimi-k2.7-code", family: "Kimi", label: "Kimi K2.7 Code", neurons: 187, reasoning: true, paid: true },
   { id: "@cf/meta/llama-3.2-1b-instruct", family: "Llama", label: "Llama 3.2 1B Instruct", neurons: 3.9 },
+  // A vision model, here on text alone: its schema's `messages` form takes the
+  // image as an optional top-level field (Cloudflare's models/schema API,
+  // 2026-09-28), so it holds a thread in the chat with one image per message.
+  // One rewrite measured 1.83 neurons.
+  { id: "@cf/meta/llama-3.2-11b-vision-instruct", family: "Llama", label: "Llama 3.2 11B Vision Instruct", neurons: 1.8, format: "messages+image", maxImages: 1 },
   { id: "@cf/meta/llama-3.2-3b-instruct", family: "Llama", label: "Llama 3.2 3B Instruct", neurons: 6.6 },
   // -fp8-fast answered as `llama-3.1-8b-fast-v2` on 2026-09-23 (the reply's
   // own `model` field), so the entry names what actually runs.
@@ -1752,6 +1757,13 @@ export const IMPROVE_MODELS = [
   // No published rate; 0.09 neurons measured for one rewrite on 2026-09-23.
   { id: "@cf/mistral/mistral-7b-instruct-v0.2-lora", family: "Mistral", label: "Mistral 7B Instruct v0.2", neurons: 0.1 },
   { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", family: "Mistral", label: "Mistral Small 3.1 24B Instruct", neurons: 13.9 },
+  // Moondream answers one question — no thread, no system role — so the
+  // instruction and the text go to its `query` mode together, where the image
+  // is optional. One rewrite on 2026-09-28 read 29 tokens and wrote 15: about
+  // 2.2 neurons at its published $0.30 / $1.00 per million. In the chat the
+  // conversation goes to it as a transcript. It answers in one piece (see
+  // DESCRIBE_MODELS below for why it is not streamed).
+  { id: "@cf/moondream/moondream3.1-9B-A2B", family: "Moondream", label: "Moondream 3.1 9B A2B", neurons: 2.2, format: "question", noStream: true, maxImages: 1 },
   { id: "@cf/nvidia/nemotron-3-120b-a12b", family: "Nemotron", label: "Nemotron 3 120B A12B", neurons: 32.7, reasoning: true },
   { id: "@cf/qwen/qwen3-30b-a3b-fp8", family: "Qwen", label: "Qwen3 30B A3B FP8", neurons: 6.6, reasoning: true },
   { id: "@cf/qwen/qwen2.5-coder-32b-instruct", family: "Qwen", label: "Qwen2.5 Coder 32B Instruct", neurons: 25.4 },
@@ -2150,6 +2162,8 @@ const OUT_NEURONS_PER_M = {
   "@cf/moonshotai/kimi-k2.7-code": 363636,
   "@cf/meta/llama-3.2-1b-instruct": 18252,
   "@cf/meta/llama-3.2-3b-instruct": 30475,
+  "@cf/meta/llama-3.2-11b-vision-instruct": 61455,
+  "@cf/moondream/moondream3.1-9B-A2B": 90909,
   "@cf/meta/llama-3.1-8b-fast-v2": 34868,
   "@cf/meta/llama-3.1-8b-instruct-fp8": 26128,
   "@cf/meta/llama-4-scout-17b-16e-instruct": 77273,
@@ -2164,7 +2178,14 @@ const OUT_NEURONS_PER_M = {
   "@cf/qwen/qwq-32b": 90909,
   "@cf/aisingapore/gemma-sea-lion-v4-27b-it": 50488,
 };
-for (const m of [...IMPROVE_MODELS, ...DESCRIBE_MODELS]) {
+// Chat only. LLaVA's schema requires an image on every call and takes a single
+// prompt, so it cannot rewrite text alone for Improve; in the chat the
+// conversation goes to it as a transcript beside the image.
+const CHAT_ONLY_MODELS = [
+  { id: "@cf/llava-hf/llava-1.5-7b-hf", family: "LLaVA", label: "LLaVA 1.5 7B", format: "prompt", noStream: true, maxImages: 1, needsImage: true },
+];
+
+for (const m of [...IMPROVE_MODELS, ...CHAT_ONLY_MODELS, ...DESCRIBE_MODELS]) {
   m.canThink = THINKING.includes(m.id);
   m.efforts = EFFORTS[m.id] || null;
   m.outPerM = OUT_NEURONS_PER_M[m.id] || null;
@@ -2179,13 +2200,16 @@ for (const m of DESCRIBE_MODELS) {
 
 export const IMPROVE_MODEL_IDS = new Set(IMPROVE_MODELS.map((m) => m.id));
 
-// The chat under the toolbar talks to the Improve models, since only
-// chat-format models can hold a conversation. `vision` marks those that can
-// also be handed the attached image: the chat-format Describe entries. LLaVA,
-// Moondream and Llama 3.2 Vision take one image and one question with no
-// history, so they stay behind Describe for captions.
-const CHAT_VISION_IDS = new Set(DESCRIBE_MODELS.filter((m) => m.chat).map((m) => m.id));
-export const CHAT_MODELS = IMPROVE_MODELS.map((m) => ({ ...m, vision: CHAT_VISION_IDS.has(m.id) }));
+// The chat talks to the Improve models plus LLaVA: every vision model the app
+// knows. `vision` marks those that can be handed the ticked images — all nine
+// Describe models. `format` says how a model takes the conversation:
+//   (none)           messages, each image an image_url part beside the text
+//   messages+image   messages, and one image as a top-level byte array
+//   question         Moondream's query mode: the conversation as a transcript
+//   prompt           LLaVA: the conversation as a transcript, an image required
+// `maxImages: 1` models get several ticked images combined into one picture.
+const CHAT_VISION_IDS = new Set(DESCRIBE_MODELS.map((m) => m.id));
+export const CHAT_MODELS = [...IMPROVE_MODELS, ...CHAT_ONLY_MODELS].map((m) => ({ ...m, vision: CHAT_VISION_IDS.has(m.id) }));
 export const CHAT_MODEL_IDS = new Set(CHAT_MODELS.map((m) => m.id));
 export const DEFAULT_CHAT_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
 

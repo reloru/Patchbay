@@ -12,11 +12,12 @@ Cloudflare Workers — no server to maintain, no build step, no framework.
 | [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 13 | none |
 | [xAI (Grok)](https://docs.x.ai/) | 5 | `XAI_API_KEY` |
 
-A further 39 models run behind the prompt tools rather than appearing in the
-picker: 30 Workers AI chat models rewrite prompts and hold the chat, 9 Workers
-AI vision models caption images (6 of them are also among the 30, and can see
-the attached image in the chat), 7 embedding models measure text in the
-Embeddings panel, and Pruna's `p-judger` scores an image against a prompt.
+A further 42 models run behind the prompt tools rather than appearing in the
+picker: 32 Workers AI models rewrite prompts, 33 hold the chat, 9 vision models
+caption images — all nine of which can also be shown the attached images in the
+chat, and eight of which can rewrite for Improve — 7 embedding models measure
+text in the Embeddings panel, and Pruna's `p-judger` scores an image against a
+prompt.
 
 ## Features
 
@@ -50,7 +51,7 @@ with the required inputs, marked optional, where they cannot be missed.
 generate, edit, extend. Picking a mode changes which fields apply, and fields
 belonging to another mode are never sent.
 
-**Prompt rewriting.** Improve runs the prompt through one of 30 Workers AI chat
+**Prompt rewriting.** Improve runs the prompt through one of 32 Workers AI
 models as a copy edit: grammar, phrasing and punctuation only. It adds nothing,
 drops nothing, keeps your pronouns and your grammatical mood, and avoids commas,
 which image models read as tag separators rather than punctuation. It reads the
@@ -81,9 +82,15 @@ part. The thread notes which images each message carried. The reply streams in
 as it is written; while it does, Send is Cancel, and a cancelled or failed
 message goes back into the box with its images ticked again. Any reply can be
 put in the prompt box as one Undo step, and each shows the neurons it actually
-used, as reported by Cloudflare. It talks to the same 30 chat models as
-Improve; LLaVA, Moondream and Llama 3.2 Vision cannot hold a conversation and
-stay behind Describe. Images sent to any tool are scaled to 1,024 pixels on the
+used, as reported by Cloudflare. It talks to Improve's 32 models plus LLaVA —
+every vision model the app has, each marked 👁. Three of them take the
+conversation differently, per their schemas: Llama 3.2 Vision holds a real
+thread but takes one image beside it; Moondream (through its `query` mode) and
+LLaVA answer one question at a time, so the conversation goes to them as a
+transcript. All three take one image per message, so several ticked images go
+to them combined into one picture, each numbered as its chip is. LLaVA's
+schema requires an image on every call: it is in the chat but not in Improve,
+and it will not send without one ticked. Images sent to any tool are scaled to 1,024 pixels on the
 long edge first: a phone photo is several megabytes as base64, which was the
 slow part of every message on a mobile connection.
 
@@ -569,7 +576,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 38 Worker tests, then 290 assertions per
+are needed and nothing is billed. 40 Worker tests, then 297 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a

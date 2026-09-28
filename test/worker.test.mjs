@@ -293,9 +293,9 @@ test("Aura's raw MP3 stream comes back as an audio data URI", async () => {
   assert.equal(body.images[0], "data:audio/mpeg;base64,SUQzBA==");
 });
 
-const chatWith = async (body, chunks = [{ choices: [{ delta: { content: "a reply" } }] }, { response: "", usage: { neurons: 7.5 } }, "[DONE]"], extraEnv = {}) => {
+const chatWith = async (body, chunks = [{ choices: [{ delta: { content: "a reply" } }] }, { response: "", usage: { neurons: 7.5 } }, "[DONE]"], extraEnv = {}, buffered = null) => {
   let seen = null;
-  const aiEnv = { ...env, ...extraEnv, AI: fakeAI(chunks, null, (s) => (seen = s)) };
+  const aiEnv = { ...env, ...extraEnv, AI: fakeAI(chunks, buffered, (s) => (seen = s)) };
   const res = await postTool("/api/chat", body, aiEnv);
   if (res.headers.get("content-type").includes("application/json")) return { seen, status: res.status, body: await res.json() };
   const events = await readEvents(res);
@@ -397,6 +397,56 @@ test("chat never hands an image to a model that cannot see", async () => {
   });
   assert.equal(typeof seen.input.messages[1].content, "string");
   assert.equal(body.sawImages, 0);
+});
+
+test("the three single-question vision models hold the chat too", async () => {
+  const thread = [
+    { role: "user", content: "what colour?" },
+    { role: "assistant", content: "Red." },
+    { role: "user", content: "a fruit that colour?" },
+  ];
+  // Llama 3.2 Vision: a real thread, the image as a top-level byte array.
+  const llama = await chatWith({ model: "@cf/meta/llama-3.2-11b-vision-instruct", messages: thread, images: [{ b64: PIXEL, mime: "image/png" }] }, [
+    { response: "Strawberry." },
+    { response: "", usage: { neurons: 2 } },
+    "[DONE]",
+  ]);
+  assert.equal(llama.seen.input.messages.length, 4, "system plus the thread");
+  assert.ok(Array.isArray(llama.seen.input.image) && llama.seen.input.image.length > 0, "image as bytes beside the messages");
+  assert.equal(typeof llama.seen.input.messages[3].content, "string");
+  assert.deepEqual(llama.body, { reply: "Strawberry.", neurons: 2, sawImages: 1 });
+
+  // Moondream: the conversation as a transcript through its query mode.
+  const moon = await chatWith({ model: "@cf/moondream/moondream3.1-9B-A2B", messages: thread, images: [{ b64: PIXEL, mime: "image/png" }] }, [], {}, { answer: "Apple.", usage: { neurons: 3 } });
+  assert.equal(moon.seen.input.task, "query");
+  assert.match(moon.seen.input.question, /User: what colour\?\n\nAssistant: Red\.\n\nUser: a fruit that colour\?\n\nAssistant:$/);
+  assert.equal(moon.seen.input.image, "data:image/png;base64," + PIXEL);
+  assert.equal(moon.seen.input.stream, false);
+  assert.equal(moon.body.reply, "Apple.");
+
+  // LLaVA: the same transcript, and an image it cannot do without.
+  const llava = await chatWith({ model: "@cf/llava-hf/llava-1.5-7b-hf", messages: thread, images: [{ b64: PIXEL }, { b64: PIXEL }] }, [], {}, { description: "Cherry." });
+  assert.match(llava.seen.input.prompt, /Assistant:$/);
+  assert.ok(Array.isArray(llava.seen.input.image));
+  assert.equal(llava.body.sawImages, 1, "a one-image model is handed one");
+  const noImage = await chatWith({ model: "@cf/llava-hf/llava-1.5-7b-hf", messages: thread });
+  assert.equal(noImage.status, 400);
+  assert.match(noImage.body.error, /needs an image/);
+});
+
+test("Improve runs Moondream through its query mode, on text alone", async () => {
+  let seen = null;
+  const aiEnv = { ...env, AI: fakeAI([], { result: { answer: "An old lighthouse." } }, (s) => (seen = s)) };
+  const res = await postTool("/api/improve-prompt", { prompt: "a old lighthouse", model: "@cf/moondream/moondream3.1-9B-A2B" }, aiEnv);
+  assert.equal(seen.input.task, "query");
+  assert.match(seen.input.question, /Text:\na old lighthouse$/);
+  assert.equal(seen.input.image, undefined);
+  assert.equal(outcome(await readEvents(res)).data.prompt, "An old lighthouse.");
+  // LLaVA needs an image on every call, so Improve does not offer it.
+  let fell = null;
+  const env2 = { ...env, AI: fakeAI([{ response: "x" }, "[DONE]"], null, (s) => (fell = s)) };
+  await (await postTool("/api/improve-prompt", { prompt: "a cat", model: "@cf/llava-hf/llava-1.5-7b-hf" }, env2)).text();
+  assert.notEqual(fell.model, "@cf/llava-hf/llava-1.5-7b-hf");
 });
 
 test("chat refuses a malformed thread", async () => {

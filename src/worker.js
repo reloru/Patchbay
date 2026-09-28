@@ -339,18 +339,24 @@ async function handleImprovePrompt(request, env) {
   // generation changes nothing about copy-editing the sentence.
   const system = mine.system || IMPROVE_SYSTEM;
 
-  const input = {
-    messages: spec.noSystem
-      ? [{ role: "user", content: `${system}\n\nText:\n${prompt}` }]
-      : [
-          { role: "system", content: system },
-          { role: "user", content: prompt },
-        ],
-    // 120 words runs ~170-200 tokens; 320 leaves headroom so the raised
-    // word cap doesn't just get truncated at the token level instead.
-    max_tokens: mine.maxTokens || spec.maxTokens || (spec.reasoning ? 1500 : 320),
-    ...withUserKnobs(reasoningKnobs(spec), mine),
-  };
+  // 120 words runs ~170-200 tokens; 320 leaves headroom so the raised word cap
+  // doesn't just get truncated at the token level instead.
+  const maxTokens = mine.maxTokens || spec.maxTokens || (spec.reasoning ? 1500 : 320);
+  const input =
+    spec.format === "question"
+      ? // Moondream takes one question and no system role, so the instruction
+        // and the text go to its query mode together, with no image.
+        { task: "query", question: `${system}\n\nText:\n${prompt}`, reasoning: false, stream: false, max_tokens: maxTokens }
+      : {
+          messages: spec.noSystem
+            ? [{ role: "user", content: `${system}\n\nText:\n${prompt}` }]
+            : [
+                { role: "system", content: system },
+                { role: "user", content: prompt },
+              ],
+          max_tokens: maxTokens,
+          ...withUserKnobs(reasoningKnobs(spec), mine),
+        };
   return toolStream(env, async (send) => {
     const out = await runModel(env, improveModel, input, spec, send, "Improve failed");
     const text = stripPreamble(stripReasoning(out.text)).replace(/^["'\s]+|["'\s]+$/g, "");
@@ -892,21 +898,42 @@ async function handleChat(request, env) {
   if (!images.length && typeof body.image_b64 === "string" && body.image_b64) {
     images.push({ b64: body.image_b64, mime: body.mime });
   }
-  let knobs = spec;
-  const seen = spec.vision ? images.length : 0;
-  if (seen) {
-    knobs = DESCRIBE_MODELS.find((m) => m.id === model) || spec;
-    last.content = [
-      { type: "text", text: last.content },
-      ...images.map((im) => ({ type: "image_url", image_url: { url: `data:${im.mime || "image/jpeg"};base64,${im.b64}` } })),
-    ];
+  // A one-image model gets the first; the browser combines several ticked
+  // images into one picture for those before sending.
+  const seen = spec.vision ? Math.min(images.length, spec.maxImages || images.length) : 0;
+  if (spec.needsImage && !seen) {
+    return json({ error: `${spec.label} needs an image with every message — tick one.` }, 400);
   }
+  const knobs = seen ? DESCRIBE_MODELS.find((m) => m.id === model) || spec : spec;
+  const maxTokens = mine.maxTokens || knobs.maxTokens || (spec.reasoning ? 2000 : 1024);
+  const lastText = last.content;
+  // Moondream and LLaVA answer a single question with no thread, so the
+  // conversation goes to them as a transcript ending on the turn to answer.
+  const transcript = () =>
+    `${system}\n\n` +
+    thread.map((m, i) => `${m.role === "user" ? "User" : "Assistant"}: ${i === thread.length - 1 ? lastText : m.content}`).join("\n\n") +
+    "\n\nAssistant:";
 
-  const input = {
-    messages,
-    max_tokens: mine.maxTokens || knobs.maxTokens || (spec.reasoning ? 2000 : 1024),
-    ...withUserKnobs(reasoningKnobs(knobs), mine),
-  };
+  let input;
+  if (spec.format === "question") {
+    input = { task: "query", question: transcript(), reasoning: false, stream: false, max_tokens: maxTokens };
+    if (seen) input.image = `data:${images[0].mime || "image/jpeg"};base64,${images[0].b64}`;
+  } else if (spec.format === "prompt") {
+    input = { image: base64ToBytes(images[0].b64), prompt: transcript(), max_tokens: maxTokens };
+  } else if (spec.format === "messages+image") {
+    // Llama 3.2 Vision: a thread, and the image beside it rather than inside
+    // a message (its schema's `messages` form).
+    input = { messages, max_tokens: maxTokens };
+    if (seen) input.image = base64ToBytes(images[0].b64);
+  } else {
+    if (seen) {
+      last.content = [
+        { type: "text", text: lastText },
+        ...images.map((im) => ({ type: "image_url", image_url: { url: `data:${im.mime || "image/jpeg"};base64,${im.b64}` } })),
+      ];
+    }
+    input = { messages, max_tokens: maxTokens, ...withUserKnobs(reasoningKnobs(knobs), mine) };
+  }
   return toolStream(env, async (send) => {
     // Only what is new goes out. The visible text can shrink — a "<think>" tag
     // arriving in pieces reads as text until it closes — and then the whole of
