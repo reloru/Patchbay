@@ -12,8 +12,8 @@ Cloudflare Workers — no server to maintain, no build step, no framework.
 | [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 13 | none |
 | [xAI (Grok)](https://docs.x.ai/) | 5 | `XAI_API_KEY` |
 
-A further 42 models run behind the prompt tools rather than appearing in the
-picker: 32 Workers AI models rewrite prompts, 33 hold the chat, 9 vision models
+A further 43 models run behind the prompt tools rather than appearing in the
+picker: 33 Workers AI models rewrite prompts, 34 hold the chat, 9 vision models
 caption images — all nine of which can also be shown the attached images in the
 chat, and eight of which can rewrite for Improve — 7 embedding models measure
 text in the Embeddings panel, and Pruna's `p-judger` scores an image against a
@@ -51,7 +51,7 @@ with the required inputs, marked optional, where they cannot be missed.
 generate, edit, extend. Picking a mode changes which fields apply, and fields
 belonging to another mode are never sent.
 
-**Prompt rewriting.** Improve runs the prompt through one of 32 Workers AI
+**Prompt rewriting.** Improve runs the prompt through one of 33 Workers AI
 models as a copy edit: grammar, phrasing and punctuation only. It adds nothing,
 drops nothing, keeps your pronouns and your grammatical mood, and avoids commas,
 which image models read as tag separators rather than punctuation. It reads the
@@ -82,7 +82,7 @@ part. The thread notes which images each message carried. The reply streams in
 as it is written; while it does, Send is Cancel, and a cancelled or failed
 message goes back into the box with its images ticked again. Any reply can be
 put in the prompt box as one Undo step, and each shows the neurons it actually
-used, as reported by Cloudflare. It talks to Improve's 32 models plus LLaVA —
+used, as reported by Cloudflare. It talks to Improve's 33 models plus LLaVA —
 every vision model the app has, each marked 👁. Three of them take the
 conversation differently, per their schemas: Llama 3.2 Vision holds a real
 thread but takes one image beside it; Moondream (through its `query` mode) and
@@ -101,7 +101,17 @@ run instruction-following models and take an instruction, shared by all of
 that tool's models, and per-model limits: a token limit with the most a reply
 can cost at it, plus Thinking and Reasoning effort where the model's schema
 takes them — DeepSeek V4, Gemma 4, GLM 4.7 Flash and 5.x, Kimi and Qwen 3.8
-take both, Nemotron takes thinking only, the rest take neither. The other
+take both, Nemotron takes thinking only, the rest take neither — and each
+sampling parameter its schema takes, within the range the schema documents:
+`temperature`, `top_p`, `top_k`, `seed`, `repetition_penalty`,
+`frequency_penalty`, `presence_penalty`. The Llama, Gemma LoRA, GPT-OSS,
+Granite, Qwen3 30B, DeepSeek R1 and SEA-LION models take all seven; DeepSeek
+V4, GLM, Kimi, Nemotron, Gemma 4 and Qwen 3.8 take five (no `top_k` or
+`repetition_penalty`); Moondream takes `temperature` and `top_p`. Which
+parameters, their ranges and their defaults come from Cloudflare's
+models/schema API; Llama 3.1 8B Fast v2 has no schema there and takes the
+token limit only. A value outside a range is marked and not sent, and the
+Worker drops anything a model's schema does not list. The other
 tools' rows name the input their model has instead of an instruction:
 m2m100 takes text and two language codes; p-judger a prompt and images, and
 refuses any other key; Llama Guard, DistilBERT, ResNet-50 and the reranker
@@ -127,6 +137,11 @@ seconds with no word at all, which only a lost connection explains. A long
 answer that keeps arriving is never cut off. Translate, speech to text,
 Embeddings, Other and Judge are one-shot calls with a 60-second deadline. Each
 failure says so in words, and says the call may still have been billed.
+
+**Llama 2 7B Chat LoRA** is in Improve and the chat on request, marked ⚠: on
+2026-09-28 every test call returned unrelated tokens instead of an answer —
+through `messages`, a plain `prompt`, and a `raw` prompt in its own `[INST]`
+template — and billed 0 neurons. Its note says so where it is picked.
 
 **Translate.** Under *⋯ More*, two language pickers and 🌐 Translate rewrite
 the prompt box into another language with Meta's m2m100 (English, Spanish, French, German,
@@ -576,7 +591,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 40 Worker tests, then 297 assertions per
+are needed and nothing is billed. 41 Worker tests, then 306 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a
