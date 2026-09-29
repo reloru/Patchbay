@@ -346,7 +346,7 @@ async function handleImprovePrompt(request, env) {
     spec.format === "question"
       ? // Moondream takes one question and no system role, so the instruction
         // and the text go to its query mode together, with no image.
-        { task: "query", question: `${system}\n\nText:\n${prompt}`, reasoning: false, stream: false, max_tokens: maxTokens }
+        { task: "query", question: `${system}\n\nText:\n${prompt}`, reasoning: false, stream: false, max_tokens: maxTokens, ...(mine.sampling || {}) }
       : {
           messages: spec.noSystem
             ? [{ role: "user", content: `${system}\n\nText:\n${prompt}` }]
@@ -610,11 +610,21 @@ function userSettings(raw, spec) {
   if (Number.isFinite(n) && n >= 16) out.maxTokens = Math.min(n, USER_MAX_TOKENS);
   if (spec.canThink && typeof raw.thinking === "boolean") out.thinking = raw.thinking;
   if (Array.isArray(spec.efforts) && spec.efforts.includes(raw.effort)) out.effort = raw.effort;
+  // Sampling: only what this model's schema takes (spec.sampling, from
+  // Cloudflare's models/schema API), and only inside the range it documents.
+  // Anything else is dropped rather than forwarded to be refused.
+  for (const [name, [min, max]] of Object.entries(spec.sampling || {})) {
+    const v = raw[name];
+    if (v === undefined || v === null || v === "") continue;
+    const n = Number(v);
+    if (!Number.isFinite(n) || (min != null && n < min) || (max != null && n > max)) continue;
+    (out.sampling = out.sampling || {})[name] = name === "top_k" || name === "seed" ? Math.round(n) : n;
+  }
   return out;
 }
 
 function withUserKnobs(knobs, mine) {
-  const k = { ...knobs };
+  const k = { ...knobs, ...(mine.sampling || {}) };
   if (mine.thinking !== undefined) k.chat_template_kwargs = { enable_thinking: mine.thinking };
   if (mine.effort) k.reasoning_effort = mine.effort;
   return k;
@@ -916,14 +926,17 @@ async function handleChat(request, env) {
 
   let input;
   if (spec.format === "question") {
-    input = { task: "query", question: transcript(), reasoning: false, stream: false, max_tokens: maxTokens };
+    input = { task: "query", question: transcript(), reasoning: false, stream: false, max_tokens: maxTokens, ...(mine.sampling || {}) };
     if (seen) input.image = `data:${images[0].mime || "image/jpeg"};base64,${images[0].b64}`;
   } else if (spec.format === "prompt") {
-    input = { image: base64ToBytes(images[0].b64), prompt: transcript(), max_tokens: maxTokens };
+    // LLaVA: its schema has `prompt` and no `messages`, and the image is always
+    // here — needsImage refused the request above if not.
+    input = { prompt: transcript(), max_tokens: maxTokens, ...(mine.sampling || {}) };
+    if (seen) input.image = base64ToBytes(images[0].b64);
   } else if (spec.format === "messages+image") {
     // Llama 3.2 Vision: a thread, and the image beside it rather than inside
     // a message (its schema's `messages` form).
-    input = { messages, max_tokens: maxTokens };
+    input = { messages, max_tokens: maxTokens, ...(mine.sampling || {}) };
     if (seen) input.image = base64ToBytes(images[0].b64);
   } else {
     if (seen) {
@@ -1115,17 +1128,18 @@ async function handleDescribe(request, env) {
     // stays a caption, which is what was measured for the note in the picker.
     // https://developers.cloudflare.com/workers-ai/models/moondream3.1-9B-A2B/
     input = mine.system
-      ? { task: "query", question: asking, reasoning: false, image, stream: false, max_tokens: mine.maxTokens || 512 }
+      ? { task: "query", question: asking, reasoning: false, image, stream: false, max_tokens: mine.maxTokens || 512, ...(mine.sampling || {}) }
       : {
           task: "caption",
           image,
           caption_length: body.caption_length || "normal",
           stream: false,
           max_tokens: mine.maxTokens || 512,
+          ...(mine.sampling || {}),
         };
   } else {
     // llava and llama-3.2-11b-vision both want raw bytes as 8-bit ints.
-    input = { image: base64ToBytes(b64), prompt: asking, max_tokens: mine.maxTokens || 512 };
+    input = { image: base64ToBytes(b64), prompt: asking, max_tokens: mine.maxTokens || 512, ...(mine.sampling || {}) };
   }
 
   return toolStream(env, async (send) => {

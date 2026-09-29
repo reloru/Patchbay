@@ -4142,6 +4142,19 @@ function saveToolSettings() {
   refreshGears();
 }
 
+// The sampling parameters, in the order the settings show them, with what
+// each does. Which ones a model takes, and their ranges, come from its schema
+// (`sampling` on each model in models.js).
+const SAMPLING_HELP = {
+  temperature: "Controls the randomness of the output; higher values produce more random results.",
+  top_p: "How many possible words it considers. Lower is more predictable; higher allows more varied and creative responses.",
+  top_k: "Chooses from the top k most probable words. Lower is more focused; higher adds variety and surprises.",
+  seed: "Random seed, for reproducible generations.",
+  repetition_penalty: "Penalty for repeated tokens; higher values discourage repetition.",
+  frequency_penalty: "Decreases the likelihood of repeating the same lines verbatim.",
+  presence_penalty: "Increases the likelihood of introducing new topics.",
+};
+
 // What goes out with a request: only what differs from the defaults. A draft
 // is never sent — only what was saved.
 function toolSettingsFor(tool, modelId) {
@@ -4152,6 +4165,7 @@ function toolSettingsFor(tool, modelId) {
   if (m.maxTokens) out.maxTokens = m.maxTokens;
   if (typeof m.thinking === "boolean") out.thinking = m.thinking;
   if (m.effort) out.effort = m.effort;
+  for (const name of Object.keys(SAMPLING_HELP)) if (typeof m[name] === "number") out[name] = m[name];
   return out;
 }
 
@@ -4545,6 +4559,52 @@ function limitsEditor(tool, m, mine) {
     const p = document.createElement("p");
     p.className = "hint";
     p.textContent = "This model takes no thinking or effort setting.";
+    wrap.appendChild(p);
+  }
+
+  // Every sampling parameter this model's schema takes, within the range it
+  // documents; blank means the model's own default. One the schema does not
+  // list is not offered at all.
+  const sampling = Object.entries(m.sampling || {});
+  if (sampling.length) {
+    const grid = document.createElement("div");
+    grid.className = "sampling";
+    for (const [name, [min, max, dflt]] of sampling) {
+      const lab = document.createElement("label");
+      lab.className = "sampling-field";
+      const title = document.createElement("span");
+      title.className = "sampling-name";
+      title.textContent = name;
+      lab.appendChild(title);
+      const input = document.createElement("input");
+      input.type = "number";
+      input.className = `settings-${name.replace(/_/g, "-")}`;
+      input.step = name === "top_k" || name === "seed" ? "1" : "0.01";
+      if (min != null) input.min = String(min);
+      if (max != null) input.max = String(max);
+      input.placeholder = dflt != null ? `default ${dflt}` : "model default";
+      input.value = typeof mine[name] === "number" ? String(mine[name]) : "";
+      const help = document.createElement("span");
+      help.className = "hint";
+      const range = min != null && max != null ? ` Range ${min}–${max}.` : "";
+      help.textContent = SAMPLING_HELP[name] + range;
+      input.addEventListener("input", () => {
+        const v = input.value.trim() === "" ? NaN : Number(input.value);
+        const inRange = Number.isFinite(v) && (min == null || v >= min) && (max == null || v <= max);
+        input.classList.toggle("invalid", input.value.trim() !== "" && !inRange);
+        if (inRange) mine[name] = name === "top_k" || name === "seed" ? Math.round(v) : v;
+        else delete mine[name];
+        store();
+      });
+      lab.appendChild(input);
+      lab.appendChild(help);
+      grid.appendChild(lab);
+    }
+    wrap.appendChild(grid);
+  } else {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = "Cloudflare publishes no input schema for this model, so only the token limit is offered.";
     wrap.appendChild(p);
   }
   // Scoped to the model in its own label, so it cannot be mistaken for

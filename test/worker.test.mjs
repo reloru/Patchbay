@@ -434,6 +434,28 @@ test("the three single-question vision models hold the chat too", async () => {
   assert.match(noImage.body.error, /needs an image/);
 });
 
+test("sampling settings reach the model only where its schema takes them, within its range", async () => {
+  const sampling = { temperature: 0.3, top_p: 0.9, top_k: 20.4, seed: 7, repetition_penalty: 1.1, frequency_penalty: 0.5, presence_penalty: 0.2 };
+  const llama = await chatWith({ model: "@cf/meta/llama-3.2-3b-instruct", messages: [{ role: "user", content: "hi" }], settings: sampling });
+  assert.equal(llama.seen.input.temperature, 0.3);
+  assert.equal(llama.seen.input.top_k, 20, "top_k is a whole number");
+  assert.equal(llama.seen.input.seed, 7);
+  assert.equal(llama.seen.input.presence_penalty, 0.2);
+  // GLM 5.3's schema has no top_k or repetition_penalty; they are not sent.
+  const glm = await chatWith({ model: "@cf/zai-org/glm-5.3", messages: [{ role: "user", content: "hi" }], settings: sampling });
+  assert.equal(glm.seen.input.temperature, 0.3);
+  assert.equal(glm.seen.input.top_k, undefined);
+  assert.equal(glm.seen.input.repetition_penalty, undefined);
+  // Outside the documented range (temperature 0–5) is dropped, not clamped.
+  const hot = await chatWith({ model: "@cf/meta/llama-3.2-3b-instruct", messages: [{ role: "user", content: "hi" }], settings: { temperature: 9, top_p: "x" } });
+  assert.equal(hot.seen.input.temperature, undefined);
+  assert.equal(hot.seen.input.top_p, undefined);
+  // Moondream's query form takes temperature and top_p only.
+  const moon = await chatWith({ model: "@cf/moondream/moondream3.1-9B-A2B", messages: [{ role: "user", content: "hi" }], settings: sampling }, [], {}, { answer: "ok" });
+  assert.equal(moon.seen.input.temperature, 0.3);
+  assert.equal(moon.seen.input.top_k, undefined);
+});
+
 test("Improve runs Moondream through its query mode, on text alone", async () => {
   let seen = null;
   const aiEnv = { ...env, AI: fakeAI([], { result: { answer: "An old lighthouse." } }, (s) => (seen = s)) };

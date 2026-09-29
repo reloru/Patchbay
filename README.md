@@ -101,7 +101,17 @@ run instruction-following models and take an instruction, shared by all of
 that tool's models, and per-model limits: a token limit with the most a reply
 can cost at it, plus Thinking and Reasoning effort where the model's schema
 takes them — DeepSeek V4, Gemma 4, GLM 4.7 Flash and 5.x, Kimi and Qwen 3.8
-take both, Nemotron takes thinking only, the rest take neither. The other
+take both, Nemotron takes thinking only, the rest take neither — and each
+sampling parameter its schema takes, within the range the schema documents:
+`temperature`, `top_p`, `top_k`, `seed`, `repetition_penalty`,
+`frequency_penalty`, `presence_penalty`. The Llama, Gemma LoRA, GPT-OSS,
+Granite, Qwen3 30B, DeepSeek R1 and SEA-LION models take all seven; DeepSeek
+V4, GLM, Kimi, Nemotron, Gemma 4 and Qwen 3.8 take five (no `top_k` or
+`repetition_penalty`); Moondream takes `temperature` and `top_p`. Which
+parameters, their ranges and their defaults come from Cloudflare's
+models/schema API; Llama 3.1 8B Fast v2 has no schema there and takes the
+token limit only. A value outside a range is marked and not sent, and the
+Worker drops anything a model's schema does not list. The other
 tools' rows name the input their model has instead of an instruction:
 m2m100 takes text and two language codes; p-judger a prompt and images, and
 refuses any other key; Llama Guard, DistilBERT, ResNet-50 and the reranker
@@ -127,6 +137,14 @@ seconds with no word at all, which only a lost connection explains. A long
 answer that keeps arriving is never cut off. Translate, speech to text,
 Embeddings, Other and Judge are one-shot calls with a 60-second deadline. Each
 failure says so in words, and says the call may still have been billed.
+
+**Llama 2 7B Chat LoRA is not offered.** It produces no language: on
+2026-09-28 every call returned unrelated tokens — through `messages`
+(Cloudflare's own usage example verbatim), a plain `prompt`, and a `raw`
+prompt in its full `<s>[INST] <<SYS>>` template, streamed or not — and with
+`temperature` 0 and `top_k` 1 an empty string after spending every token. It
+does the same in Cloudflare's playground. `src/models.js` keeps the entry it
+would take if that is fixed.
 
 **Translate.** Under *⋯ More*, two language pickers and 🌐 Translate rewrite
 the prompt box into another language with Meta's m2m100 (English, Spanish, French, German,
@@ -576,7 +594,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 40 Worker tests, then 297 assertions per
+are needed and nothing is billed. 41 Worker tests, then 304 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a
