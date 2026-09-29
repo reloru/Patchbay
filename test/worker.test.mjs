@@ -456,22 +456,6 @@ test("sampling settings reach the model only where its schema takes them, within
   assert.equal(moon.seen.input.top_k, undefined);
 });
 
-test("Llama 2 7B Chat is sent a prompt, the only input its schema documents", async () => {
-  const chat = await chatWith({
-    model: "@cf/meta-llama/llama-2-7b-chat-hf-lora",
-    messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }, { role: "user", content: "shorter" }],
-  }, [{ response: "ok" }, "[DONE]"]);
-  assert.equal(chat.seen.input.messages, undefined);
-  assert.match(chat.seen.input.prompt, /User: hi\n\nAssistant: hello\n\nUser: shorter\n\nAssistant:$/);
-  assert.equal(chat.seen.input.image, undefined);
-  assert.equal(chat.seen.input.stream, true);
-  let seen = null;
-  const aiEnv = { ...env, AI: fakeAI([{ response: "An old lighthouse." }, "[DONE]"], null, (s) => (seen = s)) };
-  await (await postTool("/api/improve-prompt", { prompt: "a old lighthouse", model: "@cf/meta-llama/llama-2-7b-chat-hf-lora" }, aiEnv)).text();
-  assert.equal(seen.input.messages, undefined);
-  assert.match(seen.input.prompt, /Text:\na old lighthouse$/);
-});
-
 test("Improve runs Moondream through its query mode, on text alone", async () => {
   let seen = null;
   const aiEnv = { ...env, AI: fakeAI([], { result: { answer: "An old lighthouse." } }, (s) => (seen = s)) };

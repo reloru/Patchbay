@@ -1905,10 +1905,10 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("a model with no published schema says so", (await page.locator("#tool-settings").textContent()).includes("no input schema"));
   await page.locator("#sheet-tools .sheet-close").click();
   const llama2 = "@cf/meta-llama/llama-2-7b-chat-hf-lora";
-  check("Llama 2 7B Chat LoRA is in Improve", (await page.locator(`#improve-model option[value="${llama2}"]`).count()) === 1);
-  check("and in the chat", (await page.locator(`#chat-model option[value="${llama2}"]`).count()) === 1);
-  await page.selectOption("#improve-model", llama2);
-  check("with its test result in plain view", (await page.locator("#improve-note").textContent()).includes("unrelated tokens"));
+  check(
+    "Llama 2 7B Chat LoRA, which produces no language, is not offered",
+    (await page.locator(`#improve-model option[value="${llama2}"], #chat-model option[value="${llama2}"]`).count()) === 0
+  );
   await page.close();
   await context.close();
 }

@@ -3555,8 +3555,6 @@ function fillGroupedSelect(sel, list, optionLabel) {
 
 function improveNoteFor(m) {
   if (!m) return "";
-  // A known failure first: it is what decides whether to use the model at all.
-  if (m.warning) return `⚠ ${m.warning}`;
   // The cost is the one thing here the picker does not already say.
   return `✨ ~${m.neurons} neurons per rewrite`;
 }
@@ -4346,7 +4344,6 @@ function renderInstructableTool(box, tool) {
   }
   if (tool === "chat" && m.maxImages === 1) where += " It takes one image per message: several ticked images go combined into one numbered picture.";
   if (tool === "chat" && m.needsImage) where += " It needs an image with every message.";
-  if (m.warning) where += ` ⚠ ${m.warning}`;
   if (tool === "improve" && m.format === "question") {
     where += " Moondream answers one question, so the instruction and your text go to its query mode together.";
   }

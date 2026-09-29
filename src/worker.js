@@ -347,10 +347,6 @@ async function handleImprovePrompt(request, env) {
       ? // Moondream takes one question and no system role, so the instruction
         // and the text go to its query mode together, with no image.
         { task: "query", question: `${system}\n\nText:\n${prompt}`, reasoning: false, stream: false, max_tokens: maxTokens, ...(mine.sampling || {}) }
-      : spec.format === "prompt"
-      ? // A schema with `prompt` and no `messages`: the instruction and the text
-        // as one prompt, which Cloudflare wraps in the model's chat template.
-        { prompt: `${system}\n\nText:\n${prompt}`, max_tokens: maxTokens, ...(mine.sampling || {}) }
       : {
           messages: spec.noSystem
             ? [{ role: "user", content: `${system}\n\nText:\n${prompt}` }]
@@ -933,8 +929,8 @@ async function handleChat(request, env) {
     input = { task: "query", question: transcript(), reasoning: false, stream: false, max_tokens: maxTokens, ...(mine.sampling || {}) };
     if (seen) input.image = `data:${images[0].mime || "image/jpeg"};base64,${images[0].b64}`;
   } else if (spec.format === "prompt") {
-    // A schema with `prompt` and no `messages` (LLaVA, Llama 2 7B Chat). LLaVA
-    // always has an image here: needsImage refused the request above if not.
+    // LLaVA: its schema has `prompt` and no `messages`, and the image is always
+    // here — needsImage refused the request above if not.
     input = { prompt: transcript(), max_tokens: maxTokens, ...(mine.sampling || {}) };
     if (seen) input.image = base64ToBytes(images[0].b64);
   } else if (spec.format === "messages+image") {
