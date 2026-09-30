@@ -15,6 +15,12 @@
 
 * { box-sizing: border-box; }
 
+/* Taps register at once instead of waiting to see whether a second tap is
+   coming, and a double tap no longer zooms. Pinch zoom is unaffected. Set on
+   every element because the effective value is the intersection along the
+   ancestor chain up to the nearest scroll container. */
+* { touch-action: manipulation; }
+
 body {
   margin: 0;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
