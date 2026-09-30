@@ -457,6 +457,14 @@ button.secondary:hover { border-color: var(--accent); }
 .result-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .result-actions button { flex: 1 1 auto; }
 .result-audio { width: 100%; }
+/* Per-run timing: collapsed to one muted line until tapped. */
+.timing { margin-top: 14px; color: var(--muted); font-size: 12px; }
+.timing summary { cursor: pointer; overflow-wrap: anywhere; }
+.timing ul { margin: 8px 0 0; padding-left: 18px; }
+.timing li { margin: 2px 0; overflow-wrap: anywhere; }
+.timing-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.timing-actions button { flex: 1 1 auto; font-size: 13px; }
+.timing-copy { width: 100%; min-height: 80px; margin-top: 8px; font-size: 12px; }
 .judge-btn { width: 100%; margin-top: 10px; }
 
 .file-result {

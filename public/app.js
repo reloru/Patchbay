@@ -54,17 +54,36 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 //     paying for a second generation.
 const RETRY_DELAYS = [400, 1200];
 
+// `timeoutMs` bounds each attempt. A request that neither answers nor fails —
+// a connection the phone kept after it went dead, a handover mid-request —
+// otherwise holds whatever awaits it until the OS gives up, and a status poll
+// stuck that way stalls the whole run while the counter keeps climbing. An
+// attempt that runs out of time is retried exactly like one that threw.
+//
+// `read(res)` runs inside the same deadline, so a body that stops arriving is
+// caught too, not only a slow first byte. `onAttempt` hears how each attempt
+// went, for the run's timing record.
 async function api(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
   if (authRequired && getPw()) headers["x-app-password"] = getPw();
-  // retry/onRetry are ours, not fetch's — keep them out of the request init.
-  const { retry, onRetry, ...rest } = opts;
-  const init = Object.assign({}, rest, { headers });
+  // These are ours, not fetch's — keep them out of the request init.
+  const { retry, onRetry, timeoutMs, read, onAttempt, ...rest } = opts;
   const method = (opts.method || "GET").toUpperCase();
   const canRetry = retry === true || (retry !== false && method === "GET");
 
   let lastErr;
+  let timedOut = false;
   for (let attempt = 0; ; attempt++) {
+    const t0 = Date.now();
+    const ctl = timeoutMs ? new AbortController() : null;
+    let expired = false;
+    const timer = ctl
+      ? setTimeout(() => {
+          expired = true;
+          ctl.abort();
+        }, timeoutMs)
+      : null;
+    const init = Object.assign({}, rest, { headers }, ctl ? { signal: ctl.signal } : {});
     try {
       const res = await fetch(path, init);
       if (res.status === 401) {
@@ -72,14 +91,28 @@ async function api(path, opts = {}) {
         showGate("Session expired — enter the password again.");
         throw new Error("Unauthorized");
       }
-      return res;
+      const value = read ? await read(res) : res;
+      if (onAttempt) onAttempt({ attempt: attempt + 1, ms: Date.now() - t0, outcome: "ok", res });
+      return value;
     } catch (err) {
       if (err && err.message === "Unauthorized") throw err; // ours, not the network's
       lastErr = err;
+      timedOut = expired;
+      if (onAttempt) onAttempt({ attempt: attempt + 1, ms: Date.now() - t0, outcome: expired ? "timeout" : "network" });
       if (!canRetry || attempt >= RETRY_DELAYS.length) break;
       if (onRetry) onRetry(attempt + 1, RETRY_DELAYS.length + 1);
       await sleep(RETRY_DELAYS[attempt]);
+    } finally {
+      clearTimeout(timer);
     }
+  }
+  if (timedOut) {
+    const tries = canRetry ? RETRY_DELAYS.length + 1 : 1;
+    throw new Error(
+      `No answer from the server within ${Math.round(timeoutMs / 1000)} s` +
+        (tries > 1 ? `, ${tries} attempts.` : ".") +
+        " Check your connection and try again."
+    );
   }
   throw new Error(networkErrorText(lastErr, canRetry));
 }
@@ -1671,23 +1704,38 @@ $("gen-form").addEventListener("submit", async (e) => {
   showStopButton(true);
   generationInFlight = true;
 
+  const timer = runTimer({ model: model.id, kind, startedAt: started });
+  let downloading = null;
   try {
-    const urls = await runGeneration(model.id, input, kind, (state, secs) => {
-      setStatus(`${cap(state)}… ${secs}s elapsed${slowHint(model)}`, "load");
-    });
+    const progress = (state, secs) => setStatus(`${cap(state)}… ${secs}s elapsed${slowHint(model)}`, "load");
+    const urls = await runGeneration(model.id, input, kind, progress, timer);
     if (!urls.length) throw new Error("No output URL returned.");
-    await showResult(urls, kind, meta);
-    const secs = Math.round((Date.now() - started) / 1000);
+    // The provider is finished but nothing is on screen yet. The count used to
+    // freeze here for the whole download, which read as a hang and left the
+    // download out of the time the run was said to take.
+    downloading = progressTicker(progress, started);
+    downloading.set("downloading");
+    let secs = null;
+    const shownAt = () => {
+      downloading.stop();
+      secs = Math.round((Date.now() - started) / 1000);
+    };
+    await showResult(urls, kind, meta, { timer, onDisplayed: shownAt });
+    if (secs === null) shownAt();
     // A run this tab watched start to finish, so it is a measurement of the
-    // model rather than of when someone happened to reopen the app.
+    // model rather than of when someone happened to reopen the app. It ends
+    // when the result is on screen; the gallery save after that is not the
+    // model's time.
     recordRuntime(model.id, secs);
     const cost = addSpend(model, input, urls.length);
     // Analytics lag inference slightly, so give it a moment before re-reading.
     setTimeout(refreshNeurons, 4000);
     setStatus(`Done in ${secs}s.${cost ? " " + cost : ""}`, "ok");
   } catch (err) {
+    timer.finish(err.message === STOPPED ? "stopped" : "error: " + err.message);
     setStatus(err.message === STOPPED ? stoppedMessage(kind) : "Error: " + err.message, err.message === STOPPED ? "ok" : "err");
   } finally {
+    if (downloading) downloading.stop();
     btn.disabled = false;
     showStopButton(false);
     stopWatching = false;
@@ -1788,7 +1836,236 @@ function progressTicker(onProgress, started) {
   };
 }
 
-async function runGeneration(model, input, kind, onProgress) {
+// ---------------------------------------------------------------------------
+// Per-run timing
+//
+// A run is several legs in a row — submit, the status polls, the download, the
+// picture decoding, the gallery save — and the status line only ever showed
+// their sum. Two runs of the same edit could differ by twenty seconds with no
+// way to tell from the phone which leg took them. This records each leg as an
+// offset from the moment Generate was pressed, keeps the last few runs in this
+// browser, and shows them under the result. Nothing leaves the device.
+//
+// `upstream` is the Worker's own time spent waiting on the provider for that
+// request (the x-upstream-ms header), so a slow leg can be split into the
+// phone-to-Worker part and the Worker-to-provider part.
+// ---------------------------------------------------------------------------
+const TIMING_KEY = "patchbay_timings";
+const TIMING_RUNS = 20;
+// A thirty-minute video job polls hundreds of times; the record keeps enough
+// to see a pattern without letting one run crowd the others out of storage.
+const TIMING_MAX_POLLS = 300;
+
+function upstreamMs(res) {
+  const v = res && res.headers ? Number(res.headers.get("x-upstream-ms")) : NaN;
+  return Number.isFinite(v) ? v : null;
+}
+
+function attemptLog(list) {
+  return (a) =>
+    list.push({ attempt: a.attempt, ms: Math.round(a.ms), outcome: a.outcome, upstream: a.res ? upstreamMs(a.res) : null });
+}
+
+function runTimer({ model, kind, label, startedAt }) {
+  const t0 = startedAt || Date.now();
+  const rec = {
+    at: new Date(t0).toISOString(),
+    model,
+    kind,
+    label: label || "run",
+    submit: null,
+    polls: [],
+    pollsDropped: 0,
+    states: {},
+    downloads: [],
+    visible: null,
+    saved: null,
+    hiddenMs: 0,
+    hiddenCount: 0,
+    outcome: null,
+  };
+  const at = () => Date.now() - t0;
+  let hiddenSince = document.hidden ? Date.now() : null;
+  const onVis = () => {
+    if (document.hidden) {
+      if (hiddenSince === null) {
+        hiddenSince = Date.now();
+        rec.hiddenCount++;
+      }
+    } else if (hiddenSince !== null) {
+      rec.hiddenMs += Date.now() - hiddenSince;
+      hiddenSince = null;
+    }
+  };
+  if (hiddenSince !== null) rec.hiddenCount++;
+  document.addEventListener("visibilitychange", onVis);
+  let done = false;
+  return {
+    rec,
+    at,
+    state(s) {
+      if (s && !(s in rec.states)) rec.states[s] = at();
+    },
+    poll(entry) {
+      if (rec.polls.length < TIMING_MAX_POLLS) rec.polls.push(entry);
+      else rec.pollsDropped++;
+    },
+    finish(outcome) {
+      if (done) return;
+      done = true;
+      document.removeEventListener("visibilitychange", onVis);
+      if (hiddenSince !== null) rec.hiddenMs += Date.now() - hiddenSince;
+      rec.outcome = outcome;
+      rec.total = at();
+      saveTiming(rec);
+    },
+  };
+}
+
+function loadTimings() {
+  try {
+    const v = JSON.parse(localStorage.getItem(TIMING_KEY));
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveTiming(rec) {
+  try {
+    const all = loadTimings();
+    all.push(rec);
+    localStorage.setItem(TIMING_KEY, JSON.stringify(all.slice(-TIMING_RUNS)));
+  } catch {
+    /* storage unavailable or full — the timing is a diagnostic, not a feature */
+  }
+}
+
+const fmtS = (ms) => (ms == null ? "–" : (ms / 1000).toFixed(ms < 10000 ? 2 : 1) + "s");
+
+function timingRows(rec) {
+  const rows = [];
+  const s = rec.submit;
+  if (s) {
+    rows.push(`Submit: ${fmtS(s.ms)}` + (s.upstream != null ? ` (Worker→provider ${fmtS(s.upstream)})` : ""));
+  }
+  const order = Object.entries(rec.states).sort((a, b) => a[1] - b[1]);
+  if (order.length) rows.push("Provider states first seen: " + order.map(([k, v]) => `${k} at ${fmtS(v)}`).join(" → "));
+  if (rec.polls.length) {
+    const slowest = rec.polls.reduce((m, p) => (p.ms > m.ms ? p : m), rec.polls[0]);
+    const timeouts = rec.polls.reduce((n, p) => n + p.attempts.filter((a) => a.outcome === "timeout").length, 0);
+    const failed = rec.polls.reduce((n, p) => n + p.attempts.filter((a) => a.outcome === "network").length, 0);
+    rows.push(
+      `Status checks: ${rec.polls.length + rec.pollsDropped}, slowest ${fmtS(slowest.ms)} at ${fmtS(slowest.sent)}` +
+        (slowest.upstream != null ? ` (Worker→provider ${fmtS(slowest.upstream)})` : "") +
+        (timeouts ? `, ${timeouts} timed out` : "") +
+        (failed ? `, ${failed} dropped` : "")
+    );
+  }
+  rec.downloads.forEach((d, i) => {
+    const tag = rec.downloads.length > 1 ? ` #${i + 1}` : "";
+    rows.push(
+      `Download${tag}: ${d.ok ? fmtS(d.ms) : "failed after " + fmtS(d.ms)}` +
+        (d.bytes != null ? `, ${Math.round(d.bytes / 1024)} KB` : "") +
+        (d.upstream != null ? ` (Worker→provider ${fmtS(d.upstream)})` : "") +
+        (d.attempts.length > 1 ? `, ${d.attempts.length} attempts` : "")
+    );
+  });
+  if (rec.visible != null) rows.push(`Visible at ${fmtS(rec.visible)}`);
+  if (rec.saved != null) rows.push(`Saved to Recent at ${fmtS(rec.saved)}`);
+  rows.push(rec.hiddenCount ? `App in background: ${fmtS(rec.hiddenMs)} (${rec.hiddenCount}×)` : "App in background: never");
+  return rows;
+}
+
+function timingSummary(rec) {
+  const parts = [];
+  if (rec.visible != null) parts.push(`visible ${fmtS(rec.visible)}`);
+  const done = rec.states.succeeded;
+  if (done != null && rec.submit) parts.push(`provider ${fmtS(done - rec.submit.returned)}`);
+  const dl = rec.downloads.reduce((n, d) => n + d.ms, 0);
+  if (rec.downloads.length) parts.push(`download ${fmtS(dl)}`);
+  if (rec.hiddenMs) parts.push(`background ${fmtS(rec.hiddenMs)}`);
+  return parts.join(" · ") || "no steps recorded";
+}
+
+async function copyText(text, btn, idle) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // Clipboard access can be refused outright; a selected field still lets a
+    // long-press copy it.
+    const row = btn.parentElement;
+    let ta = row.nextElementSibling;
+    if (!ta || !ta.classList.contains("timing-copy")) {
+      ta = document.createElement("textarea");
+      ta.readOnly = true;
+      ta.className = "timing-copy";
+      row.after(ta);
+    }
+    ta.value = text;
+    ta.select();
+    btn.textContent = "Select and copy";
+    return;
+  }
+  btn.textContent = "Copied";
+  setTimeout(() => (btn.textContent = idle), 1500);
+}
+
+function timingBlock(rec) {
+  const d = document.createElement("details");
+  d.className = "timing";
+  const sum = document.createElement("summary");
+  sum.textContent = "⏱ Timing · " + timingSummary(rec);
+  d.appendChild(sum);
+  const list = document.createElement("ul");
+  for (const r of timingRows(rec)) {
+    const li = document.createElement("li");
+    li.textContent = r;
+    list.appendChild(li);
+  }
+  d.appendChild(list);
+  const actions = document.createElement("div");
+  actions.className = "timing-actions";
+  const one = document.createElement("button");
+  one.type = "button";
+  one.className = "secondary";
+  one.textContent = "Copy this run";
+  one.addEventListener("click", () => copyText(JSON.stringify(rec), one, "Copy this run"));
+  const all = document.createElement("button");
+  all.type = "button";
+  all.className = "secondary";
+  all.textContent = `Copy last ${TIMING_RUNS}`;
+  all.addEventListener("click", () =>
+    copyText(loadTimings().map((r) => JSON.stringify(r)).join("\n"), all, `Copy last ${TIMING_RUNS}`)
+  );
+  actions.append(one, all);
+  d.appendChild(actions);
+  return d;
+}
+
+// Resolves once a picture is decoded and on screen, or has failed to — one
+// that will not decode must not hold the status line. Clips and audio count as
+// shown when they are placed: their bytes are already local, and iOS will not
+// load an audio element before a tap, or autoplay a clip in Low Power Mode, so
+// waiting on their events could stall for no reason.
+function whenShown(el) {
+  return new Promise((resolve) => {
+    const done = () => resolve();
+    if (el && el.tagName === "IMG") {
+      const p = typeof el.decode === "function" ? el.decode() : null;
+      if (p) p.then(done, done);
+      else if (el.complete) done();
+      else {
+        el.addEventListener("load", done, { once: true });
+        el.addEventListener("error", done, { once: true });
+      }
+      return;
+    }
+    done();
+  });
+}
+
+async function runGeneration(model, input, kind, onProgress, timer) {
   lastActualCostUsd = null;
   const spec = MODELS.find((m) => m.id === model);
   // One clock for the whole run — the submit leg and the polling share it, so
@@ -1802,12 +2079,17 @@ async function runGeneration(model, input, kind, onProgress) {
     // there is never anything to poll.
     if (ticker) ticker.set(isSynchronous(spec) ? "generating" : "submitting");
 
+    const sent = timer ? timer.at() : 0;
     const startRes = await api("/api/generate", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model, input }),
     });
     const data = await startRes.json();
+    if (timer) {
+      const returned = timer.at();
+      timer.rec.submit = { sent, returned, ms: returned - sent, http: startRes.status, upstream: upstreamMs(startRes) };
+    }
     if (!startRes.ok) throw new Error(providerErrorText(data, startRes.status));
 
     // Workers AI returns finished images inline as data URIs (no job to poll).
@@ -1830,7 +2112,7 @@ async function runGeneration(model, input, kind, onProgress) {
     if (ticker) ticker.set("processing");
     // The poll supplies the state word; the ticker keeps supplying the number,
     // including while a poll is in flight.
-    return await pollJob(id, kind, (state) => ticker && ticker.set(state), started);
+    return await pollJob(id, kind, (state) => ticker && ticker.set(state), started, timer);
   } finally {
     // Stopped on every path, or a failed run leaves a timer rewriting the
     // status line over the top of the message saying what went wrong.
@@ -1890,6 +2172,11 @@ const POLL_MS = 2500;
 // that gap; slower kinds keep the cadence above; a job's cost is what it costs
 // regardless of how often its status is checked.
 const IMAGE_POLL_MS = 900;
+// A status check answers in well under a second when the connection is sound,
+// so one still open after this long is stuck rather than slow: it is dropped
+// and asked again. Without this a single hung poll held the run for as long as
+// the OS kept the dead request open.
+const STATUS_TIMEOUT_MS = 8000;
 
 // Polls one provider job to a terminal state. Split out of runGeneration so a
 // reload can reattach to a job this tab never saw start.
@@ -1897,7 +2184,7 @@ const IMAGE_POLL_MS = 900;
 // continuously from Generate rather than restarting at zero once an id comes
 // back. A job picked up on reload passes nothing and counts from reattaching,
 // which is what its own wording says.
-async function pollJob(id, kind, onProgress, startedAt) {
+async function pollJob(id, kind, onProgress, startedAt, timer) {
   const started = startedAt || Date.now();
   // Heavy video jobs (VACE especially) can run well past 10 minutes. LoRA
   // training is documented as "minutes to hours", so it gets the longest
@@ -1909,14 +2196,33 @@ async function pollJob(id, kind, onProgress, startedAt) {
     // every caller already distinguishes a result from a throw — and this one
     // must not reach clearJob() below.
     if (stopWatching) throw new Error(STOPPED);
-    const sRes = await api("/api/status?id=" + encodeURIComponent(id), {
-      // Same (state, seconds) shape the caller already formats, so a dropped
-      // poll reads as "Reconnecting (1/3)… 12s elapsed" rather than stalling
-      // on the last status with no sign anything went wrong.
-      onRetry: (n, of) =>
-        onProgress && onProgress(`reconnecting (${n}/${of})`, Math.round((Date.now() - started) / 1000)),
-    });
-    const s = await sRes.json();
+    const attempts = [];
+    const sent = timer ? timer.at() : 0;
+    // The body is read inside the deadline too; parsing it is not, so a
+    // malformed reply still fails once rather than being retried.
+    let got;
+    try {
+      got = await api("/api/status?id=" + encodeURIComponent(id), {
+        timeoutMs: STATUS_TIMEOUT_MS,
+        read: async (res) => ({ res, text: await res.text() }),
+        onAttempt: attemptLog(attempts),
+        // Same (state, seconds) shape the caller already formats, so a dropped
+        // poll reads as "Reconnecting (1/3)… 12s elapsed" rather than stalling
+        // on the last status with no sign anything went wrong.
+        onRetry: (n, of) =>
+          onProgress && onProgress(`reconnecting (${n}/${of})`, Math.round((Date.now() - started) / 1000)),
+      });
+    } catch (err) {
+      if (timer) timer.poll({ sent, ms: timer.at() - sent, status: null, http: null, upstream: null, attempts, error: err.message });
+      throw err;
+    }
+    const { res: sRes, text } = got;
+    const s = JSON.parse(text);
+    if (timer) {
+      const back = timer.at();
+      timer.poll({ sent, ms: back - sent, status: s.status || null, http: sRes.status, upstream: upstreamMs(sRes), attempts });
+      timer.state(s.status);
+    }
     if (!sRes.ok) throw new Error(providerErrorText(s, sRes.status));
     if (s.status === "succeeded") {
       // xAI reports the job's real dollar cost — prefer that over any estimate.
@@ -2031,23 +2337,35 @@ async function resumeInFlightJob() {
   // original submit, which is what the wording says — the record's own
   // startedAt is not a measure of this tab's wait.
   const reattached = Date.now();
-  const ticker = progressTicker(
-    (state, secs) => setStatus(`${cap(state)}… ${secs}s since reattaching`, "load"),
-    reattached
-  );
+  const progress = (state, secs) => setStatus(`${cap(state)}… ${secs}s since reattaching`, "load");
+  const ticker = progressTicker(progress, reattached);
+  const timer = runTimer({ model: rec.model || "", kind: rec.kind, label: "reattached", startedAt: reattached });
   try {
     let urls;
     try {
-      urls = await pollJob(rec.id, rec.kind, (state) => ticker.set(state), reattached);
+      urls = await pollJob(rec.id, rec.kind, (state) => ticker.set(state), reattached, timer);
     } finally {
       // Stopped here rather than in the outer finally, which runs *after* the
       // closing message below — long enough for a tick to land on top of it.
       ticker.stop();
     }
     if (!urls.length) throw new Error("No output URL returned.");
+    // Same as a fresh run: the count keeps going through the download rather
+    // than freezing until the result lands.
+    const downloading = progressTicker(progress, reattached);
+    downloading.set("downloading");
     // The model comes from the job record; the prompt and the settings do not
     // exist to recover, since the record deliberately never held the input.
-    await showResult(urls, rec.kind, { modelId: rec.model || "", prompt: "", setup: null });
+    try {
+      await showResult(
+        urls,
+        rec.kind,
+        { modelId: rec.model || "", prompt: "", setup: null },
+        { timer, onDisplayed: () => downloading.stop() }
+      );
+    } finally {
+      downloading.stop();
+    }
     // No spend is added: the estimate needs the original input, which is not
     // stored, and this run was already paid for before the tab went away.
     // No runtime is recorded either — the elapsed time here is measured from
@@ -2056,6 +2374,7 @@ async function resumeInFlightJob() {
   } catch (e) {
     // The record is left in place unless pollJob cleared it on a terminal
     // outcome, so another reload can try again.
+    timer.finish(e.message === STOPPED ? "stopped" : "error: " + e.message);
     setStatus(e.message === STOPPED ? stoppedMessage(rec.kind) : "Could not finish the earlier job: " + e.message, e.message === STOPPED ? "ok" : "err");
   } finally {
     btn.disabled = false;
@@ -3173,20 +3492,31 @@ function releaseResultUrls() {
 // blip lost the bytes, which cost the archive (nothing is stored without them),
 // left the player streaming from a URL that dies mid-playback, and made Save
 // fail with the browser's bare "Load failed".
-async function fetchResultBlob(prunaUrl) {
-  const res = await api(resultUrl(prunaUrl));
+//
+// Each attempt has a deadline that covers the body as well as the first byte:
+// a transfer that stalls halfway is dropped and asked for again, like one that
+// fails, instead of holding the result off the screen indefinitely.
+const RESULT_TIMEOUT_MS = { video: 180000, other: 30000 };
+
+async function fetchResultBlob(prunaUrl, kind, onAttempt) {
+  const { res, blob } = await api(resultUrl(prunaUrl), {
+    timeoutMs: kind === "video" ? RESULT_TIMEOUT_MS.video : RESULT_TIMEOUT_MS.other,
+    read: async (r) => ({ res: r, blob: r.ok ? await r.blob() : null }),
+    onAttempt,
+  });
   if (!res.ok) throw new Error("HTTP " + res.status);
-  return await res.blob();
+  return blob;
 }
 
 // `meta` describes the run that produced these, not the form as it stands:
 // a job collected on reload belongs to whatever model the record names, and the
 // settings on screen then say nothing about it.
-async function showResult(prunaUrls, kind, meta) {
+//
+// `timer` records the download, display and save legs of the run; `onDisplayed`
+// fires once every result is on screen, which is where the run's elapsed time
+// stops. The gallery save after that is the app's own bookkeeping.
+async function showResult(prunaUrls, kind, meta, { timer, onDisplayed } = {}) {
   const box = $("result");
-  // Every URL below is built by resultUrl(), which needs a live token when the
-  // gate is on.
-  await refreshResultToken();
   releaseResultUrls();
   box.innerHTML = "";
   lastResult = { urls: prunaUrls.slice(), kind, blobs: [] };
@@ -3194,25 +3524,45 @@ async function showResult(prunaUrls, kind, meta) {
   const archived = [];
   const info = meta || { modelId: "", prompt: "", setup: null };
 
+  const shown = [];
+
   for (let i = 0; i < prunaUrls.length; i++) {
     const prunaUrl = prunaUrls[i];
-    const proxied = resultUrl(prunaUrl);
     // A trained LoRA .zip is not media; there is nothing to preview or reuse,
     // so it is never fetched here.
     let blob = null;
-    let src = proxied;
+    let src = null;
     if (kind !== "file") {
+      const attempts = [];
+      const began = timer ? timer.at() : 0;
       try {
-        blob = await fetchResultBlob(prunaUrl);
+        // No token is needed for this fetch: api() sends the password header,
+        // which the Worker accepts before it ever looks at a token. Waiting on
+        // /api/token here cost a round trip after every idle spell for nothing.
+        blob = await fetchResultBlob(prunaUrl, kind, attemptLog(attempts));
         src = URL.createObjectURL(blob);
         resultObjectUrls.push(src);
       } catch {
         // Holding the bytes buys saving without a second download, reuse as an
         // input, and a copy that outlives the provider's expiring delivery URL.
         // None of that is worth losing the picture over: fall back to streaming
-        // it through the proxy exactly as before.
+        // it through the proxy exactly as before. That URL is loaded by the
+        // element itself, which cannot send a header, so it is the one that
+        // needs a live token.
         blob = null;
-        src = proxied;
+        await refreshResultToken();
+        src = resultUrl(prunaUrl);
+      }
+      if (timer) {
+        const last = attempts[attempts.length - 1];
+        timer.rec.downloads.push({
+          start: began,
+          ms: timer.at() - began,
+          ok: !!blob,
+          bytes: blob ? blob.size : null,
+          upstream: last ? last.upstream : null,
+          attempts,
+        });
       }
     }
     lastResult.blobs.push(blob);
@@ -3252,6 +3602,7 @@ async function showResult(prunaUrls, kind, meta) {
       img.src = src;
       item.appendChild(img);
     }
+    shown.push(whenShown(item.firstChild));
     const actions = document.createElement("div");
     actions.className = "result-actions";
     actions.appendChild(downloadButton(prunaUrl, kind, i, prunaUrls.length, blob));
@@ -3261,6 +3612,10 @@ async function showResult(prunaUrls, kind, meta) {
     item.appendChild(actions);
     box.appendChild(item);
   }
+
+  await Promise.all(shown);
+  if (timer) timer.rec.visible = timer.at();
+  if (onDisplayed) onDisplayed();
 
   // On a phone the output sits below the whole form, so a finished result would
   // land out of sight of the Generate button that asked for it.
@@ -3273,6 +3628,11 @@ async function showResult(prunaUrls, kind, meta) {
   if (archived.length) {
     await Promise.all(archived);
     await renderRecent();
+    if (timer) timer.rec.saved = timer.at();
+  }
+  if (timer) {
+    timer.finish("ok");
+    box.appendChild(timingBlock(timer.rec));
   }
 }
 

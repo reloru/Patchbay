@@ -616,3 +616,63 @@ test("/api/generate rejects a model outside the catalogue", async () => {
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /Unknown model/);
 });
+
+// ── How long the Worker waited on the provider ─────────────────────────────
+// Each generation leg carries x-upstream-ms, so the browser can split a slow
+// step into the phone-to-Worker part and the Worker-to-provider part. The
+// provider is stood in for by a fetch that answers after a fixed pause.
+const withProvider = async (answer, fn) => {
+  const real = globalThis.fetch;
+  globalThis.fetch = async (...args) => {
+    await new Promise((r) => setTimeout(r, 60));
+    return answer(...args);
+  };
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = real;
+  }
+};
+
+test("/api/status reports the Worker's wait on the provider", async () => {
+  await withProvider(
+    () => new Response(JSON.stringify({ status: "processing" }), { headers: { "content-type": "application/json" } }),
+    async () => {
+      const res = await call("/api/status?id=abc123", { password: PASSWORD });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { status: "processing" });
+      assert.ok(Number(res.headers.get("x-upstream-ms")) >= 50, res.headers.get("x-upstream-ms"));
+    }
+  );
+});
+
+test("/api/generate reports the Worker's wait on the provider", async () => {
+  await withProvider(
+    () => new Response(JSON.stringify({ id: "job1" }), { status: 201, headers: { "content-type": "application/json" } }),
+    async () => {
+      const res = await call("/api/generate", {
+        password: PASSWORD,
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "p-image", input: { prompt: "x" } }),
+      });
+      assert.equal(res.status, 201);
+      assert.ok(Number(res.headers.get("x-upstream-ms")) >= 50, res.headers.get("x-upstream-ms"));
+    }
+  );
+});
+
+test("/api/result reports the Worker's wait on the provider and still streams the bytes", async () => {
+  await withProvider(
+    () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } }),
+    async () => {
+      const res = await call("/api/result?url=" + encodeURIComponent("https://api.pruna.ai/v1/predictions/delivery/x/out.png"), {
+        password: PASSWORD,
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("content-type"), "image/png");
+      assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [1, 2, 3]);
+      assert.ok(Number(res.headers.get("x-upstream-ms")) >= 50, res.headers.get("x-upstream-ms"));
+    }
+  );
+});

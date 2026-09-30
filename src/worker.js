@@ -38,6 +38,13 @@ const MODELS_BY_ID = new Map(MODELS.map((m) => [m.id, m]));
 
 const PRUNA_BASE = "https://api.pruna.ai/v1";
 
+// How long the Worker itself spent waiting on the provider for this request,
+// in ms. The browser records it next to its own timing for the same request,
+// which is what splits a slow step into the phone-to-Worker leg and the
+// Worker-to-provider leg. In production Workers timers only advance across
+// I/O, which is exactly what this measures: one subrequest.
+const UPSTREAM_HEADER = "x-upstream-ms";
+
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -236,6 +243,7 @@ async function handleGenerate(request, env) {
     "content-type": "application/json",
   };
 
+  const t0 = Date.now();
   const res = await fetch(`${PRUNA_BASE}/predictions`, {
     method: "POST",
     headers,
@@ -247,7 +255,11 @@ async function handleGenerate(request, env) {
   // on succeeded / id+get_url / failed.
   return new Response(text, {
     status: res.status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      [UPSTREAM_HEADER]: String(Date.now() - t0),
+    },
   });
 }
 
@@ -1322,7 +1334,12 @@ async function handleStatus(request, env, url) {
   const id = url.searchParams.get("id");
   if (!id || !/^[A-Za-z0-9._-]+$/.test(id)) return json({ error: "Invalid id." }, 400);
 
-  if (id.startsWith("xai_")) return await pollXaiVideo(id.slice(4), env);
+  const t0 = Date.now();
+  if (id.startsWith("xai_")) {
+    const out = await pollXaiVideo(id.slice(4), env);
+    out.headers.set(UPSTREAM_HEADER, String(Date.now() - t0));
+    return out;
+  }
 
   const res = await fetch(`${PRUNA_BASE}/predictions/status/${encodeURIComponent(id)}`, {
     headers: { apikey: env.PRUNA_API_KEY },
@@ -1330,7 +1347,11 @@ async function handleStatus(request, env, url) {
   const text = await res.text();
   return new Response(text, {
     status: res.status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      [UPSTREAM_HEADER]: String(Date.now() - t0),
+    },
   });
 }
 
@@ -1385,6 +1406,7 @@ async function handleResult(request, env, url) {
   }
 
   const isXai = /(^|\.)x\.ai$/.test(parsed.hostname);
+  const t0 = Date.now();
   const upstream = await fetch(parsed.toString(), {
     headers: isXai ? { authorization: `Bearer ${env.XAI_API_KEY}` } : { apikey: env.PRUNA_API_KEY },
   });
@@ -1402,5 +1424,8 @@ async function handleResult(request, env, url) {
   headers.set("cache-control", "no-store, no-cache, must-revalidate, max-age=0");
   headers.set("cdn-cache-control", "no-store");
   headers.set("pragma", "no-cache");
+  // Time to the provider's response headers. The body is streamed on through
+  // this Worker, so the rest of the transfer shows in the browser's own time.
+  headers.set(UPSTREAM_HEADER, String(Date.now() - t0));
   return new Response(upstream.body, { status: 200, headers });
 }

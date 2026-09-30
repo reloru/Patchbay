@@ -1593,6 +1593,121 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
+// ── A status check that never answers is dropped and asked again ───────────
+// No request on the generation path had a deadline, so a poll the connection
+// swallowed held the whole run for as long as the OS kept it open — with the
+// counter still climbing, indistinguishable from a slow provider.
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(250);
+  await page.fill(promptSel, "a poll that never answers");
+  await page.waitForTimeout(700);
+  await page.request.get(BASE + "__statushang?n=1");
+  const seen = [];
+  const t0 = Date.now();
+  await page.locator("#generate-btn").click();
+  const until = Date.now() + 20000;
+  while (Date.now() < until) {
+    const line = (await page.locator("#status").textContent()).trim();
+    if (!seen.includes(line.replace(/\d+s/, "Ns"))) seen.push(line.replace(/\d+s/, "Ns"));
+    if (await page.locator("#status.ok, #status.err").count()) break;
+    await page.waitForTimeout(250);
+  }
+  const took = Date.now() - t0;
+  check("a hung status check does not hold the run", await page.locator("#status.ok").count() === 1, JSON.stringify(seen));
+  check("it is abandoned at its deadline, not the OS's", took >= 7500 && took < 14000, `${took} ms`);
+  check("and the wait says it is reconnecting", seen.some((s) => /^Reconnecting \(1\/3\)/.test(s)), JSON.stringify(seen));
+  const rec = await page.evaluate(() => (JSON.parse(localStorage.getItem("patchbay_timings")) || []).pop() || null);
+  const first = rec && rec.polls[0];
+  check(
+    "the timing record shows the timed-out attempt",
+    !!first && first.attempts[0].outcome === "timeout" && first.attempts[1].outcome === "ok",
+    JSON.stringify(first)
+  );
+  await page.request.get(BASE + "__statushang?n=0");
+  await page.close();
+  await context.close();
+}
+
+// ── The count runs through the download, and no token call precedes it ────
+{
+  const context = await browser.newContext();
+  // The gate on, as in production: that is the only case in which a token
+  // exists to be fetched at all.
+  await context.route("**/api/config", async (route) => {
+    const res = await route.fetch();
+    const cfg = await res.json();
+    await route.fulfill({ response: res, json: { ...cfg, authRequired: true } });
+  });
+  // Every token handed out is already inside its refresh margin, so any code
+  // that asks for a live token before the download would have to fetch one.
+  await context.route("**/api/token", (route) =>
+    route.fulfill({ json: { token: "stub-token", expiresAt: Date.now() + 30000 } })
+  );
+  const page = await open(context, () => localStorage.setItem("pruna_app_password", "stub"));
+  const order = [];
+  page.on("request", (r) => {
+    const p = new URL(r.url()).pathname;
+    if (p === "/api/status" || p === "/api/token" || p === "/api/result") order.push(p);
+  });
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(250);
+  await page.fill(promptSel, "watch the download");
+  await page.waitForTimeout(700);
+  await page.request.get(BASE + "__resultdelay?ms=3500");
+  const lines = [];
+  const t0 = Date.now();
+  await page.locator("#generate-btn").click();
+  while (Date.now() - t0 < 15000) {
+    lines.push((await page.locator("#status").textContent()).trim());
+    if (await page.locator("#status.ok, #status.err").count()) break;
+    await page.waitForTimeout(400);
+  }
+  await page.request.get(BASE + "__resultdelay?ms=0");
+  const dl = lines.filter((s) => s.startsWith("Downloading")).map((s) => Number((s.match(/(\d+)s elapsed/) || [])[1]));
+  check("the count keeps running while the result downloads", dl.length >= 3 && dl[dl.length - 1] > dl[0], JSON.stringify(dl));
+  const done = Number(((await page.locator("#status").textContent()).match(/Done in (\d+)s/) || [])[1]);
+  check("and Done includes the download", done >= 3, String(done));
+  const lastPoll = order.lastIndexOf("/api/status");
+  check(
+    "no token request sits between the last poll and the result",
+    lastPoll >= 0 && order[lastPoll + 1] === "/api/result" && !order.slice(lastPoll).includes("/api/token"),
+    order.join(" → ")
+  );
+
+  // The breakdown under the result.
+  const summary = (await page.locator(".timing summary").textContent()).trim();
+  check("a timing line sits under the result", summary.startsWith("⏱ Timing") && /download/.test(summary), summary);
+  await page.locator(".timing summary").click();
+  const rows = await page.locator(".timing li").allTextContents();
+  for (const want of ["Submit:", "Provider states first seen:", "Status checks:", "Download:", "Visible at", "Saved to Recent at", "App in background:"]) {
+    check(`the breakdown has "${want}"`, rows.some((r) => r.startsWith(want)), JSON.stringify(rows));
+  }
+  const rec = await page.evaluate(() => JSON.parse(localStorage.getItem("patchbay_timings")).pop());
+  check(
+    "the recorded steps are in order",
+    rec.submit.returned <= rec.states.succeeded && rec.states.succeeded <= rec.downloads[0].start && rec.visible <= rec.saved,
+    JSON.stringify({ submit: rec.submit, states: rec.states, dl: rec.downloads[0] && rec.downloads[0].start, visible: rec.visible, saved: rec.saved })
+  );
+  check("the download leg is at least the held time", rec.downloads[0].ms >= 3400, String(rec.downloads[0].ms));
+
+  // History is capped.
+  await page.evaluate(() => {
+    const many = Array.from({ length: 30 }, (_, i) => ({ at: String(i) }));
+    localStorage.setItem("patchbay_timings", JSON.stringify(many));
+  });
+  await page.fill(promptSel, "one more run");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#status.ok", { timeout: 15000 });
+  const kept = await page.evaluate(() => JSON.parse(localStorage.getItem("patchbay_timings")).length);
+  check("no more than 20 runs are kept", kept === 20, String(kept));
+  await page.close();
+  await context.close();
+}
+
 // ── ⚙ settings for Improve and the chat ────────────────────────────────────
 {
   const context = await browser.newContext();
