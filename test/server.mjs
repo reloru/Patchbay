@@ -269,7 +269,10 @@ const server = createServer(async (req, res) => {
     return json(res, { statusHangs });
   }
   if (path === "/__resultdelay") {
-    resultDelayMs = Number(url.searchParams.get("ms")) || 0;
+    // Capped, so a mistyped value cannot park a request for hours.
+    const ms = Number(url.searchParams.get("ms")) || 0;
+    resultDelayMs = 0;
+    if (ms > 0 && ms <= 60000) resultDelayMs = ms;
     return json(res, { resultDelayMs });
   }
   if (path === "/__statusdelay") {
