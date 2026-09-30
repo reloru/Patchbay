@@ -54,6 +54,13 @@ let generateDelayMs = 0;
 // the poll loop stalling — a slow provider, a hung connection, or an iOS tab
 // suspended in the background, where setTimeout stops firing altogether.
 let statusDelayMs = 0;
+// Set by the test through /__statushang: the next N polls never answer at all,
+// which is what a connection the phone kept after it died looks like. Only the
+// app's own deadline can get a run past one.
+let statusHangs = 0;
+// Set by the test through /__resultdelay, to hold the result download open so
+// the count can be watched while the picture is still on its way.
+let resultDelayMs = 0;
 // Set by the test through /__neurons, to stand in for a day's analytics. Null
 // keeps /api/neurons unconfigured, which is what every other block expects.
 let neuronsUsed = null;
@@ -136,6 +143,10 @@ const server = createServer(async (req, res) => {
     return json(res, { id: "stub-job-1" });
   }
   if (path === "/api/status") {
+    if (statusHangs > 0) {
+      statusHangs--;
+      return; // left open; the browser has to give up on it
+    }
     if (statusDelayMs) await new Promise((r) => setTimeout(r, statusDelayMs));
     if (slowJob) return json(res, { status: "processing" });
     // A video model's job has to deliver something the app will treat as video,
@@ -151,6 +162,7 @@ const server = createServer(async (req, res) => {
     // frame then takes videoThumb's documented "will not decode" branch, which
     // is a path worth covering in its own right.
     const isVideo = (url.searchParams.get("url") || "").endsWith(".mp4");
+    if (resultDelayMs) await new Promise((r) => setTimeout(r, resultDelayMs));
     res.writeHead(200, { "content-type": isVideo ? "video/mp4" : "image/png" });
     return res.end(PNG);
   }
@@ -251,6 +263,14 @@ const server = createServer(async (req, res) => {
   if (path === "/__neurons") {
     neuronsUsed = url.searchParams.has("used") ? Number(url.searchParams.get("used")) : null;
     return json(res, { neuronsUsed });
+  }
+  if (path === "/__statushang") {
+    statusHangs = Number(url.searchParams.get("n")) || 0;
+    return json(res, { statusHangs });
+  }
+  if (path === "/__resultdelay") {
+    resultDelayMs = Number(url.searchParams.get("ms")) || 0;
+    return json(res, { resultDelayMs });
   }
   if (path === "/__statusdelay") {
     statusDelayMs = Number(url.searchParams.get("ms")) || 0;
