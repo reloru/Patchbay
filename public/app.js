@@ -4898,7 +4898,8 @@ function limitsEditor(tool, m, mine) {
     sel.className = "settings-effort";
     // Only the values Cloudflare lists for this model: anything else is
     // silently rewritten on its side, sometimes to the priciest setting.
-    const opts = [["", `Default${m.effort ? ` (${m.effort})` : ""}`], ...m.efforts.map((e) => [e, e[0].toUpperCase() + e.slice(1)])];
+    const shown = m.effort || m.effortDefault;
+    const opts = [["", `Default${shown ? ` (${shown})` : ""}`], ...m.efforts.map((e) => [e, e[0].toUpperCase() + e.slice(1)])];
     for (const [v, text] of opts) {
       const o = document.createElement("option");
       o.value = v;
@@ -4914,8 +4915,15 @@ function limitsEditor(tool, m, mine) {
     lab.appendChild(sel);
     row.appendChild(lab);
   }
-  if (row.children.length) wrap.appendChild(row);
-  else {
+  if (row.children.length) {
+    wrap.appendChild(row);
+    if (m.effort && m.effortDefault && m.effort !== m.effortDefault) {
+      const p = document.createElement("p");
+      p.className = "hint";
+      p.textContent = `Patchbay sends ${m.effort} unless you choose another; Cloudflare's own default for this model is ${m.effortDefault}.`;
+      wrap.appendChild(p);
+    }
+  } else {
     const p = document.createElement("p");
     p.className = "hint";
     p.textContent = "This model takes no thinking or effort setting.";
@@ -4942,7 +4950,7 @@ function limitsEditor(tool, m, mine) {
       input.step = name === "top_k" || name === "seed" ? "1" : "0.01";
       if (min != null) input.min = String(min);
       if (max != null) input.max = String(max);
-      input.placeholder = dflt != null ? `default ${dflt}` : "model default";
+      input.placeholder = dflt != null ? `default ${dflt}` : "default not published";
       input.value = typeof mine[name] === "number" ? String(mine[name]) : "";
       const help = document.createElement("span");
       help.className = "hint";
