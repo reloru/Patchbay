@@ -1995,6 +1995,18 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   const all = ["temperature", "top_p", "top_k", "seed", "repetition_penalty", "frequency_penalty", "presence_penalty"];
   check("a Llama model offers every sampling setting its schema takes", JSON.stringify(await page.locator(".sampling-name").allTextContents()) === JSON.stringify(all));
   check("with the schema's default as the placeholder", (await page.getAttribute(".settings-temperature", "placeholder")) === "default 0.6");
+  check("and a parameter whose default Cloudflare does not publish says so", (await page.getAttribute(".settings-top-p", "placeholder")) === "default not published");
+  await page.selectOption("#improve-model", "@cf/openai/gpt-oss-20b");
+  await page.waitForTimeout(150);
+  check("effort shows the default Cloudflare documents for the model", (await page.locator(".settings-effort option").first().textContent()) === "Default (medium)");
+  await page.selectOption("#improve-model", "@cf/zai-org/glm-5.3");
+  await page.waitForTimeout(150);
+  check(
+    "and where Patchbay sends another effort, says both",
+    (await page.locator("#tool-settings").textContent()).includes("Patchbay sends low") && (await page.locator("#tool-settings").textContent()).includes("own default for this model is max")
+  );
+  await page.selectOption("#improve-model", "@cf/meta/llama-3.2-3b-instruct");
+  await page.waitForTimeout(150);
   await page.fill(".settings-temperature", "0.3");
   await page.fill(".settings-top-k", "12");
   await page.fill(".settings-top-p", "7");

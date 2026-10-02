@@ -110,7 +110,11 @@ V4, GLM, Kimi, Nemotron, Gemma 4 and Qwen 3.8 take five (no `top_k` or
 `repetition_penalty`); Moondream takes `temperature` and `top_p`. Which
 parameters, their ranges and their defaults come from Cloudflare's
 models/schema API; Llama 3.1 8B Fast v2 has no schema there and takes the
-token limit only. A value outside a range is marked and not sent, and the
+token limit only. Cloudflare publishes no default for `top_p`, `top_k`,
+`seed`, `repetition_penalty` or the two penalties, so those fields read
+"default not published" rather than a value; Reasoning effort shows the default
+marked on each model's Cloudflare page (DeepSeek V4 high, GLM 5.x max, GPT-OSS
+medium, Kimi K2.6 high, Qwen 3.8 xhigh). A value outside a range is marked and not sent, and the
 Worker drops anything a model's schema does not list. The other
 tools' rows name the input their model has instead of an instruction:
 m2m100 takes text and two language codes; p-judger a prompt and images, and

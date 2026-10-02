@@ -2138,6 +2138,22 @@ const THINKING = [
   "@cf/moonshotai/kimi-k2.7-code", "@cf/qwen/qwen3.8-27b", "@cf/nvidia/nemotron-3-120b-a12b",
 ];
 const SCHEMA_EFFORTS = ["low", "medium", "high"];
+// The reasoning effort each model runs at when none is sent, as marked
+// "(default)" in the Reasoning row of its page at
+// developers.cloudflare.com/workers-ai/models/<name>/ (read 2026-10-02).
+// Gemma 4 and GLM 4.7 Flash say only "Yes" there, and Kimi K2.7 Code "Always
+// on", so no default is claimed for them.
+const EFFORT_DEFAULTS = {
+  "@cf/deepseek-ai/deepseek-v4-flash-0731": "high",
+  "@cf/deepseek-ai/deepseek-v4-pro-0813": "high",
+  "@cf/zai-org/glm-5.3-flash": "max",
+  "@cf/zai-org/glm-5.2": "max",
+  "@cf/zai-org/glm-5.3": "max",
+  "@cf/openai/gpt-oss-20b": "medium",
+  "@cf/openai/gpt-oss-120b": "medium",
+  "@cf/moonshotai/kimi-k2.6": "high",
+  "@cf/qwen/qwen3.8-27b": "xhigh",
+};
 const EFFORTS = {
   "@cf/deepseek-ai/deepseek-v4-flash-0731": ["none", "low", "high", "max"],
   "@cf/deepseek-ai/deepseek-v4-pro-0813": ["none", "low", "high", "max"],
@@ -2240,6 +2256,7 @@ const CHAT_ONLY_MODELS = [
 for (const m of [...IMPROVE_MODELS, ...CHAT_ONLY_MODELS, ...DESCRIBE_MODELS]) {
   m.canThink = THINKING.includes(m.id);
   m.efforts = EFFORTS[m.id] || null;
+  m.effortDefault = EFFORT_DEFAULTS[m.id] || null;
   m.outPerM = OUT_NEURONS_PER_M[m.id] || null;
   m.sampling = SAMPLING[m.id] || null;
 }
