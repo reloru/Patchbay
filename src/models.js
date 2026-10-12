@@ -22,8 +22,8 @@
 //   apiDefault    what the provider does when the field is omitted, where
 //                 that differs from `default`; the shown value is then sent
 //                 on every request (e.g. Turbo shown off where it defaults on)
-//   advanced      listed under a collapsed Advanced section of Settings
-//                 rather than with the rest (Turbo, the moderation filter)
+//   hidden        never shown; the default is what is sent, whenever it differs
+//                 from `apiDefault` (Turbo and the moderation filter: off)
 //
 // Optional fields render with an override toggle so you only send the
 // parameters you actually change; everything else uses Pruna's default.
@@ -79,7 +79,7 @@ const SEED = {
 // mismatch here is what makes the shown default actually take effect rather
 // than just being a label.
 function moderationFilter(name = "disable_safety_checker", apiDefault = false) {
-  return { name, label: "Content moderation filter", type: "bool", default: true, apiDefault, invert: true, advanced: true };
+  return { name, label: "Content moderation filter", type: "bool", default: true, apiDefault, invert: true, hidden: true };
 }
 
 export const MODELS = [
@@ -206,7 +206,7 @@ export const MODELS = [
           { value: "4", label: "4 MP (largest)" },
         ],
       },
-      { name: "go_fast", label: "Turbo", type: "bool", default: false, advanced: true },
+      { name: "go_fast", label: "Turbo", type: "bool", default: false, hidden: true },
       OUTPUT_FORMAT,
       { ...OUTPUT_QUALITY, default: 95 },
       SEED,
@@ -256,7 +256,7 @@ export const MODELS = [
       { name: "num_inference_steps", label: "Detail (steps)", type: "int", default: 30, min: 1, max: 50 },
       { name: "guidance", label: "Prompt adherence", type: "number", default: 3, min: 0, max: 10, step: 0.1 },
       { name: "enhance_prompt", label: "Auto-improve prompt", type: "bool", default: false },
-      { name: "go_fast", label: "Turbo", type: "bool", default: false, apiDefault: true, advanced: true },
+      { name: "go_fast", label: "Turbo", type: "bool", default: false, apiDefault: true, hidden: true },
       {
         name: "image_size",
         label: "Optimize for",
@@ -309,7 +309,7 @@ export const MODELS = [
       { name: "height", label: "Height", type: "int", default: 1024, min: 64, max: 2048, step: 8 },
       { name: "num_inference_steps", label: "Detail (steps)", type: "int", default: 8, min: 1, max: 50 },
       { name: "guidance_scale", label: "Prompt adherence", type: "number", default: 0, min: 0, max: 20, step: 0.1 },
-      { name: "go_fast", label: "Turbo", type: "bool", default: false, advanced: true },
+      { name: "go_fast", label: "Turbo", type: "bool", default: false, hidden: true },
       OUTPUT_FORMAT,
       OUTPUT_QUALITY,
       SEED,
@@ -336,7 +336,7 @@ export const MODELS = [
       { name: "height", label: "Height", type: "int", default: 1024, min: 64, max: 2048, step: 8 },
       { name: "num_inference_steps", label: "Detail (steps)", type: "int", default: 8, min: 1, max: 50 },
       { name: "guidance_scale", label: "Prompt adherence", type: "number", default: 0, min: 0, max: 20, step: 0.1 },
-      { name: "go_fast", label: "Turbo", type: "bool", default: false, advanced: true },
+      { name: "go_fast", label: "Turbo", type: "bool", default: false, hidden: true },
       OUTPUT_FORMAT,
       OUTPUT_QUALITY,
       SEED,
@@ -354,7 +354,7 @@ export const MODELS = [
     blurb: "Smaller/cheaper Z-Image Turbo variant. Prompt only — no size or step controls.",
     fields: [
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
-      { name: "go_fast", label: "Turbo", type: "bool", default: false, advanced: true },
+      { name: "go_fast", label: "Turbo", type: "bool", default: false, hidden: true },
       SEED,
     ],
   },
@@ -539,7 +539,7 @@ export const MODELS = [
       { name: "width", label: "Width (custom size)", type: "int", default: 1024, min: 256, max: 2048, step: 16 },
       { name: "height", label: "Height (custom size)", type: "int", default: 1024, min: 256, max: 2048, step: 16 },
       { name: "num_outputs", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
-      { name: "juiced", label: "Turbo", type: "bool", default: false, advanced: true },
+      { name: "juiced", label: "Turbo", type: "bool", default: false, hidden: true },
       OUTPUT_FORMAT,
       OUTPUT_QUALITY,
       SEED,
@@ -558,7 +558,7 @@ export const MODELS = [
       { name: "images", label: "Image(s) to edit", type: "image", required: true, maxItems: 5, asArray: true },
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
       // Pruna turns turbo on unless told otherwise, so this has to be sent.
-      { name: "turbo", label: "Turbo", type: "bool", default: false, apiDefault: true, advanced: true },
+      { name: "turbo", label: "Turbo", type: "bool", default: false, apiDefault: true, hidden: true },
       {
         name: "aspect_ratio",
         label: "Aspect ratio",
@@ -622,7 +622,7 @@ export const MODELS = [
       },
       { name: "lora_scale", label: "LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.05 },
       { name: "hf_api_token", label: "HuggingFace API token", type: "text" },
-      { name: "turbo", label: "Turbo", type: "bool", default: false, advanced: true },
+      { name: "turbo", label: "Turbo", type: "bool", default: false, hidden: true },
       {
         name: "aspect_ratio",
         label: "Aspect ratio",
@@ -661,7 +661,7 @@ export const MODELS = [
       // Documented default is on. Shown off, like every Turbo toggle here, and
       // `apiDefault` makes off the value actually sent; the docs say to turn
       // it off for complicated edits anyway.
-      { name: "turbo", label: "Turbo", type: "bool", default: false, apiDefault: true, advanced: true },
+      { name: "turbo", label: "Turbo", type: "bool", default: false, apiDefault: true, hidden: true },
       SEED,
       moderationFilter(),
     ],
@@ -685,7 +685,7 @@ export const MODELS = [
       { name: "person_image", label: "Person photo", type: "image", required: true },
       { name: "garment_images", label: "Garment photo(s)", type: "image", required: true, maxItems: 6, asArray: true },
       { name: "prompt", label: "Extra guidance (optional)", type: "text", default: "" },
-      { name: "turbo", label: "Turbo", type: "bool", default: false, advanced: true },
+      { name: "turbo", label: "Turbo", type: "bool", default: false, hidden: true },
       { name: "reference_pose", label: "Reference pose image (experimental)", type: "image" },
       { name: "preserve_input_size", label: "Keep original size", type: "bool", default: true },
       OUTPUT_FORMAT,
@@ -747,7 +747,7 @@ export const MODELS = [
     fields: [
       { name: "image", label: "Image(s) to edit", type: "image", required: true, maxItems: 2, asArray: true },
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
-      { name: "go_fast", label: "Turbo", type: "bool", default: false, advanced: true },
+      { name: "go_fast", label: "Turbo", type: "bool", default: false, hidden: true },
       {
         name: "aspect_ratio",
         label: "Aspect ratio",
@@ -851,7 +851,7 @@ export const MODELS = [
       },
       { name: "frames_per_second", label: "Frames per second", type: "int", default: 16, min: 5, max: 30 },
       { name: "interpolate_output", label: "Smooth motion", type: "bool", default: true },
-      { name: "go_fast", label: "Turbo", type: "bool", default: false, apiDefault: true, advanced: true },
+      { name: "go_fast", label: "Turbo", type: "bool", default: false, apiDefault: true, hidden: true },
       { name: "optimize_prompt", label: "Auto-improve prompt", type: "bool", default: false },
       { name: "sample_shift", label: "Motion strength", type: "number", default: 12, min: 1, max: 20, step: 0.5 },
       SEED,
@@ -878,7 +878,7 @@ export const MODELS = [
       { name: "frames_per_second", label: "Frames per second", type: "int", default: 16, min: 5, max: 30 },
       { name: "last_image", label: "Ending image (optional)", type: "image" },
       { name: "interpolate_output", label: "Smooth motion", type: "bool", default: false },
-      { name: "go_fast", label: "Turbo", type: "bool", default: false, apiDefault: true, advanced: true },
+      { name: "go_fast", label: "Turbo", type: "bool", default: false, apiDefault: true, hidden: true },
       { name: "sample_shift", label: "Motion strength", type: "number", default: 12, min: 1, max: 20, step: 0.5 },
       { name: "lora_weights_transformer", label: "LoRA (Hugging Face / .safetensors URL)", type: "text", default: "" },
       { name: "lora_scale_transformer", label: "LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.1 },
@@ -1102,7 +1102,7 @@ export const MODELS = [
       { name: "video", label: "Motion source video (.mp4)", type: "image", accept: "video/*", required: true },
       { name: "image", label: "Photo of subject to animate", type: "image", required: true },
       { name: "instruction_prompt", label: "Extra guidance (optional)", type: "text", default: "" },
-      { name: "turbo", label: "Turbo", type: "bool", default: false, advanced: true },
+      { name: "turbo", label: "Turbo", type: "bool", default: false, hidden: true },
       {
         name: "resolution",
         label: "Resolution",
@@ -1137,7 +1137,7 @@ export const MODELS = [
       { name: "video", label: "Source video (.mp4)", type: "image", accept: "video/*", required: true },
       { name: "images", label: "Identity photo(s)", type: "image", required: true, maxItems: 3, asArray: true },
       { name: "instruction_prompt", label: "Extra guidance (optional)", type: "text", default: "" },
-      { name: "turbo", label: "Turbo", type: "bool", default: false, advanced: true },
+      { name: "turbo", label: "Turbo", type: "bool", default: false, hidden: true },
       {
         name: "resolution",
         label: "Resolution",

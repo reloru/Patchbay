@@ -207,7 +207,7 @@ textarea { resize: vertical; min-height: 74px; }
 .section-prompt textarea[data-field] { min-height: 180px; font-size: 16px; line-height: 1.45; }
 
 /* Settings: in plain view, two to a row; free text and files take the
-   width. Turbo and the moderation filter wait under a collapsed Advanced. */
+   width. */
 .settings-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .settings-head .section-title { margin-bottom: 10px; }
 .opt-reset-all { font-size: 13px; }
@@ -215,15 +215,6 @@ textarea { resize: vertical; min-height: 74px; }
 .opt-row { min-width: 0; }
 .opt-row.wide { grid-column: 1 / -1; }
 .opt-row input, .opt-row select { width: 100%; }
-.advanced { margin-top: 14px; }
-.advanced > summary {
-  cursor: pointer;
-  user-select: none;
-  font-size: 13px;
-  color: var(--muted);
-  padding: 4px 0;
-}
-.advanced[open] > summary { margin-bottom: 10px; }
 .opt-row-head {
   display: flex;
   align-items: center;
@@ -448,7 +439,6 @@ button.secondary:hover { border-color: var(--accent); }
 .timing-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .timing-actions button { flex: 1 1 auto; font-size: 13px; }
 .timing-copy { width: 100%; min-height: 80px; margin-top: 8px; font-size: 12px; }
-.judge-btn { width: 100%; margin-top: 10px; }
 
 .file-result {
   display: flex;

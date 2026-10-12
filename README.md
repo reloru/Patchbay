@@ -47,9 +47,9 @@ a row (free text and files take the full width). A changed one gets its own
 Reset, and *Reset all* — shown only when something is changed — puts the
 settings back without touching the inputs or the prompt (*Start over*, beside
 the model, is the one that clears those). Turbo (every fast-mode switch,
-whatever the provider calls it) and the content moderation filter are off on
-every model and folded under a collapsed *Advanced*; where a provider would
-turn Turbo on if left unspecified, off is sent explicitly. A
+whatever the provider calls it) and the content moderation filter are not
+shown at all: both are always off, and off is sent explicitly wherever a
+provider would otherwise turn one on. A
 parameter is sent only when it differs from the provider's default, so what you
 see is what the provider would do anyway. Optional *files* — start and end
 frames, audio tracks, reference images, a pose — are not settings: they sit
@@ -192,9 +192,8 @@ models, as Cloudflare recommends. A measurement costs about a tenth of a
 neuron.
 
 **Prompt-match scoring.** Judge runs Pruna's `p-judger` over an image and
-returns how well it matches the prompt. *⚖️ Score against prompt* appears under
-a generated image and scores it, with the score beneath. The Lab card scores
-the image on screen or, failing that, the attached ones, and its note always
+returns how well it matches the prompt, from the *Score images* card in Lab. It
+scores the generated image on screen or, failing that, the attached ones, and its note always
 says which — with an inline link to a file picker for anything else, which also
 reaches batch mode (up to 10 images against a shared prompt).
 
@@ -473,7 +472,7 @@ the browser reads its duration and prices from that instead of the Length box.
 suits the input, which changes the price: $0.01 per output, or $0.03 when it
 detects text in the image. That decision happens during the run, so the app
 shows the range up front and no per-run estimate. Pruna documents its `turbo`
-as on by default; like every Turbo switch here it is shown off, and off is
+as on by default; like every Turbo switch here it is not shown, and off is
 sent.
 
 **`p-image-pro` is documented but not included.** As of 2026-09-08 every call to

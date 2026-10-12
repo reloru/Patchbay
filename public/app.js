@@ -805,7 +805,7 @@ function renderFields() {
   const rest = [];
   const optional = [];
   for (const f of fields) {
-    if (f === primary) continue;
+    if (f === primary || f.hidden) continue;
     if (f.required && modeNames.has(f.name)) mode.push(f);
     else if (f.type === "image") inputs.push(f);
     else if (f.required) rest.push(f);
@@ -1355,12 +1355,10 @@ function defaultText(f) {
 // Optional parameters used to hide behind a per-field "override" checkbox,
 // which meant two interactions to change anything and a default label that
 // didn't necessarily match what was sent. They now sit in plain view, two to a
-// row, each pre-filled with its default; a changed one gets its own Reset. The
-// few nobody needs day to day (Turbo, the moderation filter: `advanced` in
-// models.js) wait under a collapsed Advanced.
+// row, each pre-filled with its default; a changed one gets its own Reset.
+// Turbo and the moderation filter (`hidden` in models.js) are not shown at all.
 let optionRows = [];
 let optionsResetAll = null;
-let optionsAdvanced = null;
 
 // Free text, a LoRA URL with its presets, or a file needs the whole width; a
 // number, a choice or a switch fits half of it.
@@ -1393,30 +1391,14 @@ function renderOptionsPanel(fields) {
   head.appendChild(resetAll);
   sec.appendChild(head);
 
-  const grid = (list) => {
-    const g = document.createElement("div");
-    g.className = "opt-list";
-    for (const f of list) {
-      const row = buildOptionRow(f);
-      if (wideOption(f)) row.classList.add("wide");
-      g.appendChild(row);
-    }
-    return g;
-  };
-  const main = fields.filter((f) => !f.advanced);
-  const advanced = fields.filter((f) => f.advanced);
-  if (main.length) sec.appendChild(grid(main));
-  optionsAdvanced = null;
-  if (advanced.length) {
-    const det = document.createElement("details");
-    det.className = "advanced";
-    const sum = document.createElement("summary");
-    sum.textContent = "Advanced";
-    det.appendChild(sum);
-    det.appendChild(grid(advanced));
-    sec.appendChild(det);
-    optionsAdvanced = det;
+  const grid = document.createElement("div");
+  grid.className = "opt-list";
+  for (const f of fields) {
+    const row = buildOptionRow(f);
+    if (wideOption(f)) row.classList.add("wide");
+    grid.appendChild(row);
   }
+  sec.appendChild(grid);
 
   optionsPanel = sec;
   optionsBadge = badge;
@@ -1573,8 +1555,6 @@ function refreshOptionState() {
   }
   if (optionsBadge) optionsBadge.textContent = changed ? `${changed} changed` : "";
   if (optionsResetAll) optionsResetAll.hidden = !changed;
-  // A changed Turbo or filter must not sit out of sight under Advanced.
-  if (optionsAdvanced && optionRows.some((r) => r.f.advanced && r.row.classList.contains("changed"))) optionsAdvanced.open = true;
 }
 
 function resetField(f, row) {
@@ -1638,6 +1618,12 @@ function buildInput() {
     // Belongs to a mode other than the one selected — not asked for, not sent,
     // and not counted as missing even when it is required in its own mode.
     if (!fieldVisible(f)) continue;
+    // Not on the form: its default goes out wherever the provider's own
+    // differs (Turbo off where it would default on, the filter off).
+    if (f.hidden) {
+      if (f.default !== apiDefaultOf(f)) input[f.name] = f.default;
+      continue;
+    }
     const v = readControlValue(f, form);
 
     if (f.required) {
@@ -3748,7 +3734,7 @@ function recordParams(rec) {
   }
   const primary = primaryFieldOf(model);
   for (const f of model.fields) {
-    if (f.type === "image" || f === primary || !(f.name in fields)) continue;
+    if (f.type === "image" || f === primary || f.hidden || !(f.name in fields)) continue;
     if (f.showWhen && fields[f.showWhen.field] !== undefined && !f.showWhen.is.includes(fields[f.showWhen.field])) continue;
     const raw = fields[f.name];
     let display;
@@ -7175,9 +7161,6 @@ function judgeTarget() {
 }
 
 function updateJudgeNote() {
-  // Score sits under a generated image, and only while one is on screen.
-  const scoreBtn = $("prompt-judge");
-  if (scoreBtn) scoreBtn.classList.toggle("hidden", !(lastResult.urls.length && lastResult.kind === "image"));
   const noteEl = $("judge-note");
   if (!noteEl) return; // called before the toolbar exists
   noteEl.innerHTML = "";
@@ -7200,9 +7183,8 @@ function updateJudgeNote() {
 }
 
 function clearJudgeResult() {
-  for (const id of ["judge-result", "lab-judge-result"]) {
-    const box = $(id);
-    if (!box) continue;
+  const box = $("lab-judge-result");
+  if (box) {
     box.innerHTML = "";
     box.classList.add("hidden");
   }
@@ -7264,15 +7246,12 @@ async function attachedImageUrls() {
   return out;
 }
 
-// Two ways in: Score under a generated image, which scores what is on screen,
-// and the Lab card, which scores whatever judgeTarget() names or files picked
-// there — batch mode included. Each shows its score where it was asked for.
+// The Lab card scores whatever judgeTarget() names — the generated image on
+// screen first — or files picked there, batch mode included.
 function initJudge() {
-  const btn = $("prompt-judge");
   const labBtn = $("lab-judge");
   const picker = $("judge-file");
 
-  btn.addEventListener("click", () => runJudge(null, btn, "judge-result"));
   labBtn.addEventListener("click", () => {
     if (judgeTarget()) runJudge(null, labBtn, "lab-judge-result");
     else picker.click();
@@ -7340,7 +7319,7 @@ function initJudge() {
 // means any of those appearing later is visible without a code change, rather
 // than silently dropped. The scale is undocumented, so the number is shown as
 // a number — never a percentage or a bar.
-function renderJudge(scores, raw, boxId = "judge-result") {
+function renderJudge(scores, raw, boxId = "lab-judge-result") {
   const box = $(boxId);
   box.innerHTML = "";
 
