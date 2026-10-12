@@ -2222,28 +2222,21 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
-// ── Settings: Turbo and the filter off and out of the way; Reset only when
-//    there is something to reset ────────────────────────────────────────────
+// ── Settings: no Turbo or filter switches; Reset only when there is
+//    something to reset ───────────────────────────────────────────────────
 {
   const context = await browser.newContext();
   const page = await open(context);
   const models = await page.evaluate(() => MODELS.map((m) => m.id));
-  const bad = [];
+  const shown = [];
   for (const id of models) {
     await page.selectOption("#model-select", id);
-    const r = await page.evaluate(() =>
-      optionRows
-        .filter((x) => x.f.advanced)
-        .map((x) => ({
-          name: x.f.name,
-          label: x.f.label,
-          on: x.row.querySelector("[data-field]").checked,
-          hidden: !!x.row.closest("details.advanced") && !x.row.closest("details.advanced").open,
-        }))
+    const names = await page.evaluate(() =>
+      currentModel.fields.filter((f) => f.hidden && document.querySelector(`#gen-form [data-field="${f.name}"]`)).map((f) => f.name)
     );
-    for (const x of r) if (x.on || !x.hidden) bad.push(`${id}:${x.name}`);
+    for (const n of names) shown.push(`${id}:${n}`);
   }
-  check("Turbo and the moderation filter are off, and folded under Advanced, on every model", bad.length === 0, bad.join(", "));
+  check("no model shows a Turbo or moderation-filter switch", shown.length === 0, shown.join(", "));
 
   // Off is what is sent, even where the provider's own default is on.
   await page.selectOption("#model-select", "p-image-edit-text-aware");
@@ -2251,12 +2244,12 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForSelector(".thumbs .thumb img");
   await page.fill(promptSel, "tidy it up");
   await page.waitForTimeout(700);
-  check("the toggle is called Turbo", (await page.locator(".advanced .opt-name").allTextContents()).includes("Turbo"));
   check("Reset all is not offered while nothing is changed", await page.locator(".opt-reset-all").isHidden());
   await page.locator("#generate-btn").click();
   await page.waitForSelector("#status.ok");
   const sent = await (await page.request.get(BASE + "__generate")).json();
-  check("Turbo off is sent where the provider would default it on", sent.input && sent.input.turbo === false, JSON.stringify(sent.input));
+  check("Turbo off is still sent where the provider would default it on", sent.input && sent.input.turbo === false, JSON.stringify(sent.input));
+  check("and the filter off with it", sent.input && sent.input.disable_safety_checker === true, JSON.stringify(sent.input));
 
   await page.selectOption("#model-select", "p-image-edit");
   await page.waitForTimeout(200);
