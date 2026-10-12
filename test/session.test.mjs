@@ -1514,6 +1514,55 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
+// ── Runs that overlap share the result panel ──────────────────────────────
+// Each run used to empty the panel when it started and again when it landed,
+// so of two runs going at once only the last to finish stayed on screen.
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  await page.request.get(BASE + "__slow?on=1");
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(200);
+  await page.fill(promptSel, "first of two");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForFunction(() => document.getElementById("jobs-btn").textContent.includes("1 running"), null, { timeout: 10000 });
+  await page.waitForFunction(() => !document.getElementById("generate-btn").disabled, null, { timeout: 5000 });
+  await page.fill(promptSel, "second of two");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForFunction(() => document.getElementById("jobs-btn").textContent.includes("2 running"), null, { timeout: 5000 });
+  await page.request.get(BASE + "__slow?on=0");
+  await page.waitForFunction(() => document.querySelectorAll("#result .result-run img").length === 2, null, { timeout: 20000 });
+  check("both overlapping runs stay on screen", (await page.locator("#result .result-run").count()) === 2);
+  const caps = await page.locator("#result .run-caption").allTextContents();
+  check(
+    "each is captioned with its own prompt",
+    caps.some((c) => c.includes("first of two")) && caps.some((c) => c.includes("second of two")),
+    caps.join(" | ")
+  );
+  check("and the captions show once there are two", await page.locator("#result .run-caption").first().isVisible());
+  await page.waitForFunction(() => !document.getElementById("jobs-btn").textContent.includes("running"), null, { timeout: 10000 });
+  check(
+    "Judge scores both runs' images, each paired with its own bytes",
+    await page.evaluate(() => lastResult.urls.length === 2 && lastResult.blobs.length === 2 && lastResult.blobs.every((b) => b instanceof Blob))
+  );
+
+  await page.fill(promptSel, "on its own");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForFunction(
+    () => document.querySelectorAll("#result .result-run").length === 1 && document.querySelector("#result .result-run img"),
+    null,
+    { timeout: 20000 }
+  );
+  check("a run started with nothing else running replaces them", (await page.locator("#result .result-run").count()) === 1);
+  check("and a lone run shows no caption", await page.locator("#result .run-caption").isHidden());
+  check("Judge then holds only that run", await page.evaluate(() => lastResult.urls.length === 1));
+  await page.close();
+  await context.close();
+}
+
 // ── Judge scores the bytes it already holds ────────────────────────────────
 // The blobs were captured when the result rendered and then never read: every
 // scoring re-downloaded them, which cost a second transfer and failed outright
