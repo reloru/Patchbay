@@ -1262,6 +1262,12 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     const r = await page.request.get(new URL(path, BASE).href);
     check(`the touch icon is served at ${path}`, r.ok() && r.headers()["content-type"] === "image/png");
   }
+  // A share sheet fills its tile with the page's og:image, and otherwise puts
+  // the touch icon on a white tile.
+  const og = await page.evaluate(() => (document.querySelector('meta[property="og:image"]') || {}).content || "");
+  const ogPath = og ? new URL(og).pathname : "";
+  const ogRes = ogPath ? await page.request.get(new URL(ogPath, BASE).href) : null;
+  check("a share preview image is declared, and its file is served", /^https:\/\//.test(og) && ogRes && ogRes.ok() && ogRes.headers()["content-type"] === "image/png", og);
   await page.close();
   await context.close();
 }

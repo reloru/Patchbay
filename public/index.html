@@ -14,6 +14,16 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎛️</text></svg>" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
+    <!-- The preview image a share sheet or a message shows for a link. Without
+         one, iOS's share sheet puts the small touch icon on a white tile; with
+         it, the tile is filled edge to edge. Absolute, because link previews
+         do not reliably resolve a relative og:image. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Patchbay" />
+    <meta property="og:image" content="https://patchbay.reloru.workers.dev/icon-512.png" />
+    <meta property="og:image:width" content="512" />
+    <meta property="og:image:height" content="512" />
+
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#0f1115" />
 
