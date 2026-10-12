@@ -22,8 +22,6 @@ let judgeUsdPerImage = 0;
 let judgeMaxImages = 1;
 let authRequired = false;
 let currentModel = null;
-let optionsPanel = null;
-let optionsBadge = null;
 const uploads = {}; // fieldName -> [{url, name, isImage}]
 
 const PW_KEY = "pruna_app_password";
@@ -793,8 +791,6 @@ function renderFields() {
   wrap.innerHTML = "";
   fieldUI = {};
   optionRows = [];
-  optionsPanel = null;
-  optionsBadge = null;
   visibilityRows = [];
 
   const fields = currentModel.fields;
@@ -817,7 +813,7 @@ function renderFields() {
     if (f.showWhen) visibilityRows.push({ f, row });
   };
   // An optional field outside Settings keeps its option-row behaviour — the
-  // "changed" mark, its own Reset, the touched flag — and is labelled optional.
+  // "changed" mark, the touched flag — and is labelled optional.
   const addOptional = (parent, f) => parent.appendChild(buildOptionRow(f, "optional"));
 
   if (mode.length) {
@@ -932,7 +928,7 @@ function inputControl(f) {
   }
   if (f.type === "bool") {
     // A real checkbox drives it (so keyboard/screen-reader semantics are
-    // native and readControlValue/resetField don't need to change at all),
+    // native and readControlValue doesn't need to change at all),
     // but it's visually replaced by a track + knob so the control reads as
     // "here's the current state" rather than "check this box to enable X" —
     // which is genuinely ambiguous once the state being shown is Off.
@@ -1355,10 +1351,10 @@ function defaultText(f) {
 // Optional parameters used to hide behind a per-field "override" checkbox,
 // which meant two interactions to change anything and a default label that
 // didn't necessarily match what was sent. They now sit in plain view, two to a
-// row, each pre-filled with its default; a changed one gets its own Reset.
-// Turbo and the moderation filter (`hidden` in models.js) are not shown at all.
+// row, each pre-filled with its default. There is no per-setting reset:
+// Start over rebuilds every field at its default. Turbo and the moderation
+// filter (`hidden` in models.js) are not shown at all.
 let optionRows = [];
-let optionsResetAll = null;
 
 // Free text, a LoRA URL with its presets, or a file needs the whole width; a
 // number, a choice or a switch fits half of it.
@@ -1374,21 +1370,6 @@ function renderOptionsPanel(fields) {
   title.className = "section-title";
   title.textContent = "Settings";
   head.appendChild(title);
-  // Counts what is changed; drives whether there is anything to reset.
-  const badge = document.createElement("span");
-  badge.className = "opt-badge";
-  badge.hidden = true;
-  head.appendChild(badge);
-  // Resets what is in Settings and nothing else: the inputs and the prompt
-  // are left as they are. "Start over" is the one that clears those. Shown
-  // only when there is something to reset.
-  const resetAll = document.createElement("button");
-  resetAll.type = "button";
-  resetAll.className = "linkish opt-reset-all";
-  resetAll.textContent = "Reset all";
-  resetAll.hidden = true;
-  resetAll.addEventListener("click", resetAllSettings);
-  head.appendChild(resetAll);
   sec.appendChild(head);
 
   const grid = document.createElement("div");
@@ -1399,21 +1380,7 @@ function renderOptionsPanel(fields) {
     grid.appendChild(row);
   }
   sec.appendChild(grid);
-
-  optionsPanel = sec;
-  optionsBadge = badge;
-  optionsResetAll = resetAll;
   return sec;
-}
-
-function resetAllSettings() {
-  for (const r of optionRows) {
-    if (r.f.type === "image" || !optionsPanel || !optionsPanel.contains(r.row)) continue;
-    resetField(r.f, r.row); // dispatches "change", which touches the row
-    r.touched = false;
-  }
-  refreshOptionState();
-  scheduleSessionSave();
 }
 
 function buildOptionRow(f, tag) {
@@ -1434,15 +1401,8 @@ function buildOptionRow(f, tag) {
   }
   const note = document.createElement("span");
   note.className = "opt-note";
-  const reset = document.createElement("button");
-  reset.type = "button";
-  reset.className = "opt-reset";
-  reset.textContent = "↺ Reset";
-  reset.title = "Back to the default";
-  reset.hidden = true;
   head.appendChild(name);
   head.appendChild(note);
-  head.appendChild(reset);
   row.appendChild(head);
 
   row.appendChild(inputControl(f));
@@ -1457,12 +1417,7 @@ function buildOptionRow(f, tag) {
   // a field like seed defaults to -1 (its own "randomize" sentinel), so it can
   // never differ from itself — without this, there'd be no way to force -1
   // into the request rather than omitting it, unlike every other value.
-  const entry = { f, row, note, reset, touched: false };
-  reset.addEventListener("click", () => {
-    resetField(f, row); // dispatches "change" (re-touching it), so untouch after
-    entry.touched = false;
-    refreshOptionState(); // resetField's own refresh ran while still touched=true
-  });
+  const entry = { f, row, note, touched: false };
   row.addEventListener("input", () => { entry.touched = true; refreshOptionState(); });
   row.addEventListener("change", () => { entry.touched = true; refreshOptionState(); });
 
@@ -1511,11 +1466,9 @@ function refreshOptionState() {
   renderChatImages();
   updateChatNote();
   refreshReuseLabels();
-  let changed = 0;
   for (const r of optionRows) {
     if (r.f.showWhen && !fieldVisible(r.f)) {
       r.row.classList.remove("changed");
-      r.reset.hidden = true;
       r.note.textContent = "";
       continue;
     }
@@ -1528,7 +1481,6 @@ function refreshOptionState() {
     r.row.classList.toggle("blocked", Boolean(blockedBy));
     if (blockedBy) {
       r.row.classList.remove("changed");
-      r.reset.hidden = true;
       r.note.textContent = r.f.disabledNote || "not used with an image attached";
       continue;
     }
@@ -1543,32 +1495,11 @@ function refreshOptionState() {
     // way -- highlighting it as "changed" there would be pure theater.
     const touchMatters = apiDefaultOf(r.f) === r.f.default;
     const isChanged = (r.touched && touchMatters) || optionChanged(r.f, r.row);
-    // The badge counts what is inside the Settings panel; an optional input or
-    // prompt above it is in plain view already.
-    if (isChanged && optionsPanel && optionsPanel.contains(r.row)) changed++;
     r.row.classList.toggle("changed", isChanged);
-    // Uploads are cleared with the thumbnail's own ×, so no reset button there.
-    const resettable = isChanged && r.f.type !== "image";
-    r.reset.hidden = !resettable;
-    const dflt = defaultText(r.f);
-    r.note.textContent = resettable && dflt != null ? `default: ${dflt}` : "";
+    // An upload has no default to name.
+    const dflt = isChanged && r.f.type !== "image" ? defaultText(r.f) : null;
+    r.note.textContent = dflt != null ? `default: ${dflt}` : "";
   }
-  if (optionsBadge) optionsBadge.textContent = changed ? `${changed} changed` : "";
-  if (optionsResetAll) optionsResetAll.hidden = !changed;
-}
-
-function resetField(f, row) {
-  const el = row.querySelector(`[data-field="${f.name}"]`);
-  if (!el) return;
-  if (f.type === "bool") {
-    const base = Boolean(f.default);
-    el.checked = f.invert ? !base : base;
-  } else {
-    el.value = f.default == null ? "" : String(f.default);
-  }
-  // Keeps the bool row's On/Off text and the changed state in sync.
-  el.dispatchEvent(new Event("change", { bubbles: true }));
-  refreshOptionState();
 }
 
 // ---------------------------------------------------------------------------

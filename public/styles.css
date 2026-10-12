@@ -210,7 +210,6 @@ textarea { resize: vertical; min-height: 74px; }
    width. */
 .settings-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .settings-head .section-title { margin-bottom: 10px; }
-.opt-reset-all { font-size: 13px; }
 .opt-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; }
 .opt-row { min-width: 0; }
 .opt-row.wide { grid-column: 1 / -1; }
@@ -225,17 +224,6 @@ textarea { resize: vertical; min-height: 74px; }
 .opt-name { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .opt-row.changed .opt-name { color: var(--text); }
 .opt-note { font-size: 11px; color: var(--muted); }
-.opt-reset {
-  margin-left: auto;
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 10px;
-  font-size: 11px;
-  font-weight: 500;
-}
-.opt-reset:hover { background: var(--panel); border-color: var(--accent); }
 .opt-row.blocked { opacity: .5; }
 .opt-row.blocked select,
 .opt-row.blocked input { cursor: not-allowed; }
