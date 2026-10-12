@@ -75,43 +75,58 @@ out, when it was signed under a different password, when it is malformed, and on
 every other route; the old `?pw=` query param no longer being accepted at all;
 and an unknown model id refused by `/api/generate`.
 
-Recent generations: a result reaching the strip; the split across the two stores
-(a light record with the thumbnail and no media bytes, the media itself as an
-`ArrayBuffer` under the same id in the other store); surviving a reopen; the
-lightbox's metadata and setup restore; reuse from the lightbox; eviction by
-count and by age, deleting both halves; Clear emptying both stores; and the two
-schema upgrades — a version-1 database keeping its session, and a version-2
-gallery item having its image moved out rather than dropped, then still opening.
+The gallery: a result reaching the strip; the split across the three stores (a
+metadata record with no media and no thumbnail, the media as an `ArrayBuffer`
+under the same id in one store, the thumbnail in another); surviving a reopen;
+the full-screen viewer with every setting the run was made with; Reuse
+parameters putting the prompt back as one Undo step; naming, albums, and use as
+an input from the viewer; search by word, name, `setting:value`, numeric
+comparison, album and `-word`; sort by name; the album filter; a setting's 🔍
+searching for its value; selecting several into an album; eviction by count
+under a set limit, with a named item past the limit kept; nothing removed for
+its age by default, and an age limit removing unnamed items only; Clear from
+the gallery's ⚙; and the three schema upgrades — a version-1 database keeping
+its session, and a version-2 item having its image and thumbnail moved out
+rather than dropped, then still opening.
+
+Reuse with inputs: each item recording its input by name and hash, one image
+behind two runs stored once, Reuse parameters switching back to the model and
+putting the image back as a real `File`, re-encoded for the provider, and
+inputs nothing refers to being dropped once their items are deleted.
 
 Video: a video result rendering as a player and being archived with `kind` set;
-its bytes landing in the other store; the settings riding along; the strip
-counting and badging it; and the lightbox opening it as a `<video>` rather than
-an `<img>`. Also that the per-kind caps hold — forty seeded clips prune to
-twenty-five without costing the images beside them anything, which is the whole
-reason the budgets are separate.
+its bytes landing in the other store; the settings and the source clip riding
+along; the strip counting and badging it; and the viewer opening it as a
+`<video>` rather than an `<img>`. Also that the per-kind caps hold — forty
+seeded clips prune to a limit of twenty-five without costing the images beside
+them anything.
 
 The stub answers a video model with PNG bytes under a video content type: it has
 no encoder, and that is enough for everything above. It also puts the poster
 frame through `videoThumb`'s "will not decode" branch, which has to leave the
 archive intact rather than fail it — worth covering in its own right.
 
-Restore setup: switching back to the model that produced a result, restoring the
-prompt and a changed option, keeping that option's deliberately-set flag, and
-then sending the same payload the original run did. The flag is the point — it
-alone decides whether a value equal to the default is still sent.
+Reuse parameters: switching back to the model that produced a result, restoring
+the prompt and a changed option (marked as changed in the viewer), keeping that
+option's deliberately-set flag, and then sending the same payload the original
+run did. The flag is the point — it alone decides whether a value equal to the
+default is still sent.
 
-Stop: the button appearing only while a job is in flight, Generate held and then
-released, the status saying the job is still running, and — the assertion that
-matters — the job record surviving, so the next load picks the result up. A stop
-that cleared the record would be a loss, not a stop.
+Jobs: Generate free again once the provider has the job; the job record
+carrying the prompt and settings; a second job running beside the first; the
+tray listing both with Check now and Forget; Forget dropping that job's record;
+the job left running picked up on the next load with its prompt and settings
+kept in the gallery; a single record from an earlier version picked up and
+moved off the old key; and two failed status checks retried rather than ending
+the run. The stub hands out a fresh job id per generation for this.
 
 Judge: that scoring a generation re-reads nothing through `/api/result`. The
 bytes were captured when the result rendered and then never used, so every
 scoring paid for a second transfer and failed outright once the delivery URL had
 expired.
 
-Clear during a run: the status line left alone, the run continuing, the strip
-emptying, and a result that finishes after the Clear still being kept.
+Clear during a run: the status line left alone, the run continuing, the
+gallery emptying, and a result that finishes after the Clear still being kept.
 
 Describe: a caption seeding the prompt and never being given the prompt; a
 question reaching the Worker with the prompt alongside it, named in the note
@@ -140,14 +155,17 @@ Eviction by count seeds items straight into both stores rather than generating
 them: two hundred round trips through the UI would dominate the runtime, and
 what is under test is the pruning that runs at boot.
 
-The lightbox leak test counts live object URLs through an instrumented
-`createObjectURL`/`revokeObjectURL` — the technique PR #33 used. It has been
-checked against the unfixed code, where it fails: without the revoke on close, a
-full-size image stays pinned after the lightbox is dismissed.
+The viewer leak test counts live object URLs through an instrumented
+`createObjectURL`/`revokeObjectURL` — the technique PR #33 used: opening and
+closing the viewer four times must leave the count where it was.
 
-The byte ceiling is the one bound with no test: tripping it means allocating
-150 MB inside a browser, and it shares its loop with the two bounds that are
-covered.
+The viewer stepping test covers ‹ ›, the arrow keys, a swipe, Delete moving on
+to the neighbour, and the browser's Back closing the viewer.
+
+The prompt library: a prompt saved with a name, its whole text shown, filed in
+a new folder; a folder showing only its own; search reading the text; editing
+moving a prompt between folders; surviving a reload; deleting a folder keeping
+its prompts; and the old flat list moved into the library.
 
 Reuse as an input: the label for each target case, landing on the current model,
 switching to the editing model and carrying the image, a full slot falling

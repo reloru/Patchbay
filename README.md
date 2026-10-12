@@ -21,17 +21,23 @@ prompt.
 
 ## Features
 
-**Two screens, in the order the work is done.** *Create* holds what making a
-picture needs, top to bottom: the model; the mode, where a model has one, since
+**Three screens.** *Create* holds what making a picture needs, top to bottom: the model; the mode, where a model has one, since
 it decides which inputs apply; every file the model takes, required or not,
 under *Inputs*; the prompt with its tools directly under it; then *Settings*.
 The output follows the form on a phone and sits beside it on a wide screen, and
-a finished result is scrolled into view. *Lab* holds the tools that work on
+a finished result is scrolled into view. *Gallery* holds everything made so
+far (below). *Lab* holds the tools that work on
 their own text or images — scoring images, Embeddings and Other — so they no
 longer sit between the prompt tools and the prompt. A bar fixed to the bottom
 of the screen carries the status line and Generate, so neither a run's
 progress nor the button that starts one is ever scrolled out of reach; a long
 message is clamped to two lines and opens on a tap.
+
+**The prompt tool strip.** Under the prompt, eight buttons in two rows of
+four, each an icon over a caption: Undo, Redo, Improve, Describe, Translate,
+Chat, Prompts and Options. Each acts on one tap. The models and languages they
+use are picked in *⚙ Options* and named on one muted line under the strip, so
+the row itself carries no pickers.
 
 **One picker, grouped by task.** Models are filed under Image editing, Image
 generation, Video, Audio and LoRA training, each split by provider — provider decides
@@ -55,12 +61,12 @@ belonging to another mode are never sent.
 models as a copy edit: grammar, phrasing and punctuation only. It adds nothing,
 drops nothing, keeps your pronouns and your grammatical mood, and avoids commas,
 which image models read as tag separators rather than punctuation. It reads the
-prompt text and nothing else. Its model picker sits beside the button, since it
-is the tool used most. While it runs the button is its Cancel. Reverting a
+prompt text and nothing else. Its model is picked in ⚙ Options. While it runs
+the button is its Cancel. Reverting a
 rewrite is the prompt Undo button's job, so the button stays Improve rather than
 turning into a one-shot undo of its own.
 
-**Image description.** Describe, under *⋯ More*, captions whatever image is
+**Image description.** Describe, on the tool strip, captions whatever image is
 already attached, with one of 9 Workers AI vision models, and drops the caption
 into the prompt box as a starting prompt (one Undo step). It only opens a file
 picker when nothing is attached. Its instruction is editable like Improve's and
@@ -150,8 +156,8 @@ prompt in its full `<s>[INST] <<SYS>>` template, streamed or not — and with
 does the same in Cloudflare's playground. `src/models.js` keeps the entry it
 would take if that is fixed.
 
-**Translate.** Under *⋯ More*, two language pickers and 🌐 Translate rewrite
-the prompt box into another language with Meta's m2m100 (English, Spanish, French, German,
+**Translate.** 🌐 Translate on the strip rewrites the prompt box from one
+language into the other, both picked in ⚙ Options, with Meta's m2m100 (English, Spanish, French, German,
 Portuguese, Russian, Arabic, Hindi, Chinese, Japanese — the languages
 Cloudflare lists for it). Undo brings the original back.
 
@@ -245,10 +251,10 @@ reported rather than repeated. That includes pulling the finished result down,
 which is the largest transfer the app makes: losing those bytes costs the
 archive too, since nothing is kept without them.
 
-**Prompt undo/redo.** Undo and Redo buttons under the prompt box cover the main
+**Prompt undo/redo.** Undo and Redo on the tool strip cover the main
 prompt box and nothing else (the instruction editor has its own). Typing is grouped into one entry per burst rather
 than one per keystroke, and an Improve rewrite, a Describe caption, a loaded
-saved prompt or a Reset is a single entry, so one press reverses the whole
+saved prompt, a reused setup or a Reset is a single entry, so one press reverses the whole
 replacement. Editing after an undo drops the redo tail, as it does in any
 editor. The history is text rather than a handle on the element it was typed
 into, so it survives switching models and a Reset; a model with no prompt field
@@ -257,6 +263,14 @@ that has one. History is in memory only. `Cmd`/`Ctrl`+`Z` and
 `Shift`+`Cmd`/`Ctrl`+`Z` work on a desktop keyboard while the prompt has focus;
 the buttons exist because iOS offers no undo gesture that reaches a web
 textarea.
+
+**Prompt library.** *📚 Prompts* lists every saved prompt with its text — four
+lines of it, all of it on a tap — not just a name. Prompts are filed in
+folders, searched by name, text or folder, sorted by date or name, and edited
+in place (name, text, folder); deleting a folder keeps its prompts. *Save
+current prompt* opens the same form, prefilled. Use replaces the prompt box as
+one Undo step. Kept in this browser's localStorage; the flat list earlier
+versions kept is moved over on first load.
 
 **Session restore.** iOS discards a backgrounded PWA whenever it needs the
 memory, and reopening it is a cold start. The current edit — attached files,
@@ -270,74 +284,113 @@ half of the record is only rewritten when the set of attached files changes.
 Blocked site data, Lockdown Mode or a full quota costs the restore and nothing
 else.
 
-**Recent generations.** Finished images *and videos* are kept on the device, so
-one you did not save in the moment is not gone: the strip under the output opens
-any of them full size — a clip in a player, with its own poster frame in the
-strip — to save, to send back in as an input, or to put the whole setup that
-produced it back on screen. The open item steps to its neighbours without
-closing — ‹ and ›, a sideways swipe, or the arrow keys, in the strip's own
-order, newest first — and Delete moves on to the next one rather than closing.
-Clear empties it immediately.
+**Gallery.** Every finished image and video is kept on the device with the
+settings that made it and the files it was given. The *Gallery* tab shows them
+as a grid: filter by kind and album, sort by date, name, model, file size or
+any numeric setting (steps, seed, length…), reverse any order, and search.
+Search matches words in prompts, names, models, albums and settings, and takes
+`setting:value` (`seed:42`, `size:1280`), numeric comparisons (`steps>20`,
+`guidance<=4`), `model:`, `album:`, `name:`, `prompt:`, `kind:video`, quoted
+phrases and `-word` to rule one out. *Select* picks several to add to an album,
+take out of one, or delete. Under the output on Create, the newest twelve sit
+in a strip, with *Open gallery*.
 
-Bounded by count, age and bytes, but **per kind**, because the two are nothing
-alike: one clip outweighs a hundred stills, and under a single shared ceiling it
-would evict them. Images get 200 items and 1 GB, video 25 clips and 4 GB, both
-for seven days — the same clock as the saved session. Those ceilings are far
-inside what the engine allows, so the real risk is eviction rather than quota,
-and the app asks for [persistent
-storage](https://webkit.org/blog/14403/updates-to-storage-policy/) on load:
-WebKit evicts a best-effort origin under storage pressure and after a spell
-without interaction, and only persistent mode is exempt.
+Tapping an item opens it full screen: the picture or clip (*⤢* shows an image
+at its own pixels to pan around), stepped with ‹ ›, a sideways swipe or the
+arrow keys through the list it was opened from; the phone's Back closes it.
+Under it: a name, its albums, the whole prompt with *Copy*, every setting with
+the ones changed from the model's default marked — each with a 🔍 that finds
+everything made with that value — and the input files. Its actions are
+*Reuse parameters*, *Use as input* (the button names where it will go, as on a
+fresh result), *Save* and *Delete*.
+
+**Reuse parameters.** Puts the run back on Create: the model, every setting,
+which settings were deliberately set (that flag alone decides whether a value
+equal to the default is still sent), the prompt, and the files it was given,
+re-encoded for the provider since last time's links have expired. It is one
+Undo step for the prompt. *Restore setup* before this kept whatever happened to
+be attached, or cleared it on a model switch, because the inputs were never
+stored with the result; and a job collected on reload was kept with no prompt
+or settings at all, so there was nothing to restore — every long video
+collected by reopening the app was in that state. Both are kept now. Items
+from before this have no stored inputs; reusing one leaves the attachments
+alone and says so.
+
+Inputs are stored once per file, keyed by a SHA-256 of their bytes, so one
+reference image behind fifty runs is stored once; a file nothing refers to any
+more is dropped. A source clip over 256 MB is not copied; the item says which
+input could not be kept.
+
+**Albums and names.** An item can be named and put in any number of albums,
+from the viewer or for a selection. Deleting an album keeps its items.
+
+**Nothing expires by default.** The gallery used to drop everything after seven
+days and cap images at 200 and clips at 25. Now the caps — per kind, so clips
+cannot evict stills — default to 2,000 images and 300 videos with no age
+limit, and are settings under the gallery's ⚙ (up to no limit at all). A named
+item or one in an album is never removed by them, only by Delete. The same ⚙
+shows how much storage the app uses against what the browser allows, and
+whether the browser has made it persistent. The binding limit is the browser's
+own quota — on a Home Screen web app a large share of the disk — and the app
+asks for [persistent storage](https://webkit.org/blog/14403/updates-to-storage-policy/)
+on load, since WebKit evicts a best-effort origin under storage pressure. A
+result the browser refuses to store says so under the result.
 
 A trained LoRA `.zip` is not kept. It is not previewable, and its link expires
 about half an hour after the run either way.
 
-Clear does not disturb a generation in progress. It leaves the status line to
-the run rather than writing over it, and an archive write already under way
-when you clear is dropped rather than landing afterwards in the strip you just
+Clearing the gallery does not disturb a generation in progress, and an archive
+write already under way is dropped rather than landing in the gallery just
 emptied — while a result that finishes later is still kept.
 
 Stored as `ArrayBuffer`s rather than Blobs: WebKit aborts an IndexedDB
 transaction outright for any value containing a Blob, which is how the session
 store shipped broken once.
 
-Each item is two records in two stores, for the same reason the session record
-is split: the strip redraws on every generation and must not pay for bytes it
-never displays. The light record is a thumbnail, the settings, and the rest of
-the metadata, on the order of 20 KB; the media itself lives in a second store
-and is read only to open, reuse or save it. Before that split, drawing the strip
-deserialised every stored image in full — the cost scaled with the size of the
-library rather than with the number of thumbnails, which is what kept the cap at
-twelve.
+Each item is spread over three stores so each view reads only what it shows:
+the metadata record (a few hundred bytes; search and the grid read every one),
+its thumbnail (read for the tiles near the screen, and released again when
+they scroll far off), and the media (read only to view, save or reuse it).
+The grid is drawn in pages of 120.
 
-**Repeat a past run.** Each stored result carries the settings that made it —
-the model, the prompt, every option, and which options were deliberately set,
-since that last flag alone decides whether a value equal to the default is still
-sent. Restore puts all of it back. Restoring onto the model already selected
-keeps whatever is attached; switching cannot, and says so, because the input
-files are not stored alongside the output.
+**Jobs.** A run used to hold the whole app while it went, and *Stop waiting*
+only stopped this tab watching — the job record was left for the next load to
+collect, which reopening the app did anyway, button or not. Now each run is a
+job of its own. Generate is held only while the provider is being asked; after
+that the job runs beside whatever else you do, another generation included.
+The chip beside Generate counts what is running and opens the list: each job's
+state and elapsed time, *Check now*, and *Forget* (stop tracking it — nothing
+can cancel it on the provider, so it may still be billed). Finished jobs stay
+in the list for the visit, with *Open in gallery*. The run started last owns
+the status line; one finishing beside it reports in the list.
 
-**Stop waiting.** A generation used to hold the UI for as long as it ran — up to
-45 minutes for a training run — with no way out but closing the tab. Stop ends
-the waiting, not the job: Pruna documents no cancel endpoint, so the run
-continues and is billed either way, and the job record is deliberately kept so
-the next load reattaches through the path a discarded tab already uses.
+The poll loop no longer gives up on its own. It used to stop after a fixed 30
+minutes, or after three failed status checks in a row, and say to reopen the
+app — reopening then started a fresh loop that collected the result at once,
+which is how a long video could only ever arrive by closing and reopening. A
+dropped connection, a 5xx or a check that never answers is now retried with
+backoff (2.5 s up to 30 s) for as long as the job record is worth keeping, and
+every running job is checked again the moment the app comes back to the
+foreground, the page is shown again, or the network returns. The per-run
+timing record is saved as the run goes rather than only when it ends, so a run
+that never finished in this tab still leaves one; a run picked up on load is
+labelled as such, since its times count from reattaching.
 
 **No server-side persistence.** Nothing is stored server-side. Generated media
 is served `no-store`, so neither the browser nor Cloudflare's edge keeps a copy
 in transit. What the browser keeps — the session above, the recent results and
-their settings, saved prompts, measured runtimes, the running job's id — never
-leaves the device.
+their settings and inputs, saved prompts, measured runtimes, running jobs' ids —
+never leaves the device.
 
 **Job recovery.** A phone can discard the tab mid-generation to reclaim memory,
-and the provider job keeps running and billing regardless. The running job's
-id is kept in this browser — id and model only, never the input or the output —
-so the next load reattaches, polls it to completion and shows the result rather
-than paying for output nobody sees. The media still streams from the provider on
-demand; the `input` object is deliberately excluded, since Workers AI and xAI
-models carry base64 and `data:` URI images inline. A record is discarded once
-collected, once the job definitively fails, or after an hour (six for training
-runs, which legitimately take that long).
+and the provider job keeps running and billing regardless. Each running job's
+record is kept in this browser — its id and model, and the prompt, settings and
+input references the gallery needs, never the API payload, since Workers AI
+and xAI models carry base64 and `data:` URI images inline — so the next load
+reattaches every one, polls it to completion and keeps the result with its
+settings. A record is discarded once the result is kept, once the job
+definitively fails, when it is forgotten, or after six hours for video and
+training (two for anything else).
 
 **Credential isolation.** API keys live in Cloudflare secrets and never reach
 the browser. Every provider call is made by the Worker.
@@ -598,7 +651,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 41 Worker tests, then 304 assertions per
+are needed and nothing is billed. 44 Worker tests, then 391 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a

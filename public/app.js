@@ -63,11 +63,16 @@ const RETRY_DELAYS = [400, 1200];
 // `read(res)` runs inside the same deadline, so a body that stops arriving is
 // caught too, not only a slow first byte. `onAttempt` hears how each attempt
 // went, for the run's timing record.
+//
+// A `signal` passed alongside `timeoutMs` still aborts the request, and an
+// abort from that signal is never retried: it is the caller deciding to stop,
+// not the network failing.
 async function api(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
   if (authRequired && getPw()) headers["x-app-password"] = getPw();
   // These are ours, not fetch's — keep them out of the request init.
   const { retry, onRetry, timeoutMs, read, onAttempt, ...rest } = opts;
+  const outer = rest.signal || null;
   const method = (opts.method || "GET").toUpperCase();
   const canRetry = retry === true || (retry !== false && method === "GET");
 
@@ -83,6 +88,11 @@ async function api(path, opts = {}) {
           ctl.abort();
         }, timeoutMs)
       : null;
+    const relay = () => ctl && ctl.abort();
+    if (ctl && outer) {
+      if (outer.aborted) ctl.abort();
+      else outer.addEventListener("abort", relay, { once: true });
+    }
     const init = Object.assign({}, rest, { headers }, ctl ? { signal: ctl.signal } : {});
     try {
       const res = await fetch(path, init);
@@ -96,6 +106,10 @@ async function api(path, opts = {}) {
       return value;
     } catch (err) {
       if (err && err.message === "Unauthorized") throw err; // ours, not the network's
+      if (outer && outer.aborted && !expired) {
+        if (onAttempt) onAttempt({ attempt: attempt + 1, ms: Date.now() - t0, outcome: "aborted" });
+        throw err;
+      }
       lastErr = err;
       timedOut = expired;
       if (onAttempt) onAttempt({ attempt: attempt + 1, ms: Date.now() - t0, outcome: expired ? "timeout" : "network" });
@@ -104,6 +118,7 @@ async function api(path, opts = {}) {
       await sleep(RETRY_DELAYS[attempt]);
     } finally {
       clearTimeout(timer);
+      if (outer) outer.removeEventListener("abort", relay);
     }
   }
   if (timedOut) {
@@ -395,22 +410,27 @@ async function startApp() {
   const wanted = MODELS.some((m) => m.id === defaultModel) ? defaultModel : first && first.value;
   selectModel(wanted || MODELS[0].id);
   initPromptLibrary();
-  initStopButton();
+  initJobs();
   refreshNeurons();
   $("footer-note").textContent =
     "Generations are proxied through a Cloudflare Worker. Nothing is stored server-side; your current " +
-    "edit — files, prompt, model and settings — the recent images and videos with the settings that " +
-    "made them, and a running job's id are kept in this browser only, so a closed tab picks up where " +
-    "it left off. Recent results are dropped after a week, and Clear removes them now.";
+    "edit — files, prompt, model and settings — the gallery with the settings and input files that " +
+    "made each item, your saved prompts, and running jobs' ids are kept in this browser only, so a " +
+    "closed tab picks up where it left off. The gallery keeps everything until you delete it, unless " +
+    "you set limits in its ⚙ settings.";
   // Puts the last session's files, prompt, model and settings back before any
   // of the listeners below can overwrite the saved snapshot.
   await restoreSession();
   initSessionPersistence();
-  initRecent();
-  // Anything that aged out while the app was closed goes before it is shown.
-  pruneGallery().then(renderRecent);
+  initGallery();
+  // Anything past the limits goes before it is shown; inputs nothing refers
+  // to any more go after.
+  pruneGallery()
+    .then(renderRecent)
+    .then(() => (currentScreen === "gallery" ? renderGallery() : null))
+    .then(() => sweepInputs());
   // Last, so a recovered job cannot delay the UI becoming usable.
-  resumeInFlightJob();
+  resumeJobs();
 }
 
 // ---------------------------------------------------------------------------
@@ -531,8 +551,10 @@ function selectModel(id) {
   // text was typed into. Committing here records whatever the new box ended up
   // with — usually the same text carried straight over, in which case this is a
   // no-op; a new model's own default, or an empty box after a model with no
-  // prompt field at all, becomes an entry you can undo back out of.
-  commitPromptHistory();
+  // prompt field at all, becomes an entry you can undo back out of. Not during
+  // a restore: the snapshot's text is about to be written, and the empty box
+  // between would become an Undo step of its own.
+  if (!restoringSession) commitPromptHistory();
   scheduleSessionSave();
 }
 
@@ -1674,74 +1696,54 @@ function slowHint(model) {
   return ` · usually about ${fmtDuration(t)}`;
 }
 
-$("gen-form").addEventListener("submit", async (e) => {
+$("gen-form").addEventListener("submit", (e) => {
   e.preventDefault();
+  // Held only while the provider is being asked: once it has the job (or, for a
+  // model that answers in one request, once that request is on its way), the
+  // job runs on its own and Generate is free for the next one. Two taps in a
+  // row would otherwise start, and bill, two identical runs.
+  if (submitting) return;
+  // A file still on its way to the provider has no URL yet, and buildInput
+  // leaves out anything without one — the run would go without it, silently.
+  const pending = currentModel.fields.some(
+    (f) => f.type === "image" && fieldVisible(f) && (uploads[f.name] || []).some((u) => u.uploading)
+  );
+  if (pending) {
+    setStatus("A file is still uploading — Generate again once its thumbnail settles.", "err");
+    return;
+  }
   const { input, missing } = buildInput();
   if (missing.length) {
     setStatus("Please fill required field(s): " + missing.join(", "), "err");
     return;
   }
-
-  const btn = $("generate-btn");
-  btn.disabled = true;
-  $("result").innerHTML = "";
-  // The old output is gone from the panel, so it is no longer something Judge
-  // can offer to score.
-  lastResult = { urls: [], kind: null, blobs: [] };
-  clearJudgeResult();
-  const kind = currentModel.kind;
-  const model = currentModel;
-  const started = Date.now();
   // Taken now rather than when the result lands: the point is the settings that
   // produced this run, and Improve or a model switch could move them meanwhile.
   const promptEl = primaryPromptEl();
-  const meta = {
-    modelId: model.id,
-    prompt: promptEl ? promptEl.value : "",
-    setup: currentSetupSnapshot(),
-  };
-  setStatus("Submitting…", "load");
-  showStopButton(true);
-  generationInFlight = true;
-
-  const timer = runTimer({ model: model.id, kind, startedAt: started });
-  let downloading = null;
-  try {
-    const progress = (state, secs) => setStatus(`${cap(state)}… ${secs}s elapsed${slowHint(model)}`, "load");
-    const urls = await runGeneration(model.id, input, kind, progress, timer);
-    if (!urls.length) throw new Error("No output URL returned.");
-    // The provider is finished but nothing is on screen yet. The count used to
-    // freeze here for the whole download, which read as a hang and left the
-    // download out of the time the run was said to take.
-    downloading = progressTicker(progress, started);
-    downloading.set("downloading");
-    let secs = null;
-    const shownAt = () => {
-      downloading.stop();
-      secs = Math.round((Date.now() - started) / 1000);
-    };
-    await showResult(urls, kind, meta, { timer, onDisplayed: shownAt });
-    if (secs === null) shownAt();
-    // A run this tab watched start to finish, so it is a measurement of the
-    // model rather than of when someone happened to reopen the app. It ends
-    // when the result is on screen; the gallery save after that is not the
-    // model's time.
-    recordRuntime(model.id, secs);
-    const cost = addSpend(model, input, urls.length);
-    // Analytics lag inference slightly, so give it a moment before re-reading.
-    setTimeout(refreshNeurons, 4000);
-    setStatus(`Done in ${secs}s.${cost ? " " + cost : ""}`, "ok");
-  } catch (err) {
-    timer.finish(err.message === STOPPED ? "stopped" : "error: " + err.message);
-    setStatus(err.message === STOPPED ? stoppedMessage(kind) : "Error: " + err.message, err.message === STOPPED ? "ok" : "err");
-  } finally {
-    if (downloading) downloading.stop();
-    btn.disabled = false;
-    showStopButton(false);
-    stopWatching = false;
-    generationInFlight = false;
-  }
+  startJob({
+    model: currentModel,
+    input,
+    meta: {
+      modelId: currentModel.id,
+      prompt: promptEl ? promptEl.value : "",
+      setup: currentSetupSnapshot(),
+    },
+    files: attachedFilesByField(),
+  });
 });
+
+// The File behind every upload the run is about to use, by field, so the
+// gallery can keep the inputs beside the output and put them back later.
+function attachedFilesByField() {
+  const out = {};
+  if (!currentModel) return out;
+  for (const f of currentModel.fields) {
+    if (f.type !== "image" || !fieldVisible(f)) continue;
+    const list = (uploads[f.name] || []).filter((u) => u.file && u.url).map((u) => u.file);
+    if (list.length) out[f.name] = list;
+  }
+  return out;
+}
 
 $("reset-btn").addEventListener("click", () => {
   // Before the box is rebuilt, so a burst of typing that has not hit its commit
@@ -1777,7 +1779,7 @@ function providerErrorText(data, status, fallback) {
 // Try-Sync used to be requested for every image model except the two known to
 // hang past it (forceAsync in models.js). That was the bug behind "closed the
 // PWA mid-job, reopened, nothing to resume": a Try-Sync generation runs entirely
-// inside one fetch, and saveJob() only ever ran on the *fallback* response —
+// inside one fetch, and the job record was only ever written on the *fallback* response —
 // never on a synchronous success. So for most image models there was no job id
 // to persist until that single request already finished, and closing the app at
 // any point before it resolved (a network blip, the phone reclaiming the tab, a
@@ -1866,9 +1868,14 @@ function attemptLog(list) {
     list.push({ attempt: a.attempt, ms: Math.round(a.ms), outcome: a.outcome, upstream: a.res ? upstreamMs(a.res) : null });
 }
 
+// The record is saved while the run is still going — on each new provider
+// state, and every few polls — not only when it ends. A run that never
+// finishes in this tab (the app closed, the phone discarded it) used to leave
+// no record at all, which is exactly the run worth looking at.
 function runTimer({ model, kind, label, startedAt }) {
   const t0 = startedAt || Date.now();
   const rec = {
+    id: `${t0}-${Math.random().toString(36).slice(2, 8)}`,
     at: new Date(t0).toISOString(),
     model,
     kind,
@@ -1882,7 +1889,7 @@ function runTimer({ model, kind, label, startedAt }) {
     saved: null,
     hiddenMs: 0,
     hiddenCount: 0,
-    outcome: null,
+    outcome: "running",
   };
   const at = () => Date.now() - t0;
   let hiddenSince = document.hidden ? Date.now() : null;
@@ -1896,19 +1903,30 @@ function runTimer({ model, kind, label, startedAt }) {
       rec.hiddenMs += Date.now() - hiddenSince;
       hiddenSince = null;
     }
+    checkpoint();
   };
   if (hiddenSince !== null) rec.hiddenCount++;
   document.addEventListener("visibilitychange", onVis);
   let done = false;
+  const checkpoint = () => {
+    if (done) return;
+    rec.total = at();
+    saveTiming(rec);
+  };
   return {
     rec,
     at,
+    checkpoint,
     state(s) {
-      if (s && !(s in rec.states)) rec.states[s] = at();
+      if (s && !(s in rec.states)) {
+        rec.states[s] = at();
+        checkpoint();
+      }
     },
     poll(entry) {
       if (rec.polls.length < TIMING_MAX_POLLS) rec.polls.push(entry);
       else rec.pollsDropped++;
+      if ((rec.polls.length + rec.pollsDropped) % 10 === 0) checkpoint();
     },
     finish(outcome) {
       if (done) return;
@@ -1931,10 +1949,13 @@ function loadTimings() {
   }
 }
 
+// Replaces the run's earlier checkpoint rather than adding beside it.
 function saveTiming(rec) {
   try {
     const all = loadTimings();
-    all.push(rec);
+    const i = rec.id ? all.findIndex((r) => r && r.id === rec.id) : -1;
+    if (i >= 0) all[i] = rec;
+    else all.push(rec);
     localStorage.setItem(TIMING_KEY, JSON.stringify(all.slice(-TIMING_RUNS)));
   } catch {
     /* storage unavailable or full — the timing is a diagnostic, not a feature */
@@ -1945,6 +1966,11 @@ const fmtS = (ms) => (ms == null ? "–" : (ms / 1000).toFixed(ms < 10000 ? 2 : 
 
 function timingRows(rec) {
   const rows = [];
+  // A run collected on load was never watched from the start by this tab, so
+  // every time below counts from reattaching — read alone, it looks like a job
+  // that never started until the app was reopened.
+  if (rec.label === "reattached") rows.push("Picked up on load: times count from reattaching, not from Generate");
+  if (rec.outcome && rec.outcome !== "ok") rows.push(`Outcome: ${rec.outcome}`);
   const s = rec.submit;
   if (s) {
     rows.push(`Submit: ${fmtS(s.ms)}` + (s.upstream != null ? ` (Worker→provider ${fmtS(s.upstream)})` : ""));
@@ -1972,7 +1998,7 @@ function timingRows(rec) {
     );
   });
   if (rec.visible != null) rows.push(`Visible at ${fmtS(rec.visible)}`);
-  if (rec.saved != null) rows.push(`Saved to Recent at ${fmtS(rec.saved)}`);
+  if (rec.saved != null) rows.push(`Saved to gallery at ${fmtS(rec.saved)}`);
   rows.push(rec.hiddenCount ? `App in background: ${fmtS(rec.hiddenMs)} (${rec.hiddenCount}×)` : "App in background: never");
   return rows;
 }
@@ -2065,323 +2091,634 @@ function whenShown(el) {
   });
 }
 
-async function runGeneration(model, input, kind, onProgress, timer) {
-  lastActualCostUsd = null;
-  const spec = MODELS.find((m) => m.id === model);
-  // One clock for the whole run — the submit leg and the polling share it, so
-  // the count does not restart when polling takes over.
-  const started = Date.now();
-  const ticker = onProgress ? progressTicker(onProgress, started) : null;
+// ---------------------------------------------------------------------------
+// Jobs
+//
+// A run used to hold the whole app while it went: Generate stayed disabled, and
+// the only way out was "Stop waiting", which stopped this tab watching and left
+// the job record behind for the next load to collect. Reopening the app did the
+// same thing without the button, so the button explained nothing.
+//
+// Each run is now a job of its own. Generate is held only while the provider is
+// being asked; after that the job runs beside whatever else you do — another
+// generation included — and lands in the gallery when it finishes. Running and
+// finished jobs are listed in the tray opened from the bottom bar.
+//
+// What kept a long video from ever arriving while the app stayed open was the
+// poll loop giving up on its own: after a fixed 30 minutes, or after three
+// failed status checks in a row, it stopped and said to reopen the app — and
+// reopening started a fresh loop that collected the result at once. Nothing
+// here gives up while the provider still says the job is running: a dropped
+// connection, a 5xx or a check that never answers is retried with backoff, for
+// as long as the job record is worth keeping. And the loop is woken the moment
+// the app comes back to the foreground or the network returns, which is exactly
+// what reopening the app used to do.
+//
+// The records — the provider's job id, the model, and the settings and input
+// references the gallery needs — are kept in localStorage, so a tab the phone
+// discards reattaches on the next load as before. The API payload itself is not
+// kept: Workers AI and xAI models carry base64 and data: URIs inline.
+// ---------------------------------------------------------------------------
+const JOBS_KEY = "patchbay_jobs";
+// The single record earlier versions kept, read once and folded in.
+const LEGACY_JOB_KEY = "pruna_inflight_job";
+// How long a record stays worth checking. Delivery links expire, so a very old
+// job is unlikely to be collectable; training runs legitimately take hours, and
+// a queued video can too.
+const JOB_MAX_AGE_MS = { file: 6 * 60 * 60 * 1000, video: 6 * 60 * 60 * 1000, other: 2 * 60 * 60 * 1000 };
+const POLL_MS = 2500;
+// Removing Try-Sync traded away its main benefit: a fast image used to come back
+// in a single round trip, and now always pays for at least one poll cycle. Most
+// images finish in 1-3s, so a coarse cadence would be a felt slowdown on the
+// most common action. A job's cost is what it costs regardless of how often its
+// status is checked.
+const IMAGE_POLL_MS = 900;
+// A job still going after this long is a slow one; checking it every 2.5 s buys
+// nothing but battery.
+const SLOW_POLL_MS = 5000;
+const SLOW_AFTER_MS = 10 * 60 * 1000;
+// A status check answers in well under a second when the connection is sound,
+// so one still open after this long is stuck rather than slow: it is dropped
+// and asked again.
+const STATUS_TIMEOUT_MS = 8000;
+// Waits between status checks once they start failing: the provider or the
+// connection is down, and hammering it does not bring it back sooner.
+const RECONNECT_BACKOFF_MS = [2500, 5000, 10000, 20000, 30000];
+const FORGOTTEN = "__forgotten__";
+const FINISHED_KEEP = 10;
 
+let jobs = []; // running, oldest first
+let finishedJobs = []; // this visit's outcomes, newest first
+// The run that owns the status line: the one started last. A job running
+// beside it reports in the tray instead, so two counters never fight over one
+// line.
+let focusedJob = null;
+let submitting = false;
+
+const jobMaxAge = (kind) => JOB_MAX_AGE_MS[kind] || JOB_MAX_AGE_MS.other;
+const jobLabel = (job) => (job.model ? job.model.label : job.modelId || "job");
+const anyJobRunning = () => jobs.length > 0;
+
+function loadJobRecords() {
+  let list = [];
   try {
-    // A synchronous model is generating from the first moment: Workers AI and
-    // xAI's image endpoints run the whole thing inside this one request, and
-    // there is never anything to poll.
-    if (ticker) ticker.set(isSynchronous(spec) ? "generating" : "submitting");
+    const v = JSON.parse(localStorage.getItem(JOBS_KEY));
+    if (Array.isArray(v)) list = v.filter((r) => r && typeof r.id === "string" && r.id);
+  } catch {
+    /* unreadable — nothing to resume */
+  }
+  try {
+    const old = JSON.parse(localStorage.getItem(LEGACY_JOB_KEY));
+    if (old && typeof old.id === "string" && old.id && !list.some((r) => r.id === old.id)) {
+      list.push(old);
+      localStorage.setItem(JOBS_KEY, JSON.stringify(list));
+    }
+    localStorage.removeItem(LEGACY_JOB_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+  return list;
+}
 
-    const sent = timer ? timer.at() : 0;
-    const startRes = await api("/api/generate", {
+function storeJobRecords(list) {
+  try {
+    if (list.length) localStorage.setItem(JOBS_KEY, JSON.stringify(list));
+    else localStorage.removeItem(JOBS_KEY);
+  } catch {
+    /* storage unavailable — resume is a convenience, not a requirement */
+  }
+}
+
+function putJobRecord(job) {
+  if (!job.id) return;
+  const rec = {
+    id: job.id,
+    model: job.modelId,
+    kind: job.kind,
+    startedAt: job.startedAt,
+    prompt: job.meta.prompt || "",
+    setup: job.meta.setup || null,
+    inputs: job.meta.inputs || null,
+  };
+  storeJobRecords(loadJobRecords().filter((r) => r.id !== rec.id).concat([rec]));
+}
+
+function dropJobRecord(id) {
+  if (id) storeJobRecords(loadJobRecords().filter((r) => r.id !== id));
+}
+
+function newJob({ modelId, kind, meta, id = null, startedAt, reattached = false }) {
+  const job = {
+    key: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id,
+    modelId,
+    model: MODELS.find((m) => m.id === modelId) || null,
+    kind,
+    meta,
+    startedAt: startedAt || Date.now(),
+    // The clock the elapsed count runs on: Generate for a fresh run, the
+    // moment of reattaching for one picked up on load.
+    clock: Date.now(),
+    reattached,
+    state: reattached ? "checking" : "submitting",
+    secs: 0,
+    trouble: null,
+    forgotten: false,
+    pollCtl: null,
+    sleeper: null,
+  };
+  // Cuts short whatever the job is waiting on — a hung status check or the
+  // pause before the next one — so it asks the provider again at once.
+  job.wake = () => {
+    if (job.pollCtl) job.pollCtl.abort();
+    if (job.sleeper) job.sleeper();
+  };
+  return job;
+}
+
+function jobSleep(job, ms) {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(t);
+      job.sleeper = null;
+      resolve();
+    };
+    const t = setTimeout(done, ms);
+    job.sleeper = done;
+  });
+}
+
+function wakeJobs() {
+  for (const j of jobs) j.wake();
+}
+
+function refreshGenerate() {
+  const btn = $("generate-btn");
+  btn.disabled = submitting;
+  btn.textContent = submitting ? "Sending…" : "Generate";
+}
+
+function jobProgress(job, state, secs) {
+  job.state = state;
+  job.secs = secs;
+  if (focusedJob === job) {
+    const tail = job.reattached ? "since reattaching" : "elapsed" + slowHint(job.model);
+    setStatus(`${cap(state)}… ${secs}s ${tail}`, "load");
+  }
+  renderJobs();
+}
+
+function startJob({ model, input, meta, files }) {
+  $("result").innerHTML = "";
+  // The old output is gone from the panel, so it is no longer something Judge
+  // can offer to score.
+  lastResult = { urls: [], kind: null, blobs: [] };
+  clearJudgeResult();
+  const job = newJob({ modelId: model.id, kind: model.kind, meta });
+  // In memory only, for the cost estimate once it finishes.
+  job.input = input;
+  // The inputs are copied into the gallery's own store while the job runs, so
+  // the result can be reused with them later. A run with nothing attached
+  // records that too: reusing it must clear what is attached then.
+  if (files && Object.keys(files).length) {
+    job.inputsPending = stashInputs(files)
+      .then((refs) => {
+        job.meta.inputs = refs;
+        putJobRecord(job);
+        return refs;
+      })
+      .catch(() => null);
+  } else {
+    job.meta.inputs = {};
+  }
+  jobs.push(job);
+  focusedJob = job;
+  submitting = true;
+  refreshGenerate();
+  setStatus("Submitting…", "load");
+  renderJobs();
+  runJob(job);
+}
+
+// Called once on boot. Picks up every job a tab that went away left running.
+function resumeJobs() {
+  const now = Date.now();
+  for (const rec of loadJobRecords()) {
+    const age = now - (Number(rec.startedAt) || 0);
+    // A negative age means the clock moved; treat it as unusable rather than
+    // trusting it.
+    if (!(age >= 0) || age > jobMaxAge(rec.kind)) {
+      dropJobRecord(rec.id);
+      continue;
+    }
+    const job = newJob({
+      modelId: rec.model || "",
+      kind: rec.kind,
+      // Records from before the settings were kept have none to give back.
+      meta: { modelId: rec.model || "", prompt: rec.prompt || "", setup: rec.setup || null, inputs: rec.inputs || null },
+      id: rec.id,
+      startedAt: rec.startedAt,
+      reattached: true,
+    });
+    jobs.push(job);
+    if (!focusedJob) {
+      focusedJob = job;
+      const mins = Math.floor(age / 60000);
+      const ago = mins < 1 ? "less than a minute ago" : `${mins} min ago`;
+      setStatus(`Picking up the ${jobLabel(job)} you left running ${ago}…`, "load");
+    }
+    runJob(job);
+  }
+  renderJobs();
+}
+
+async function runJob(job) {
+  const timer = runTimer({ model: job.modelId, kind: job.kind, label: job.reattached ? "reattached" : "run", startedAt: job.clock });
+  job.timer = timer;
+  const progress = (state, secs) => jobProgress(job, state, secs);
+  // The poll loop is not a clock: the count comes from here, once a second,
+  // whatever the requests underneath are doing.
+  const ticker = progressTicker(progress, job.clock);
+  let downloading = null;
+  try {
+    let urls = null;
+    let actualUsd = null;
+    if (!job.id) {
+      // A synchronous model is generating from the first moment: Workers AI and
+      // xAI's image endpoints run the whole thing inside one request.
+      ticker.set(isSynchronous(job.model) ? "generating" : "submitting");
+      urls = await submitJob(job);
+      if (job.forgotten) throw new Error(FORGOTTEN);
+      if (!urls) ticker.set("processing");
+    }
+    if (!urls) {
+      const r = await pollJob(job, (state) => ticker.set(state));
+      urls = r.urls;
+      actualUsd = r.actualUsd;
+    }
+    ticker.stop();
+    if (!urls.length) throw new Error("No output URL returned.");
+    // The provider is finished but nothing is on screen yet; the count keeps
+    // going through the download rather than freezing until the result lands.
+    downloading = progressTicker(progress, job.clock);
+    downloading.set("downloading");
+    let secs = null;
+    const shownAt = () => {
+      downloading.stop();
+      secs = Math.round((Date.now() - job.clock) / 1000);
+    };
+    const archived = await showResult(urls, job.kind, { ...job.meta, inputsPending: job.inputsPending }, { timer, onDisplayed: shownAt });
+    if (secs === null) shownAt();
+    // Collected and kept, so there is nothing left to reattach to.
+    dropJobRecord(job.id);
+    let text;
+    if (job.reattached) {
+      // The elapsed time is measured from reattaching, which says nothing
+      // about the model; and the estimate needs the input, which is not kept.
+      text = `Recovered the ${jobLabel(job)} you left running.`;
+    } else {
+      recordRuntime(job.modelId, secs);
+      const cost = job.model ? addSpend(job.model, job.input, urls.length, actualUsd) : "";
+      // Analytics lag inference slightly, so give it a moment before re-reading.
+      setTimeout(refreshNeurons, 4000);
+      text = `Done in ${secs}s.${cost ? " " + cost : ""}`;
+    }
+    finishJob(job, { ok: true, text, galleryId: archived[0] || null });
+  } catch (err) {
+    const forgotten = err.message === FORGOTTEN;
+    timer.finish(forgotten ? "forgotten" : "error: " + err.message);
+    finishJob(job, {
+      ok: forgotten,
+      text: forgotten
+        ? `Stopped tracking the ${jobLabel(job)}. It may still run on the provider and be billed; its result will not be collected.`
+        : (job.reattached ? "Could not finish the earlier job: " : "Error: ") + err.message,
+    });
+  } finally {
+    ticker.stop();
+    if (downloading) downloading.stop();
+  }
+}
+
+// Asks the provider for the job. Resolves with the finished URLs for a model
+// that answers in one request, or with null once a job id is recorded.
+async function submitJob(job) {
+  const timer = job.timer;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    submitting = false;
+    refreshGenerate();
+  };
+  // A synchronous run is the whole generation inside this request; Generate
+  // comes back once it is on its way rather than when it finishes.
+  if (isSynchronous(job.model)) setTimeout(release, 1500);
+  try {
+    const sent = timer.at();
+    const res = await api("/api/generate", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model, input }),
+      body: JSON.stringify({ model: job.modelId, input: job.input }),
     });
-    const data = await startRes.json();
-    if (timer) {
-      const returned = timer.at();
-      timer.rec.submit = { sent, returned, ms: returned - sent, http: startRes.status, upstream: upstreamMs(startRes) };
-    }
-    if (!startRes.ok) throw new Error(providerErrorText(data, startRes.status));
+    const data = await res.json().catch(() => ({}));
+    const returned = timer.at();
+    timer.rec.submit = { sent, returned, ms: returned - sent, http: res.status, upstream: upstreamMs(res) };
+    timer.checkpoint();
+    if (!res.ok) throw new Error(providerErrorText(data, res.status));
 
     // Workers AI returns finished images inline as data URIs (no job to poll).
     if (Array.isArray(data.images) && data.images.length) return data.images;
     if (data.status === "succeeded" && data.generation_url) return asUrlList(data.generation_url);
     if (data.status === "failed" || data.status === "error") {
-      throw new Error(providerErrorText(data, startRes.status, "Generation failed."));
+      throw new Error(providerErrorText(data, res.status, "Generation failed."));
     }
-
     let id = data.id;
     if (!id && data.get_url) {
       const m = String(data.get_url).match(/status\/([^/?#]+)/);
       if (m) id = m[1];
     }
     if (!id) throw new Error("No job id returned. Response: " + JSON.stringify(data).slice(0, 240));
-
     // The job now exists on the provider and will run to completion whether or
     // not this tab survives, so record it before the first poll.
-    saveJob({ id, model, kind, startedAt: Date.now() });
-    if (ticker) ticker.set("processing");
-    // The poll supplies the state word; the ticker keeps supplying the number,
-    // including while a poll is in flight.
-    return await pollJob(id, kind, (state) => ticker && ticker.set(state), started, timer);
+    job.id = id;
+    job.startedAt = Date.now();
+    putJobRecord(job);
+    return null;
   } finally {
-    // Stopped on every path, or a failed run leaves a timer rewriting the
-    // status line over the top of the message saying what went wrong.
-    if (ticker) ticker.stop();
+    release();
   }
 }
 
-// ---------------------------------------------------------------------------
-// Stopping
-//
-// A generation held the whole UI for as long as it ran — up to 45 minutes for a
-// training run — with no way out but closing the tab, which lost nothing but
-// told you nothing either. Pruna documents no cancel endpoint, so this does not
-// pretend to stop the job: it stops *watching* it. The job record was written
-// before the first poll, so the next load reattaches through the path that
-// already exists for a tab the phone discarded.
-//
-// The record is deliberately left in place — clearing it is what would turn a
-// stop into a loss.
-// ---------------------------------------------------------------------------
-const STOPPED = "__stopped__";
-let stopWatching = false;
-// True from pressing Generate (or reattaching on load) until the result is on
-// screen. The status line belongs to the run while this holds, so nothing
-// incidental gets to write over it.
-let generationInFlight = false;
-
-function stoppedMessage(kind) {
-  const what = kind === "file" ? "training run" : "job";
-  return `Stopped watching. The ${what} is still running and still billed — reopen the app to collect it.`;
-}
-
-function showStopButton(on) {
-  const b = $("stop-btn");
-  if (!b) return;
-  b.classList.toggle("hidden", !on);
-  b.disabled = false;
-  b.textContent = "Stop waiting";
-}
-
-function initStopButton() {
-  const b = $("stop-btn");
-  if (!b) return;
-  b.addEventListener("click", () => {
-    stopWatching = true;
-    b.disabled = true;
-    b.textContent = "Stopping…";
-  });
-}
-
-const POLL_MS = 2500;
-// Removing Try-Sync above traded away its main benefit: a fast image used to
-// come back in a single round trip, and now always pays for at least one poll
-// cycle. Most images finish in 1-3s (execution_time on p-image has run ~1.4s in
-// earlier testing), so a coarse 2.5s cadence would be a felt slowdown on the
-// single most common action. Images poll on a tighter cadence to close most of
-// that gap; slower kinds keep the cadence above; a job's cost is what it costs
-// regardless of how often its status is checked.
-const IMAGE_POLL_MS = 900;
-// A status check answers in well under a second when the connection is sound,
-// so one still open after this long is stuck rather than slow: it is dropped
-// and asked again. Without this a single hung poll held the run for as long as
-// the OS kept the dead request open.
-const STATUS_TIMEOUT_MS = 8000;
-
-// Polls one provider job to a terminal state. Split out of runGeneration so a
-// reload can reattach to a job this tab never saw start.
-// `startedAt` carries runGeneration's clock in, so the elapsed count runs
-// continuously from Generate rather than restarting at zero once an id comes
-// back. A job picked up on reload passes nothing and counts from reattaching,
-// which is what its own wording says.
-async function pollJob(id, kind, onProgress, startedAt, timer) {
-  const started = startedAt || Date.now();
-  // Heavy video jobs (VACE especially) can run well past 10 minutes. LoRA
-  // training is documented as "minutes to hours", so it gets the longest
-  // budget this tab is willing to wait on.
-  const maxMs = (kind === "file" ? 45 : kind === "video" ? 30 : 10) * 60 * 1000;
-  while (true) {
-    // Checked before each poll rather than mid-sleep, so the wait to act on a
-    // Stop is one poll interval at worst. Thrown rather than returned, because
-    // every caller already distinguishes a result from a throw — and this one
-    // must not reach clearJob() below.
-    if (stopWatching) throw new Error(STOPPED);
+// Polls one provider job until the provider says it is finished one way or the
+// other. A failed check is never the end of a job: it is retried with backoff
+// for as long as the record is worth keeping.
+async function pollJob(job, onState) {
+  const timer = job.timer;
+  let failures = 0;
+  for (;;) {
+    if (job.forgotten) throw new Error(FORGOTTEN);
+    const age = Date.now() - job.startedAt;
+    if (age > jobMaxAge(job.kind)) {
+      dropJobRecord(job.id);
+      throw new Error(
+        `Still not finished ${fmtDuration(Math.round(age / 1000))} after it started, so this app has stopped checking. ` +
+          "Delivery links expire, so a result after this is unlikely to be collectable."
+      );
+    }
     const attempts = [];
-    const sent = timer ? timer.at() : 0;
-    // The body is read inside the deadline too; parsing it is not, so a
-    // malformed reply still fails once rather than being retried.
-    let got;
+    const sent = timer.at();
+    const ctl = new AbortController();
+    job.pollCtl = ctl;
+    let got = null;
+    let problem = null;
     try {
-      got = await api("/api/status?id=" + encodeURIComponent(id), {
+      got = await api("/api/status?id=" + encodeURIComponent(job.id), {
         timeoutMs: STATUS_TIMEOUT_MS,
+        signal: ctl.signal,
+        // The body is read inside the deadline too, so a reply that stops
+        // halfway is caught like one that never starts.
         read: async (res) => ({ res, text: await res.text() }),
         onAttempt: attemptLog(attempts),
-        // Same (state, seconds) shape the caller already formats, so a dropped
-        // poll reads as "Reconnecting (1/3)… 12s elapsed" rather than stalling
-        // on the last status with no sign anything went wrong.
-        onRetry: (n, of) =>
-          onProgress && onProgress(`reconnecting (${n}/${of})`, Math.round((Date.now() - started) / 1000)),
+        onRetry: (n, of) => onState(`reconnecting (${n}/${of})`),
       });
     } catch (err) {
-      if (timer) timer.poll({ sent, ms: timer.at() - sent, status: null, http: null, upstream: null, attempts, error: err.message });
-      throw err;
+      if (err && err.message === "Unauthorized") throw err;
+      if (ctl.signal.aborted) {
+        // Woken: the app came back, the network returned, or Check now. Ask
+        // again straight away rather than count it as a failure.
+        timer.poll({ sent, ms: timer.at() - sent, status: null, http: null, upstream: null, attempts, error: "woken" });
+        continue;
+      }
+      problem = err.message;
+    } finally {
+      job.pollCtl = null;
     }
-    const { res: sRes, text } = got;
-    const s = JSON.parse(text);
-    if (timer) {
-      const back = timer.at();
-      timer.poll({ sent, ms: back - sent, status: s.status || null, http: sRes.status, upstream: upstreamMs(sRes), attempts });
-      timer.state(s.status);
+    let s = null;
+    const http = got ? got.res.status : null;
+    if (got) {
+      try {
+        s = JSON.parse(got.text);
+      } catch {
+        problem = `an unreadable reply (HTTP ${http})`;
+      }
     }
-    if (!sRes.ok) throw new Error(providerErrorText(s, sRes.status));
+    timer.poll({
+      sent,
+      ms: timer.at() - sent,
+      status: (s && s.status) || null,
+      http,
+      upstream: got ? upstreamMs(got.res) : null,
+      attempts,
+      ...(problem ? { error: problem } : {}),
+    });
+    // The provider or the edge in front of it is having a moment; the job
+    // itself is not known to have failed.
+    if (!problem && (http >= 500 || http === 429 || http === 408)) problem = providerErrorText(s, http);
+    if (problem) {
+      failures++;
+      job.trouble = problem;
+      const wait = RECONNECT_BACKOFF_MS[Math.min(failures - 1, RECONNECT_BACKOFF_MS.length - 1)];
+      onState(`no answer yet, checking again in ${Math.round(wait / 1000)}s`);
+      await jobSleep(job, wait);
+      continue;
+    }
+    failures = 0;
+    job.trouble = null;
+    timer.state(s.status);
+    // Any other refusal (an id the provider does not know) will not change by
+    // asking again.
+    if (!got.res.ok) {
+      dropJobRecord(job.id);
+      throw new Error(providerErrorText(s, http));
+    }
     if (s.status === "succeeded") {
       // xAI reports the job's real dollar cost — prefer that over any estimate.
-      lastActualCostUsd = typeof s.actual_cost_usd === "number" ? s.actual_cost_usd : null;
-      clearJob(); // collected — nothing left to reattach to
-      return asUrlList(s.generation_url || s.output || s.output_url);
+      // The record stays until the result is kept, so a download cut short by
+      // the app closing is collected again on the next load.
+      return {
+        urls: asUrlList(s.generation_url || s.output || s.output_url),
+        actualUsd: typeof s.actual_cost_usd === "number" ? s.actual_cost_usd : null,
+      };
     }
     // A failed Pruna prediction can answer HTTP 200 with {message, error} and
-    // report no `status` at all. On the status checks alone that fell through to
-    // the onProgress call below, so the loop kept saying "processing" until the
-    // timeout and a failure was indistinguishable from a slow success. An
-    // in-progress body is {message:"Generation in progress", status:"processing"}
-    // with no `error` key, so treating a populated `error` as terminal cannot
-    // misfire on a job that is merely still running.
+    // report no `status` at all. An in-progress body is {message:"Generation in
+    // progress", status:"processing"} with no `error` key, so treating a
+    // populated `error` as terminal cannot misfire on a job still running.
     const errText = typeof s.error === "string" ? s.error.trim() : "";
     if (s.status === "failed" || s.status === "error" || s.status === "canceled" || errText) {
-      clearJob(); // it will never produce anything — do not offer to reattach
-      throw new Error(providerErrorText(s, sRes.status, "Generation failed."));
+      dropJobRecord(job.id);
+      throw new Error(providerErrorText(s, http, "Generation failed."));
     }
-    if (onProgress) onProgress(s.status || "processing", Math.round((Date.now() - started) / 1000));
-    // Checked only after a poll that still reported work in progress. A phone
-    // that suspended this tab past the deadline would otherwise throw a timeout
-    // on resume without ever asking, discarding a job that had finished.
-    if (Date.now() - started > maxMs) {
-      const mins = Math.round(maxMs / 60000);
-      throw new Error(
-        kind === "file"
-          ? `Still training after ${mins} min — this can take hours. The job keeps running ` +
-            "on the provider; reopen the app later to pick it up."
-          : `No result after ${mins} min. The job keeps running on the provider and is billed ` +
-            "either way; reopen the app to pick it up, or try again with lighter settings."
-      );
-    }
-    await sleep(kind === "image" ? IMAGE_POLL_MS : POLL_MS);
+    onState(s.status || "processing");
+    await jobSleep(job, job.kind === "image" ? IMAGE_POLL_MS : age > SLOW_AFTER_MS ? SLOW_POLL_MS : POLL_MS);
   }
 }
 
-// ---------------------------------------------------------------------------
-// In-flight job handoff
-//
-// A phone can discard this tab at any moment to reclaim memory, and the
-// provider job keeps running — and billing — regardless. Keeping the job *id*
-// lets the next load reattach and collect the result instead of paying for
-// output nobody ever sees.
-//
-// Only the id and enough metadata to resume are kept, in this browser's
-// localStorage. No image or video is stored: the media still streams from the
-// provider through /api/result on demand, exactly as before, and none of this
-// reaches the Worker. The `input` object is deliberately excluded — Workers AI
-// and xAI models carry base64 and data: URI images inline, and writing those to
-// disk is precisely what "don't store the images" rules out.
-//
-// Every accessor is wrapped: localStorage throws outright in some contexts
-// (private windows, blocked site data) and a resume convenience must never be
-// the thing that stops the app loading.
-// ---------------------------------------------------------------------------
-const JOB_KEY = "pruna_inflight_job";
-
-// How long a record stays worth trying. Delivery URLs expire, so an ancient
-// record is likely to resolve to nothing; training runs get far longer because
-// they legitimately take hours.
-const JOB_MAX_AGE_MS = { file: 6 * 60 * 60 * 1000, other: 60 * 60 * 1000 };
-
-function saveJob(rec) {
-  try {
-    localStorage.setItem(JOB_KEY, JSON.stringify(rec));
-  } catch {
-    /* storage unavailable — resume is a convenience, not a requirement */
+function finishJob(job, { ok, text, galleryId = null }) {
+  jobs = jobs.filter((j) => j !== job);
+  const owned = focusedJob === job;
+  finishedJobs.unshift({
+    key: job.key,
+    label: jobLabel(job),
+    kind: job.kind,
+    prompt: job.meta.prompt || "",
+    ok,
+    text,
+    galleryId,
+    at: Date.now(),
+    // Seen already when it was on the status line as it finished.
+    seen: owned,
+  });
+  finishedJobs = finishedJobs.slice(0, FINISHED_KEEP);
+  if (owned) {
+    focusedJob = null;
+    setStatus(text, ok ? "ok" : "err");
+  } else if (!focusedJob) {
+    // Nothing else is reporting, so the line is free to say so.
+    setStatus(`${jobLabel(job)}: ${text}`, ok ? "ok" : "err");
   }
+  renderJobs();
 }
 
-function loadJob() {
-  try {
-    const v = JSON.parse(localStorage.getItem(JOB_KEY));
-    return v && typeof v.id === "string" && v.id ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-function clearJob() {
-  try {
-    localStorage.removeItem(JOB_KEY);
-  } catch {
-    /* nothing to do */
-  }
-}
-
-// Called once on boot. Picks up a job left running by a tab that went away.
-async function resumeInFlightJob() {
-  const rec = loadJob();
-  if (!rec) return;
-
-  const age = Date.now() - (Number(rec.startedAt) || 0);
-  const maxAge = rec.kind === "file" ? JOB_MAX_AGE_MS.file : JOB_MAX_AGE_MS.other;
-  // A negative age means the clock moved; treat it as unusable rather than
-  // trusting it.
-  if (!(age >= 0) || age > maxAge) {
-    clearJob();
+function forgetJob(job) {
+  if (
+    !window.confirm(
+      `Stop tracking the ${jobLabel(job)}? Nothing can cancel it on the provider, so it may still finish and be billed — but this app will not collect the result.`
+    )
+  ) {
     return;
   }
+  job.forgotten = true;
+  dropJobRecord(job.id);
+  job.wake();
+}
 
-  const btn = $("generate-btn");
-  btn.disabled = true;
-  const mins = Math.floor(age / 60000);
-  const ago = mins < 1 ? "less than a minute ago" : `${mins} min ago`;
-  setStatus(`Picking up the ${rec.model || "job"} you left running ${ago}…`, "load");
-  showStopButton(true);
-  generationInFlight = true;
-  // Same clock discipline as a fresh run: a reattached job polls just as slowly
-  // and freezes just as readily. Counts from reattaching rather than from the
-  // original submit, which is what the wording says — the record's own
-  // startedAt is not a measure of this tab's wait.
-  const reattached = Date.now();
-  const progress = (state, secs) => setStatus(`${cap(state)}… ${secs}s since reattaching`, "load");
-  const ticker = progressTicker(progress, reattached);
-  const timer = runTimer({ model: rec.model || "", kind: rec.kind, label: "reattached", startedAt: reattached });
-  try {
-    let urls;
-    try {
-      urls = await pollJob(rec.id, rec.kind, (state) => ticker.set(state), reattached, timer);
-    } finally {
-      // Stopped here rather than in the outer finally, which runs *after* the
-      // closing message below — long enough for a tick to land on top of it.
-      ticker.stop();
-    }
-    if (!urls.length) throw new Error("No output URL returned.");
-    // Same as a fresh run: the count keeps going through the download rather
-    // than freezing until the result lands.
-    const downloading = progressTicker(progress, reattached);
-    downloading.set("downloading");
-    // The model comes from the job record; the prompt and the settings do not
-    // exist to recover, since the record deliberately never held the input.
-    try {
-      await showResult(
-        urls,
-        rec.kind,
-        { modelId: rec.model || "", prompt: "", setup: null },
-        { timer, onDisplayed: () => downloading.stop() }
-      );
-    } finally {
-      downloading.stop();
-    }
-    // No spend is added: the estimate needs the original input, which is not
-    // stored, and this run was already paid for before the tab went away.
-    // No runtime is recorded either — the elapsed time here is measured from
-    // reattaching, which says nothing about how long the model takes.
-    setStatus(`Recovered the ${rec.model || "job"} you left running.`, "ok");
-  } catch (e) {
-    // The record is left in place unless pollJob cleared it on a terminal
-    // outcome, so another reload can try again.
-    timer.finish(e.message === STOPPED ? "stopped" : "error: " + e.message);
-    setStatus(e.message === STOPPED ? stoppedMessage(rec.kind) : "Could not finish the earlier job: " + e.message, e.message === STOPPED ? "ok" : "err");
-  } finally {
-    btn.disabled = false;
-    showStopButton(false);
-    stopWatching = false;
-    generationInFlight = false;
+// The chip in the bottom bar: what is running, or what finished out of sight.
+function renderJobs() {
+  const btn = $("jobs-btn");
+  if (!btn) return;
+  const unseen = finishedJobs.filter((f) => !f.seen);
+  let text = "";
+  if (jobs.length) {
+    const lead = jobs[jobs.length - 1];
+    text = `⏳ ${jobs.length} running` + (jobs.length === 1 ? ` · ${lead.secs}s` : "");
+  } else if (unseen.length) {
+    const failed = unseen.filter((f) => !f.ok).length;
+    text = failed ? `⚠ ${failed} failed` : `✓ ${unseen.length} finished`;
   }
+  btn.textContent = text;
+  btn.classList.toggle("hidden", !text);
+  btn.classList.toggle("attention", !jobs.length && unseen.some((f) => !f.ok));
+  refreshActionRow();
+  if (!$("sheet-jobs").classList.contains("hidden")) renderJobsSheet();
+}
+
+let jobsSheetSig = "";
+
+function renderJobsSheet() {
+  const box = $("jobs-list");
+  const sig = jobs.map((j) => j.key + (j.id ? "+" : "")).join(",") + "|" + finishedJobs.map((f) => f.key).join(",");
+  if (sig !== jobsSheetSig) {
+    jobsSheetSig = sig;
+    box.innerHTML = "";
+    if (!jobs.length && !finishedJobs.length) {
+      const p = document.createElement("p");
+      p.className = "chat-note";
+      p.textContent = "Nothing running. Jobs you start appear here, and keep going while you do other things.";
+      box.appendChild(p);
+    }
+    for (const job of jobs.slice().reverse()) box.appendChild(jobRow(job));
+    if (finishedJobs.length) {
+      const h = document.createElement("h3");
+      h.className = "jobs-heading";
+      h.textContent = "Finished";
+      box.appendChild(h);
+      for (const f of finishedJobs) box.appendChild(finishedRow(f));
+    }
+  }
+  for (const job of jobs) {
+    const el = box.querySelector(`[data-job="${job.key}"] .job-state`);
+    if (el) el.textContent = jobStateText(job);
+  }
+}
+
+function jobStateText(job) {
+  const when = job.reattached ? `${job.secs}s since reattaching` : `${job.secs}s elapsed`;
+  return `${cap(job.state)} · ${when}` + (job.trouble ? ` · last check: ${job.trouble}` : "");
+}
+
+function jobRow(job) {
+  const row = document.createElement("div");
+  row.className = "job-row";
+  row.dataset.job = job.key;
+  const title = document.createElement("div");
+  title.className = "job-title";
+  title.textContent = jobLabel(job) + (job.reattached ? " · picked up on load" : "");
+  row.appendChild(title);
+  if (job.meta.prompt) {
+    const p = document.createElement("div");
+    p.className = "job-prompt";
+    p.textContent = job.meta.prompt;
+    row.appendChild(p);
+  }
+  const st = document.createElement("div");
+  st.className = "job-state";
+  st.textContent = jobStateText(job);
+  row.appendChild(st);
+  const actions = document.createElement("div");
+  actions.className = "job-actions";
+  if (job.id) {
+    const check = button("Check now", "secondary", () => job.wake());
+    check.title = "Ask the provider for this job's status right away";
+    actions.appendChild(check);
+  }
+  const forget = button("Forget", "secondary", () => forgetJob(job));
+  forget.title = "Stop tracking this job";
+  actions.appendChild(forget);
+  row.appendChild(actions);
+  return row;
+}
+
+function finishedRow(f) {
+  const row = document.createElement("div");
+  row.className = "job-row finished" + (f.ok ? "" : " failed");
+  const title = document.createElement("div");
+  title.className = "job-title";
+  title.textContent = `${f.ok ? "✓" : "⚠"} ${f.label} · ${new Date(f.at).toLocaleTimeString()}`;
+  row.appendChild(title);
+  const st = document.createElement("div");
+  st.className = "job-state";
+  st.textContent = f.text;
+  row.appendChild(st);
+  if (f.galleryId) {
+    const actions = document.createElement("div");
+    actions.className = "job-actions";
+    actions.appendChild(
+      button("Open in gallery", "secondary", () => {
+        closeSheet("sheet-jobs");
+        openViewer(f.galleryId, { from: currentScreen });
+      })
+    );
+    row.appendChild(actions);
+  }
+  return row;
+}
+
+function initJobs() {
+  $("jobs-btn").addEventListener("click", () => {
+    for (const f of finishedJobs) f.seen = true;
+    jobsSheetSig = "";
+    openSheet("sheet-jobs");
+    renderJobs();
+  });
+  // Reopening the app used to be the only thing that got a stalled run moving
+  // again. These are the moments it would have been reopened.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) wakeJobs();
+  });
+  window.addEventListener("pageshow", wakeJobs);
+  window.addEventListener("online", wakeJobs);
+  renderJobs();
 }
 
 // ---------------------------------------------------------------------------
@@ -2417,11 +2754,17 @@ const DB_NAME = "patchbay";
 // full-size bytes out into GALLERY_BYTES_STORE. Both upgrades are safe for a
 // client holding an older database — the guards in onupgradeneeded leave an
 // existing session untouched, and v3 migrates the images rather than dropping
-// them.
-const DB_VERSION = 3;
+// them. v4 moved each thumbnail out into GALLERY_THUMBS_STORE, so listing a
+// library of thousands reads metadata only, and added the inputs and albums.
+const DB_VERSION = 4;
 const DB_STORE = "session";
 const GALLERY_STORE = "gallery";
 const GALLERY_BYTES_STORE = "galleryBytes";
+const GALLERY_THUMBS_STORE = "galleryThumbs";
+// The files a run was given, keyed by a hash of their bytes, so one reference
+// image used for fifty runs is stored once.
+const GALLERY_INPUTS_STORE = "galleryInputs";
+const ALBUMS_STORE = "albums";
 const META_KEY = "meta";
 const FILES_KEY = "files";
 
@@ -2482,23 +2825,36 @@ function openSessionDb() {
       // both just cursor order.
       if (!db.objectStoreNames.contains(GALLERY_STORE)) db.createObjectStore(GALLERY_STORE, { keyPath: "id" });
       if (!db.objectStoreNames.contains(GALLERY_BYTES_STORE)) db.createObjectStore(GALLERY_BYTES_STORE, { keyPath: "id" });
+      if (!db.objectStoreNames.contains(GALLERY_THUMBS_STORE)) db.createObjectStore(GALLERY_THUMBS_STORE, { keyPath: "id" });
+      if (!db.objectStoreNames.contains(GALLERY_INPUTS_STORE)) db.createObjectStore(GALLERY_INPUTS_STORE, { keyPath: "hash" });
+      if (!db.objectStoreNames.contains(ALBUMS_STORE)) db.createObjectStore(ALBUMS_STORE, { keyPath: "id" });
 
       // Coming from v2, every gallery record still carries its full-size bytes
-      // inline. Move them rather than dropping them: they are the user's images,
-      // and an upgrade does not get to decide that for them. A plain cursor walk
-      // inside the versionchange transaction, so nothing is awaited outside it.
+      // inline; up to v3 it carries its thumbnail. Move both rather than drop
+      // them: they are the user's images, and an upgrade does not get to decide
+      // that for them. A plain cursor walk inside the versionchange
+      // transaction, so nothing is awaited outside it.
       if (req.transaction && db.objectStoreNames.contains(GALLERY_STORE)) {
         const light = req.transaction.objectStore(GALLERY_STORE);
         const heavy = req.transaction.objectStore(GALLERY_BYTES_STORE);
+        const thumbs = req.transaction.objectStore(GALLERY_THUMBS_STORE);
         light.openCursor().onsuccess = (e) => {
           const cursor = e.target.result;
           if (!cursor) return;
           const rec = cursor.value;
+          let changed = false;
           if (rec && rec.bytes) {
             heavy.put({ id: rec.id, bytes: rec.bytes });
             delete rec.bytes;
-            cursor.update(rec);
+            changed = true;
           }
+          if (rec && "thumb" in rec) {
+            if (rec.thumb) thumbs.put({ id: rec.id, buf: rec.thumb, type: rec.thumbType || "image/jpeg" });
+            delete rec.thumb;
+            delete rec.thumbType;
+            changed = true;
+          }
+          if (changed) cursor.update(rec);
           cursor.continue();
         };
       }
@@ -2790,91 +3146,274 @@ function initSessionPersistence() {
 }
 
 // ---------------------------------------------------------------------------
-// Recent generations
+// Gallery
 //
-// A finished result used to survive exactly until the next Generate cleared the
-// panel, and the provider's delivery URL expires soon after, so anything not
-// saved in that moment was gone. Finished images and videos are now kept on the
-// device so you can look back, save one later, send it in as an input, or put
-// the whole setup that produced it back on screen.
+// Every finished image and video is kept on the device with the settings that
+// made it and the files it was given, so it can be looked at again, named,
+// filed in albums, searched by prompt or by parameter, saved, sent back in as
+// an input, or run again exactly as it was.
 //
-// Bounded by count, age and bytes — but per kind, because the two are nothing
-// alike: one clip outweighs a hundred images, and under a single shared ceiling
-// it would evict them. Clear empties both, as does clearing site data.
+// Nothing expires by default. The caps on count and age are settings, and an
+// item that has a name or sits in an album is never removed by them — only by
+// Delete. The real ceiling is the browser's own quota, which on a Home Screen
+// web app is a large share of the disk; persistent storage is asked for on load
+// so WebKit does not evict the origin under pressure.
+// https://webkit.org/blog/14403/updates-to-storage-policy/
 //
 // Stored as ArrayBuffers, never Blobs. WebKit aborts the whole transaction for
-// any value containing a Blob — a File, a slice of one, even a Blob built from
-// bytes already in memory — while Chromium takes all of them, which is how the
-// session store shipped broken once (#69). There is no reason for new code to
-// rediscover that: bytes go in as bytes.
+// any value containing a Blob, which is how the session store shipped broken
+// once (#69).
+//
+// An item is spread over three stores so each view reads only what it shows:
+// the metadata record (a few hundred bytes — the grid and search read every
+// one), its thumbnail (read for the tiles on screen), and the media itself
+// (read only to view, save or reuse it).
 // ---------------------------------------------------------------------------
-const GALLERY_LIMITS = {
-  image: { items: 200, bytes: 1024 * 1024 * 1024, ageMs: 7 * 24 * 60 * 60 * 1000 },
-  video: { items: 25, bytes: 4 * 1024 * 1024 * 1024, ageMs: 7 * 24 * 60 * 60 * 1000 },
+const GALLERY_LIMITS_KEY = "patchbay_gallery_limits";
+// 0 means no limit. Counts apply per kind, because one clip outweighs a hundred
+// stills and a shared count would let the clips evict them.
+const GALLERY_DEFAULT_LIMITS = { image: 2000, video: 300, days: 0 };
+const GALLERY_LIMIT_CHOICES = {
+  image: [200, 500, 1000, 2000, 5000, 10000, 0],
+  video: [25, 50, 100, 300, 1000, 0],
+  days: [0, 7, 30, 90, 365],
 };
-// Seven days matches SESSION_MAX_AGE_MS, so everything this app keeps on the
-// device expires on one clock. The byte ceilings are far inside what the engine
-// allows — a Home Screen web app gets the same per-origin allowance as the
-// browser, up to 60% of the disk — so the binding risk is eviction, which
-// requestPersistentStorage() above is what actually answers.
 
 // Records written before video was archivable carry no `kind` at all, and every
 // one of them is an image.
 const recordKind = (rec) => (rec && rec.kind === "video" ? "video" : "image");
+// Named, or in an album: kept until deleted, whatever the limits say.
+const isProtected = (rec) => Boolean((rec.name && rec.name.trim()) || (Array.isArray(rec.albums) && rec.albums.length));
 
-// Long edge of the stored thumbnail. The strip decodes these rather than
-// full-size images, which is how a phone keeps the tab alive.
+// Long edge of the stored thumbnail.
 const GALLERY_THUMB_PX = 320;
+// A source clip larger than this is not copied into the gallery; the run is
+// still kept, and reusing it says which input could not be put back.
+const MAX_STASH_FILE_BYTES = 256 * 1024 * 1024;
 
-let galleryBroken = false; // one hard failure is enough to stop trying
+function galleryLimits() {
+  try {
+    const v = JSON.parse(localStorage.getItem(GALLERY_LIMITS_KEY) || "{}") || {};
+    const out = { ...GALLERY_DEFAULT_LIMITS };
+    for (const k of Object.keys(out)) if (Number.isFinite(v[k]) && v[k] >= 0) out[k] = v[k];
+    return out;
+  } catch {
+    return { ...GALLERY_DEFAULT_LIMITS };
+  }
+}
 
-// An item is two records in two stores, for the same reason the session record
-// is split into a small half and a heavy one: the strip redraws on every
-// generation and must not pay for bytes it does not display. The light record
-// is the thumbnail and its metadata, about 20 KB; the full image is read only
-// to open, reuse or save it.
+function setGalleryLimits(next) {
+  try {
+    localStorage.setItem(GALLERY_LIMITS_KEY, JSON.stringify({ ...galleryLimits(), ...next }));
+  } catch {
+    /* this visit only */
+  }
+}
+
+// --- storage ----------------------------------------------------------------
+
 const galleryGet = (id) => idbRun(GALLERY_STORE, "readonly", (st) => st.get(id)).then((r) => r.value);
 const galleryBytesGet = (id) =>
   idbRun(GALLERY_BYTES_STORE, "readonly", (st) => st.get(id)).then((r) => (r.value ? r.value.bytes : undefined));
+const galleryUpdate = (rec) => idbRun(GALLERY_STORE, "readwrite", (st) => st.put(rec)).then((r) => r.ok);
 
-async function galleryPut(rec, bytes) {
+// Several reads in one transaction: the tiles that just scrolled into view.
+async function galleryThumbsGet(ids) {
+  const db = await openSessionDb();
+  const out = new Map();
+  if (!db || !ids.length) return out;
+  return new Promise((resolve) => {
+    let tx;
+    try {
+      tx = db.transaction(GALLERY_THUMBS_STORE, "readonly");
+    } catch {
+      return resolve(out);
+    }
+    const st = tx.objectStore(GALLERY_THUMBS_STORE);
+    for (const id of ids) {
+      const req = st.get(id);
+      req.onsuccess = () => {
+        if (req.result && req.result.buf) out.set(id, req.result);
+      };
+    }
+    tx.oncomplete = () => resolve(out);
+    tx.onerror = tx.onabort = () => resolve(out);
+  });
+}
+
+async function galleryPut(rec, bytes, thumb) {
   if (!(await idbRun(GALLERY_BYTES_STORE, "readwrite", (st) => st.put({ id: rec.id, bytes })).then((r) => r.ok))) return false;
-  if (await idbRun(GALLERY_STORE, "readwrite", (st) => st.put(rec)).then((r) => r.ok)) return true;
-  // The light record is what everything else finds an item by, so bytes without
-  // one are unreachable. Drop them rather than leave them stranded.
+  if (thumb) await idbRun(GALLERY_THUMBS_STORE, "readwrite", (st) => st.put({ id: rec.id, buf: thumb.buf, type: thumb.type }));
+  if (await galleryUpdate(rec)) return true;
+  // The metadata record is what everything else finds an item by, so bytes
+  // without one are unreachable. Drop them rather than leave them stranded.
   await idbRun(GALLERY_BYTES_STORE, "readwrite", (st) => st.delete(rec.id));
+  await idbRun(GALLERY_THUMBS_STORE, "readwrite", (st) => st.delete(rec.id));
   return false;
 }
 
 async function galleryDelete(id) {
   await idbRun(GALLERY_BYTES_STORE, "readwrite", (st) => st.delete(id));
+  await idbRun(GALLERY_THUMBS_STORE, "readwrite", (st) => st.delete(id));
   return idbRun(GALLERY_STORE, "readwrite", (st) => st.delete(id)).then((r) => r.ok);
 }
 
-// Bumped by every Clear. An archive write can be seconds in flight — reading a
-// video's bytes, then seeking it for a poster frame — so one that started
-// before a Clear would otherwise land after it, leaving a stray item in a strip
-// the user just emptied.
+// Bumped by every Clear. An archive write can be seconds in flight, so one that
+// started before a Clear would otherwise land after it, leaving a stray item in
+// a gallery the user just emptied.
 let galleryEpoch = 0;
 
 async function galleryClear() {
   galleryEpoch++;
-  await idbRun(GALLERY_BYTES_STORE, "readwrite", (st) => st.clear());
+  for (const store of [GALLERY_BYTES_STORE, GALLERY_THUMBS_STORE, GALLERY_INPUTS_STORE]) {
+    await idbRun(store, "readwrite", (st) => st.clear());
+  }
   return idbRun(GALLERY_STORE, "readwrite", (st) => st.clear()).then((r) => r.ok);
 }
 
-// Every item's thumbnail and metadata, newest first. Deliberately never touches
-// GALLERY_BYTES_STORE: this is what the strip redraws from, so its cost has to
-// scale with the number of thumbnails rather than with the size of the images.
+// Every item's metadata, newest first. Never touches the media or thumbnails.
 async function galleryAll() {
   const r = await idbRun(GALLERY_STORE, "readonly", (st) => st.getAll());
   const list = r.ok && Array.isArray(r.value) ? r.value : [];
   return list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
-// Shrinks a decoded frame to something a strip can hold a lot of. Resolves to
-// null on anything that will not encode, because a missing thumbnail is worth
-// far less than a failed archive. Shared tail of both paths below.
+// --- the files a run was given ----------------------------------------------
+
+let stashPending = 0;
+
+async function hashBytes(buf) {
+  try {
+    const d = await crypto.subtle.digest("SHA-256", buf);
+    return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, "0")).join("");
+  } catch {
+    // No SubtleCrypto (an insecure origin): unique rather than shared.
+    return `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  }
+}
+
+// Copies each attached file into the inputs store and resolves to the
+// references a gallery record keeps: { field: [{ hash, name, type, size }] }.
+// A file that could not be kept is still listed, with why, so reusing the run
+// can say what is missing rather than quietly leaving it out.
+async function stashInputs(byField) {
+  stashPending++;
+  try {
+    const out = {};
+    for (const [field, files] of Object.entries(byField)) {
+      out[field] = [];
+      for (const file of files) {
+        const ref = { name: file.name || "file", type: file.type || "", size: file.size };
+        if (file.size > MAX_STASH_FILE_BYTES) {
+          ref.missing = "too large to keep";
+        } else {
+          try {
+            const buf = await file.arrayBuffer();
+            const hash = await hashBytes(buf);
+            const ok = await idbRun(GALLERY_INPUTS_STORE, "readwrite", (st) =>
+              st.put({ hash, bytes: buf, type: ref.type, name: ref.name, size: ref.size })
+            ).then((r) => r.ok);
+            if (ok) ref.hash = hash;
+            else ref.missing = "storage refused it";
+          } catch {
+            ref.missing = "could not be read";
+          }
+        }
+        out[field].push(ref);
+      }
+    }
+    return out;
+  } finally {
+    stashPending--;
+  }
+}
+
+// Back to real Files, field by field, for the image controls to adopt.
+async function loadInputFiles(inputs) {
+  const files = {};
+  const missing = [];
+  for (const [field, refs] of Object.entries(inputs || {})) {
+    for (const ref of refs || []) {
+      const got = ref.hash ? await idbRun(GALLERY_INPUTS_STORE, "readonly", (st) => st.get(ref.hash)).then((r) => r.value) : null;
+      if (!got || !got.bytes) {
+        missing.push(`${ref.name}${ref.missing ? ` (${ref.missing})` : ""}`);
+        continue;
+      }
+      if (!files[field]) files[field] = [];
+      files[field].push(new File([got.bytes], ref.name || got.name || "file", { type: ref.type || got.type || "" }));
+    }
+  }
+  return { files, missing };
+}
+
+// Drops stored inputs that no item and no running job refers to any more.
+async function sweepInputs() {
+  if (stashPending) return;
+  const keep = new Set();
+  const add = (inputs) => {
+    for (const refs of Object.values(inputs || {})) for (const ref of refs || []) if (ref.hash) keep.add(ref.hash);
+  };
+  for (const rec of await galleryAll()) add(rec.inputs);
+  for (const rec of loadJobRecords()) add(rec.inputs);
+  for (const job of jobs) add(job.meta.inputs);
+  if (stashPending || jobs.some((j) => j.inputsPending && !j.meta.inputs)) return;
+  const r = await idbRun(GALLERY_INPUTS_STORE, "readonly", (st) => st.getAllKeys());
+  const stale = (r.ok && Array.isArray(r.value) ? r.value : []).filter((k) => !keep.has(k));
+  if (stale.length) await idbRun(GALLERY_INPUTS_STORE, "readwrite", (st) => void stale.forEach((k) => st.delete(k)));
+}
+
+// --- albums -----------------------------------------------------------------
+
+let albums = []; // [{ id, name, createdAt }], by name
+
+async function loadAlbums() {
+  const r = await idbRun(ALBUMS_STORE, "readonly", (st) => st.getAll());
+  albums = (r.ok && Array.isArray(r.value) ? r.value : []).sort((a, b) => a.name.localeCompare(b.name));
+  return albums;
+}
+
+const albumName = (id) => (albums.find((a) => a.id === id) || {}).name || "";
+
+async function createAlbum(name) {
+  const clean = name.trim();
+  if (!clean) return null;
+  const existing = albums.find((a) => a.name.toLowerCase() === clean.toLowerCase());
+  if (existing) return existing;
+  const album = { id: `a${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name: clean, createdAt: Date.now() };
+  await idbRun(ALBUMS_STORE, "readwrite", (st) => st.put(album));
+  await loadAlbums();
+  return album;
+}
+
+// The items stay; only their membership goes.
+async function deleteAlbum(id) {
+  await idbRun(ALBUMS_STORE, "readwrite", (st) => st.delete(id));
+  for (const rec of await galleryAll()) {
+    if (Array.isArray(rec.albums) && rec.albums.includes(id)) {
+      rec.albums = rec.albums.filter((a) => a !== id);
+      await galleryUpdate(rec);
+    }
+  }
+  await loadAlbums();
+}
+
+async function setAlbumMembership(ids, albumId, on) {
+  for (const id of ids) {
+    const rec = await galleryGet(id);
+    if (!rec) continue;
+    const set = new Set(Array.isArray(rec.albums) ? rec.albums : []);
+    if (on) set.add(albumId);
+    else set.delete(albumId);
+    rec.albums = [...set];
+    await galleryUpdate(rec);
+  }
+}
+
+// --- thumbnails -------------------------------------------------------------
+
+// Shrinks a decoded frame to something a grid can hold a lot of. Resolves to
+// null on anything that will not encode: a missing thumbnail is worth far less
+// than a failed archive.
 function encodeThumb(source, srcW, srcH) {
   return new Promise((resolve) => {
     try {
@@ -2918,10 +3457,9 @@ function imageThumb(blob) {
   });
 }
 
-// A poster frame, so a kept clip gets a tile like everything else. The element
-// is built from a literal tag name for the same reason probeMediaMeta's is: an
-// element built from a computed string cannot be resolved statically, and the
-// blob: URL below then reads to analysis as a possible script-injection sink.
+// A poster frame, so a kept clip gets a tile like everything else, plus the
+// clip's length. Built from a literal tag name for the same reason
+// probeMediaMeta's is: a computed one reads to analysis as a script sink.
 function videoThumb(blob) {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(blob);
@@ -2933,11 +3471,10 @@ function videoThumb(blob) {
       URL.revokeObjectURL(url);
       resolve(value);
     };
-    const grab = () => encodeThumb(v, v.videoWidth, v.videoHeight).then(done);
-    // "auto", not "metadata" as probeMediaMeta uses: that one only needs the
-    // duration, this needs a decoded frame, and "metadata" is an explicit
-    // instruction to stop before one is available. The bytes are already in
-    // memory behind a blob: URL, so there is nothing extra to fetch.
+    const duration = () => (Number.isFinite(v.duration) ? v.duration : null);
+    const grab = () => encodeThumb(v, v.videoWidth, v.videoHeight).then((t) => done(t ? { ...t, duration: duration() } : null));
+    // "auto", not "metadata": this needs a decoded frame, and "metadata" is an
+    // instruction to stop before one is available.
     v.preload = "auto";
     v.muted = true;
     v.playsInline = true;
@@ -2953,119 +3490,202 @@ function videoThumb(blob) {
       }
     };
     v.onerror = () => done(null);
-    // A clip that decodes but never fires either event must not leave the
-    // archive — and with it the strip — waiting on it.
+    // A clip that decodes but never fires either event must not hold the
+    // archive up.
     setTimeout(() => done(null), 8000);
     v.src = url;
   });
 }
 
-// Applies all three bounds, separately per kind. Runs after every insert and
-// once at boot, so a record that aged out while the app was closed goes on the
-// next load. Counting per kind is what stops one long clip evicting the images.
+// --- keeping and pruning ----------------------------------------------------
+
+// Applies the count and age limits, per kind, to items that are neither named
+// nor in an album. Runs after every insert and once at boot.
 async function pruneGallery() {
+  const lim = galleryLimits();
   const all = await galleryAll();
   const now = Date.now();
-  const tally = { image: { items: 0, bytes: 0 }, video: { items: 0, bytes: 0 } };
-  let kept = 0;
+  const seen = { image: 0, video: 0 };
+  let removed = 0;
   for (const rec of all) {
+    if (isProtected(rec)) continue;
     const kind = recordKind(rec);
-    const limit = GALLERY_LIMITS[kind];
-    const seen = tally[kind];
-    // From the light record's own `size`, so the byte ceiling costs no read of
-    // the media it is measuring.
-    const size = rec.size || 0;
-    const tooOld = !(rec.createdAt > now - limit.ageMs);
-    if (tooOld || seen.items >= limit.items || seen.bytes + size > limit.bytes) {
+    const tooOld = lim.days > 0 && !(rec.createdAt > now - lim.days * 24 * 60 * 60 * 1000);
+    const cap = lim[kind];
+    if (tooOld || (cap > 0 && seen[kind] >= cap)) {
       await galleryDelete(rec.id);
+      removed++;
       continue;
     }
-    seen.items++;
-    seen.bytes += size;
-    kept++;
+    seen[kind]++;
   }
-  return kept;
+  if (removed) scheduleInputSweep();
+  return removed;
 }
 
-// `setup` is the form as it stood when this ran — what makes the result
-// repeatable rather than merely viewable. Null for a job collected on reload,
-// where the form on screen belongs to whatever is selected now and says nothing
-// about the run that produced this.
-async function archiveGeneration(blob, modelId, prompt, kind, setup) {
-  if (galleryBroken) return;
+let sweepTimer = null;
+function scheduleInputSweep() {
+  clearTimeout(sweepTimer);
+  sweepTimer = setTimeout(() => sweepInputs(), 1500);
+}
+
+let galleryProblem = "";
+
+// `meta` is the run that produced this: { modelId, prompt, setup, inputs } and,
+// while the inputs are still being copied, `inputsPending`. Resolves to the new
+// item's id, or null when it could not be kept.
+async function archiveGeneration(blob, meta, kind) {
   const epoch = galleryEpoch;
   try {
     const bytes = await blob.arrayBuffer();
     const thumb = await makeThumb(blob, kind);
-    // Cleared while this was being prepared. The user asked for an empty strip;
-    // writing into it now would put back the one item they were watching.
-    if (epoch !== galleryEpoch) return;
+    const inputs = meta.inputsPending ? await meta.inputsPending : meta.inputs;
+    // Cleared while this was being prepared. The user asked for an empty
+    // gallery; writing into it now would put back the item they were watching.
+    if (epoch !== galleryEpoch) return null;
     const rec = {
       // Sortable and unique enough for one device: two results from the same
       // generation land in the same millisecond otherwise.
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       createdAt: Date.now(),
-      modelId: modelId || "",
-      prompt: prompt || "",
+      modelId: meta.modelId || "",
+      prompt: meta.prompt || "",
       kind: kind === "video" ? "video" : "image",
-      setup: setup || null,
+      setup: meta.setup || null,
       type: blob.type || (kind === "video" ? "video/mp4" : "image/jpeg"),
-      thumb: thumb ? thumb.buf : null,
-      thumbType: thumb ? thumb.type : "",
       width: thumb ? thumb.width : 0,
       height: thumb ? thumb.height : 0,
-      // The one thing the light record keeps about the media itself, so the
-      // byte ceiling can be enforced without reading any of it.
+      duration: thumb && thumb.duration ? thumb.duration : null,
       size: bytes.byteLength,
+      name: "",
+      albums: [],
     };
-    if (!(await galleryPut(rec, bytes))) {
-      // Out of quota, or a store that will not take this. Make room once and
-      // try again before giving up on the feature for this load.
+    // Absent, not empty, on a run whose inputs were never known (one picked up
+    // from a record older than this): reuse then leaves the attachments alone.
+    if (inputs) rec.inputs = inputs;
+    if (!(await galleryPut(rec, bytes, thumb))) {
+      // Out of quota, or a store that will not take this. Make room once under
+      // the current limits and try again.
       await pruneGallery();
-      if (!(await galleryPut(rec, bytes))) {
-        galleryBroken = true;
-        return;
+      if (!(await galleryPut(rec, bytes, thumb))) {
+        galleryProblem = "The last result could not be kept: the browser refused the storage. Delete some items or lower the limits.";
+        return null;
       }
     }
+    galleryProblem = "";
     await pruneGallery();
+    return rec.id;
   } catch {
-    // Archiving is a convenience layered on top of a generation that already
-    // succeeded; it never gets to report an error over the top of the result.
-    galleryBroken = true;
+    // Keeping it is a convenience on top of a generation that already
+    // succeeded; it never gets to fail the run.
+    return null;
   }
 }
 
-// --- the strip, and one item full size -------------------------------------
+// --- lazy thumbnails, shared by the strip and the grid ----------------------
 
-// The strip's thumbnail URLs, released when it is rebuilt. The lightbox keeps
-// its own below: it holds a full-size image, and it opens and closes many times
-// between one strip rebuild and the next.
-let galleryObjectUrls = [];
+// img -> object URL. A tile's thumbnail is loaded when it nears the screen and
+// released when it is far off it, so scrolling through thousands of items holds
+// only the ones around the viewport.
+const liveThumbs = new Map();
+let thumbObserver = null;
+let thumbQueue = new Set();
+let thumbFlush = null;
 
-function releaseGalleryUrls() {
-  for (const u of galleryObjectUrls) URL.revokeObjectURL(u);
-  galleryObjectUrls = [];
+function releaseThumb(img) {
+  const url = liveThumbs.get(img);
+  if (url) URL.revokeObjectURL(url);
+  liveThumbs.delete(img);
+  img.removeAttribute("src");
 }
 
-function galleryObjectUrl(buf, type) {
-  const url = URL.createObjectURL(new Blob([buf], { type: type || "image/jpeg" }));
-  galleryObjectUrls.push(url);
-  return url;
+function releaseThumbsIn(container) {
+  for (const img of [...liveThumbs.keys()]) {
+    if (!img.isConnected || container.contains(img)) {
+      if (thumbObserver) thumbObserver.unobserve(img);
+      releaseThumb(img);
+    }
+  }
 }
 
-// The strip's order, newest first, so the lightbox can step to the item beside
-// the one it shows without closing.
-let galleryOrder = [];
+async function flushThumbQueue() {
+  thumbFlush = null;
+  const imgs = [...thumbQueue].filter((img) => img.isConnected && !liveThumbs.has(img));
+  thumbQueue = new Set();
+  if (!imgs.length) return;
+  const got = await galleryThumbsGet([...new Set(imgs.map((i) => i.dataset.id))]);
+  for (const img of imgs) {
+    const t = got.get(img.dataset.id);
+    if (!img.isConnected || liveThumbs.has(img)) continue;
+    if (!t) {
+      img.closest(".tile, .thumb")?.classList.add("no-thumb");
+      continue;
+    }
+    const url = URL.createObjectURL(new Blob([t.buf], { type: t.type || "image/jpeg" }));
+    liveThumbs.set(img, url);
+    img.src = url;
+  }
+}
+
+function watchThumb(img, id) {
+  img.dataset.id = id;
+  if (!thumbObserver && "IntersectionObserver" in window) {
+    thumbObserver = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) thumbQueue.add(e.target);
+          else if (liveThumbs.has(e.target)) releaseThumb(e.target);
+        }
+        if (thumbQueue.size && !thumbFlush) thumbFlush = setTimeout(flushThumbQueue, 30);
+      },
+      { rootMargin: "800px 0px" }
+    );
+  }
+  if (thumbObserver) thumbObserver.observe(img);
+  else {
+    thumbQueue.add(img);
+    if (!thumbFlush) thumbFlush = setTimeout(flushThumbQueue, 30);
+  }
+}
+
+function thumbTile(rec, cls) {
+  const kind = recordKind(rec);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = cls;
+  btn.dataset.id = rec.id;
+  btn.title = rec.name || rec.prompt || rec.modelId || `Generated ${kind}`;
+  const img = document.createElement("img");
+  img.alt = rec.name || (rec.prompt ? `Generated ${kind}: ${rec.prompt}` : `Generated ${kind}`);
+  img.decoding = "async";
+  btn.appendChild(img);
+  watchThumb(img, rec.id);
+  const blank = document.createElement("span");
+  blank.className = "thumb-blank";
+  blank.textContent = kind === "video" ? "🎬" : "🖼";
+  btn.appendChild(blank);
+  // Otherwise a clip and a still are the same tile, and which one opens a
+  // player is a surprise.
+  if (kind === "video") {
+    const badge = document.createElement("span");
+    badge.className = "thumb-kind";
+    badge.textContent = rec.duration ? `▶ ${Math.round(rec.duration)}s` : "▶";
+    btn.appendChild(badge);
+  }
+  return btn;
+}
+
+// --- the Recent strip on Create ---------------------------------------------
+
+const RECENT_STRIP_ITEMS = 12;
 
 async function renderRecent() {
   const wrap = $("recent");
   const strip = $("recent-strip");
   if (!wrap || !strip) return;
   const items = await galleryAll();
-  galleryOrder = items.map((r) => r.id);
-  releaseGalleryUrls();
+  releaseThumbsIn(strip);
   strip.innerHTML = "";
-
   if (!items.length) {
     wrap.classList.add("hidden");
     return;
@@ -3073,280 +3693,886 @@ async function renderRecent() {
   wrap.classList.remove("hidden");
   const clips = items.filter((r) => recordKind(r) === "video").length;
   $("recent-count").textContent =
-    `${items.length} recent ${items.length === 1 ? "item" : "items"}` +
-    (clips ? ` · ${clips} video${clips === 1 ? "" : "s"}` : "") +
-    " · kept on this device for a week";
-
-  for (const rec of items) {
-    const kind = recordKind(rec);
-    const noun = kind === "video" ? "video" : "image";
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "thumb";
-    btn.title = rec.prompt || rec.modelId || `Generated ${noun}`;
-    // Thumbnails only — a poster frame for a clip. An item whose thumbnail
-    // failed to encode never pulls its full-size bytes in here, which is
-    // exactly the cost this store was split to avoid. It gets a plain tile
-    // instead of an <img> with no src, which browsers draw as a broken image
-    // with the alt text spilling out of it — more likely now that a clip can
-    // fail to yield a frame where a still would not.
-    if (rec.thumb) {
-      const img = document.createElement("img");
-      img.src = galleryObjectUrl(rec.thumb, rec.thumbType);
-      // The strip scrolls sideways, so most tiles are off-screen. Where these
-      // are honoured the browser skips decoding them until they are scrolled
-      // to; where they are not, behaviour is unchanged.
-      img.loading = "lazy";
-      img.decoding = "async";
-      img.alt = rec.prompt ? `Generated ${noun}: ${rec.prompt}` : `Generated ${noun}`;
-      btn.appendChild(img);
-    } else {
-      const blank = document.createElement("span");
-      blank.className = "thumb-blank";
-      blank.textContent = kind === "video" ? "🎬" : "🖼";
-      btn.appendChild(blank);
-    }
-    // Otherwise a clip and a still are the same tile, and which one opens a
-    // player is a surprise.
-    if (kind === "video") {
-      const badge = document.createElement("span");
-      badge.className = "thumb-kind";
-      badge.textContent = "▶";
-      btn.appendChild(badge);
-    }
-    btn.addEventListener("click", () => openLightbox(rec.id));
-    strip.appendChild(btn);
+    `${items.length} in the gallery` + (clips ? ` · ${clips} video${clips === 1 ? "" : "s"}` : "") + (galleryProblem ? ` · ${galleryProblem}` : "");
+  const order = items.map((r) => r.id);
+  for (const rec of items.slice(0, RECENT_STRIP_ITEMS)) {
+    const t = thumbTile(rec, "thumb");
+    t.addEventListener("click", () => openViewer(rec.id, { from: "create", order }));
+    strip.appendChild(t);
   }
 }
 
-// The full-size image on screen. Its own variable rather than the strip's list,
-// because it is replaced every time an item is opened and the strip may not be
-// rebuilt for a long time — leaving them to accumulate pinned a whole image in
-// memory per item viewed, the leak PR #33 fixed for upload previews.
-let lightboxObjectUrl = null;
+// --- parameters, search and sort --------------------------------------------
 
-function releaseLightboxUrl() {
-  if (lightboxObjectUrl) URL.revokeObjectURL(lightboxObjectUrl);
-  lightboxObjectUrl = null;
+// The settings a record was made with, as the form showed them: label, value,
+// and whether it differed from the model's default. The prompt is shown on its
+// own, and fields that belong to another mode are left out.
+function recordParams(rec) {
+  const fields = rec.setup && rec.setup.fields && typeof rec.setup.fields === "object" ? rec.setup.fields : {};
+  const touched = new Set(rec.setup && Array.isArray(rec.setup.touched) ? rec.setup.touched : []);
+  const model = MODELS.find((m) => m.id === rec.modelId);
+  const out = [];
+  if (!model) {
+    for (const [k, v] of Object.entries(fields)) out.push({ name: k, label: k, raw: v, display: String(v), changed: true, numeric: typeof v === "number" });
+    return out;
+  }
+  const primary = primaryFieldOf(model);
+  for (const f of model.fields) {
+    if (f.type === "image" || f === primary || !(f.name in fields)) continue;
+    if (f.showWhen && fields[f.showWhen.field] !== undefined && !f.showWhen.is.includes(fields[f.showWhen.field])) continue;
+    const raw = fields[f.name];
+    let display;
+    let isDefault;
+    if (f.type === "bool") {
+      const base = Boolean(f.default);
+      display = raw ? "On" : "Off";
+      isDefault = Boolean(raw) === (f.invert ? !base : base);
+    } else if (f.type === "enum") {
+      const o = f.options.find((x) => String(x.value) === String(raw));
+      display = o ? o.label : String(raw);
+      isDefault = String(raw) === String(f.default);
+    } else {
+      isDefault = String(raw == null ? "" : raw) === String(f.default == null ? "" : f.default);
+      if (raw === "" || raw == null) {
+        // An empty box says nothing — unless the field names what empty means
+        // ("random" for a seed).
+        if (isDefault && !touched.has(f.name) && !f.defaultLabel) continue;
+        display = f.defaultLabel || "—";
+      } else display = String(raw);
+    }
+    out.push({
+      name: f.name,
+      label: f.label,
+      raw,
+      display,
+      changed: !isDefault || touched.has(f.name),
+      numeric: f.type === "int" || f.type === "number",
+    });
+  }
+  return out;
 }
 
-function closeLightbox() {
-  lightboxSeq++; // an open still reading its bytes must not reopen the card
-  lightboxId = null;
-  $("lightbox").classList.add("hidden");
-  // Emptied rather than blanked: a <video> left in the DOM with a revoked src
-  // keeps decoding against nothing.
-  $("lightbox-media").innerHTML = "";
-  $("lightbox-actions").innerHTML = "";
-  releaseLightboxUrl();
+const modelLabelOf = (id) => (MODELS.find((m) => m.id === id) || {}).label || id || "unknown model";
+
+// "seed:42", "steps>20", "-blurry", "model:vace", "album:portraits", a phrase
+// in quotes, or a plain word.
+function parseQuery(q) {
+  const tokens = [];
+  const re = /(-?)(?:([A-Za-z_][\w.]*)(:|>=|<=|>|<|=))?("([^"]*)"|\S+)/g;
+  let m;
+  while ((m = re.exec(q))) {
+    const value = (m[5] !== undefined ? m[5] : m[4]).toLowerCase();
+    if (!value && !m[2]) continue;
+    tokens.push({ neg: m[1] === "-", key: m[2] ? m[2].toLowerCase() : null, op: m[3] || null, value });
+  }
+  return tokens;
 }
 
-// Bumped by every open. Two quick swipes start two reads, and the slower one
-// must not paint over the item the user has already moved on to.
-let lightboxSeq = 0;
-let lightboxId = null;
-
-// The item `step` places from the one on screen, in the strip's order: -1 is
-// newer, +1 older. Null at either end.
-function lightboxNeighbour(step) {
-  const i = galleryOrder.indexOf(lightboxId);
-  const j = i + step;
-  return i >= 0 && j >= 0 && j < galleryOrder.length ? galleryOrder[j] : null;
+function searchInfo(rec, cache) {
+  let info = cache.get(rec.id);
+  if (!info) {
+    const params = recordParams(rec);
+    const albumNames = (rec.albums || []).map(albumName).filter(Boolean);
+    const text = [rec.name, rec.prompt, modelLabelOf(rec.modelId), rec.modelId, recordKind(rec), ...albumNames, ...params.map((p) => `${p.label} ${p.display}`)]
+      .join(" \u0001 ")
+      .toLowerCase();
+    info = { params, albumNames: albumNames.map((a) => a.toLowerCase()), text };
+    cache.set(rec.id, info);
+  }
+  return info;
 }
 
-function refreshLightboxNav() {
-  const i = galleryOrder.indexOf(lightboxId);
-  $("lightbox-prev").disabled = !lightboxNeighbour(-1);
-  $("lightbox-next").disabled = !lightboxNeighbour(1);
-  $("lightbox-prev").classList.toggle("hidden", galleryOrder.length < 2);
-  $("lightbox-next").classList.toggle("hidden", galleryOrder.length < 2);
-  return i;
+function numCompare(a, op, b) {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  return op === ">" ? a > b : op === "<" ? a < b : op === ">=" ? a >= b : op === "<=" ? a <= b : a === b;
 }
 
-function stepLightbox(step) {
-  if ($("lightbox").classList.contains("hidden")) return;
-  const id = lightboxNeighbour(step);
-  if (id) openLightbox(id);
+function tokenMatches(rec, t, info) {
+  if (!t.key) return info.text.includes(t.value);
+  const v = t.value;
+  switch (t.key) {
+    case "model":
+      return (modelLabelOf(rec.modelId) + " " + rec.modelId).toLowerCase().includes(v);
+    case "name":
+      return (rec.name || "").toLowerCase().includes(v);
+    case "prompt":
+      return (rec.prompt || "").toLowerCase().includes(v);
+    case "album":
+      return info.albumNames.some((a) => a.includes(v));
+    case "kind":
+    case "type":
+      return recordKind(rec).startsWith(v);
+  }
+  const hits = info.params.filter((p) => p.name.toLowerCase().includes(t.key) || p.label.toLowerCase().includes(t.key));
+  return hits.some((p) => {
+    if (t.op === ":") return String(p.display).toLowerCase().includes(v) || String(p.raw).toLowerCase().includes(v);
+    if (t.op === "=") {
+      if (p.numeric) return numCompare(Number(p.raw), "=", Number(v));
+      return String(p.raw).toLowerCase() === v || String(p.display).toLowerCase() === v;
+    }
+    return numCompare(Number(p.raw), t.op, Number(v));
+  });
 }
 
-async function openLightbox(id) {
-  const seq = ++lightboxSeq;
+function matchesQuery(rec, tokens, cache) {
+  if (!tokens.length) return true;
+  const info = searchInfo(rec, cache);
+  return tokens.every((t) => tokenMatches(rec, t, info) !== t.neg);
+}
+
+const SORTS = {
+  new: { label: "Newest first", cmp: (a, b) => (b.createdAt || 0) - (a.createdAt || 0) },
+  old: { label: "Oldest first", cmp: (a, b) => (a.createdAt || 0) - (b.createdAt || 0) },
+  name: {
+    label: "Name A–Z",
+    // Unnamed items after the named ones, newest first among themselves.
+    cmp: (a, b) => (!a.name - !b.name) || (a.name || "").localeCompare(b.name || "") || (b.createdAt || 0) - (a.createdAt || 0),
+  },
+  model: { label: "Model", cmp: (a, b) => modelLabelOf(a.modelId).localeCompare(modelLabelOf(b.modelId)) || (b.createdAt || 0) - (a.createdAt || 0) },
+  size: { label: "Largest file", cmp: (a, b) => (b.size || 0) - (a.size || 0) },
+  prompt: { label: "Prompt A–Z", cmp: (a, b) => (a.prompt || "").localeCompare(b.prompt || "") },
+};
+
+// --- the Gallery screen -----------------------------------------------------
+
+const GALLERY_VIEW_KEY = "patchbay_gallery_view";
+const GALLERY_PAGE = 120;
+const gallery = {
+  q: "",
+  kind: "all",
+  album: "all",
+  sort: "new",
+  reverse: false,
+  selecting: false,
+  selected: new Set(),
+  list: [], // the items shown, in order
+  shown: 0,
+  cache: new Map(),
+};
+
+function loadGalleryView() {
+  try {
+    const v = JSON.parse(localStorage.getItem(GALLERY_VIEW_KEY) || "{}") || {};
+    for (const k of ["kind", "album", "sort"]) if (typeof v[k] === "string") gallery[k] = v[k];
+    gallery.reverse = Boolean(v.reverse);
+  } catch {
+    /* defaults */
+  }
+}
+
+function saveGalleryView() {
+  try {
+    localStorage.setItem(GALLERY_VIEW_KEY, JSON.stringify({ kind: gallery.kind, album: gallery.album, sort: gallery.sort, reverse: gallery.reverse }));
+  } catch {
+    /* this visit only */
+  }
+}
+
+function paramSortKey(sort) {
+  return sort.startsWith("p:") ? sort.slice(2) : null;
+}
+
+function fillSortSelect(items) {
+  const sel = $("gallery-sort");
+  sel.innerHTML = "";
+  for (const [id, s] of Object.entries(SORTS)) {
+    const o = document.createElement("option");
+    o.value = id;
+    o.textContent = s.label;
+    sel.appendChild(o);
+  }
+  // Every numeric setting the shown items have, so "by steps" or "by seed" is
+  // one pick away.
+  const numeric = new Map();
+  for (const rec of items) for (const p of searchInfo(rec, gallery.cache).params) if (p.numeric && !numeric.has(p.name)) numeric.set(p.name, p.label);
+  if (numeric.size) {
+    const og = document.createElement("optgroup");
+    og.label = "By setting (low to high)";
+    for (const [name, label] of [...numeric].sort((a, b) => a[1].localeCompare(b[1]))) {
+      const o = document.createElement("option");
+      o.value = "p:" + name;
+      o.textContent = label;
+      og.appendChild(o);
+    }
+    sel.appendChild(og);
+  }
+  if (![...sel.options].some((o) => o.value === gallery.sort)) gallery.sort = "new";
+  sel.value = gallery.sort;
+}
+
+function fillAlbumFilter() {
+  const sel = $("gallery-album");
+  sel.innerHTML = "";
+  const add = (value, text, parent = sel) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = text;
+    parent.appendChild(o);
+  };
+  add("all", "All albums");
+  add("none", "Not in an album");
+  add("named", "Named");
+  if (albums.length) {
+    const og = document.createElement("optgroup");
+    og.label = "Albums";
+    for (const a of albums) add(a.id, a.name, og);
+    sel.appendChild(og);
+  }
+  if (![...sel.options].some((o) => o.value === gallery.album)) gallery.album = "all";
+  sel.value = gallery.album;
+}
+
+let galleryRenderSeq = 0;
+
+async function renderGallery() {
+  const seq = ++galleryRenderSeq;
+  const all = await galleryAll();
+  await loadAlbums();
+  if (seq !== galleryRenderSeq) return;
+  gallery.cache = new Map();
+  const tokens = parseQuery(gallery.q);
+  let list = all.filter((rec) => {
+    if (gallery.kind !== "all" && recordKind(rec) !== gallery.kind) return false;
+    const a = Array.isArray(rec.albums) ? rec.albums : [];
+    if (gallery.album === "none" && a.length) return false;
+    if (gallery.album === "named" && !(rec.name && rec.name.trim())) return false;
+    if (!["all", "none", "named"].includes(gallery.album) && !a.includes(gallery.album)) return false;
+    return matchesQuery(rec, tokens, gallery.cache);
+  });
+  fillAlbumFilter();
+  fillSortSelect(list);
+  const pkey = paramSortKey(gallery.sort);
+  if (pkey) {
+    const val = (rec) => {
+      const p = searchInfo(rec, gallery.cache).params.find((x) => x.name === pkey);
+      const n = p ? Number(p.raw) : NaN;
+      return Number.isFinite(n) ? n : null;
+    };
+    // Items without the setting go last whichever way the list runs.
+    list.sort((a, b) => {
+      const va = val(a);
+      const vb = val(b);
+      if (va === null || vb === null) return (va === null) - (vb === null);
+      return (va - vb) * (gallery.reverse ? -1 : 1) || (b.createdAt || 0) - (a.createdAt || 0);
+    });
+  } else {
+    list.sort(SORTS[gallery.sort].cmp);
+    if (gallery.reverse) list.reverse();
+  }
+  gallery.list = list;
+  for (const id of [...gallery.selected]) if (!all.some((r) => r.id === id)) gallery.selected.delete(id);
+
+  for (const b of document.querySelectorAll("#gallery-kind button")) b.setAttribute("aria-pressed", String(b.dataset.kind === gallery.kind));
+  $("gallery-reverse").setAttribute("aria-pressed", String(gallery.reverse));
+  const clips = list.filter((r) => recordKind(r) === "video").length;
+  const filtered = list.length !== all.length;
+  $("gallery-count").textContent =
+    (filtered ? `${list.length} of ${all.length}` : `${all.length} item${all.length === 1 ? "" : "s"}`) +
+    (clips ? ` · ${clips} video${clips === 1 ? "" : "s"}` : "");
+  $("gallery-problem").textContent = galleryProblem;
+  const empty = $("gallery-empty");
+  empty.textContent = all.length
+    ? "Nothing matches. Try fewer words, or a setting like seed:42 or steps>20."
+    : "Nothing here yet. Everything you generate is kept here, with the settings and files that made it.";
+  empty.classList.toggle("hidden", list.length > 0);
+
+  const grid = $("gallery-grid");
+  releaseThumbsIn(grid);
+  grid.innerHTML = "";
+  gallery.shown = 0;
+  appendGalleryPage();
+  refreshSelectionBar();
+}
+
+function appendGalleryPage() {
+  const grid = $("gallery-grid");
+  const next = gallery.list.slice(gallery.shown, gallery.shown + GALLERY_PAGE);
+  for (const rec of next) {
+    const t = thumbTile(rec, "tile");
+    if (rec.name) {
+      const cap2 = document.createElement("span");
+      cap2.className = "tile-name";
+      cap2.textContent = rec.name;
+      t.appendChild(cap2);
+    }
+    const check = document.createElement("span");
+    check.className = "tile-check";
+    check.textContent = "✓";
+    t.appendChild(check);
+    t.classList.toggle("selected", gallery.selected.has(rec.id));
+    t.addEventListener("click", () => {
+      if (gallery.selecting) {
+        if (gallery.selected.has(rec.id)) gallery.selected.delete(rec.id);
+        else gallery.selected.add(rec.id);
+        t.classList.toggle("selected", gallery.selected.has(rec.id));
+        refreshSelectionBar();
+        return;
+      }
+      openViewer(rec.id, { from: "gallery", order: gallery.list.map((r) => r.id) });
+    });
+    grid.appendChild(t);
+  }
+  gallery.shown += next.length;
+  $("gallery-more").classList.toggle("hidden", gallery.shown >= gallery.list.length);
+}
+
+function refreshSelectionBar() {
+  const grid = $("gallery-grid");
+  grid.classList.toggle("selecting", gallery.selecting);
+  $("gallery-selbar").classList.toggle("hidden", !gallery.selecting);
+  $("gallery-select").classList.toggle("hidden", gallery.selecting);
+  const n = gallery.selected.size;
+  $("gallery-selcount").textContent = n ? `${n} selected` : "Tap items to select";
+  for (const id of ["sel-album", "sel-delete", "sel-unalbum"]) $(id).disabled = !n;
+  const inAlbum = !["all", "none", "named"].includes(gallery.album);
+  $("sel-unalbum").classList.toggle("hidden", !inAlbum);
+}
+
+function setSelecting(on) {
+  gallery.selecting = on;
+  if (!on) gallery.selected.clear();
+  for (const t of document.querySelectorAll("#gallery-grid .tile")) t.classList.toggle("selected", gallery.selected.has(t.dataset.id));
+  refreshSelectionBar();
+}
+
+async function deleteItems(ids) {
+  for (const id of ids) await galleryDelete(id);
+  scheduleInputSweep();
+}
+
+// --- albums sheet -----------------------------------------------------------
+
+// Opened for some items (tick the albums they belong in) or for none (manage
+// the albums themselves).
+let albumTargets = [];
+
+async function openAlbums(ids = []) {
+  albumTargets = ids;
+  await loadAlbums();
+  await renderAlbumSheet();
+  openSheet("sheet-albums");
+}
+
+async function renderAlbumSheet() {
+  const box = $("albums-list");
+  const recs = [];
+  for (const id of albumTargets) {
+    const r = await galleryGet(id);
+    if (r) recs.push(r);
+  }
+  $("albums-note").textContent = recs.length
+    ? `Tick the albums ${recs.length === 1 ? "this item belongs" : `these ${recs.length} items belong`} in. An item in an album is never removed by the gallery's limits.`
+    : "Albums group items without moving them; one item can be in several. Deleting an album keeps its items.";
+  box.innerHTML = "";
+  if (!albums.length) {
+    const p = document.createElement("p");
+    p.className = "chat-note";
+    p.textContent = "No albums yet — make one below.";
+    box.appendChild(p);
+  }
+  for (const a of albums) {
+    const row = document.createElement("div");
+    row.className = "album-row";
+    if (recs.length) {
+      const inCount = recs.filter((r) => (r.albums || []).includes(a.id)).length;
+      const lab = document.createElement("label");
+      lab.className = "album-check";
+      const c = document.createElement("input");
+      c.type = "checkbox";
+      c.checked = inCount === recs.length;
+      c.indeterminate = inCount > 0 && inCount < recs.length;
+      c.addEventListener("change", async () => {
+        await setAlbumMembership(recs.map((r) => r.id), a.id, c.checked);
+        await renderAlbumSheet();
+        refreshGalleryViews();
+      });
+      lab.appendChild(c);
+      lab.appendChild(document.createTextNode(" " + a.name));
+      row.appendChild(lab);
+    } else {
+      const n = document.createElement("span");
+      n.className = "album-name";
+      n.textContent = a.name;
+      row.appendChild(n);
+    }
+    row.appendChild(
+      button("Rename", "secondary", async () => {
+        const name = (window.prompt("Rename album", a.name) || "").trim();
+        if (!name || name === a.name) return;
+        await idbRun(ALBUMS_STORE, "readwrite", (st) => st.put({ ...a, name }));
+        await loadAlbums();
+        await renderAlbumSheet();
+        refreshGalleryViews();
+      })
+    );
+    row.appendChild(
+      button("Delete", "secondary", async () => {
+        if (!window.confirm(`Delete the album "${a.name}"? Its items stay in the gallery.`)) return;
+        await deleteAlbum(a.id);
+        if (gallery.album === a.id) gallery.album = "all";
+        await renderAlbumSheet();
+        refreshGalleryViews();
+      })
+    );
+    box.appendChild(row);
+  }
+}
+
+// --- gallery settings sheet -------------------------------------------------
+
+function limitLabel(kind, n) {
+  if (kind === "days") return n ? `Delete after ${n} days` : "Never delete by age";
+  return n ? `${n.toLocaleString()} ${kind === "image" ? "images" : "videos"}` : `No limit`;
+}
+
+async function renderGallerySettings() {
+  const lim = galleryLimits();
+  for (const kind of ["image", "video", "days"]) {
+    const sel = $(`limit-${kind}`);
+    sel.innerHTML = "";
+    const choices = GALLERY_LIMIT_CHOICES[kind].includes(lim[kind]) ? GALLERY_LIMIT_CHOICES[kind] : [...GALLERY_LIMIT_CHOICES[kind], lim[kind]];
+    for (const n of choices) {
+      const o = document.createElement("option");
+      o.value = String(n);
+      o.textContent = limitLabel(kind, n);
+      sel.appendChild(o);
+    }
+    sel.value = String(lim[kind]);
+  }
+  const note = $("storage-note");
+  note.textContent = "Measuring storage…";
+  let line = "";
+  try {
+    const est = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null;
+    const persisted = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : null;
+    if (est && est.quota) {
+      const gb = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`);
+      line = `This app is using ${gb(est.usage || 0)} of the ${gb(est.quota)} the browser allows it.`;
+    }
+    if (persisted === true) line += " Storage is persistent: the browser will not clear it to make room.";
+    else if (persisted === false) line += " Storage is not marked persistent, so the browser may clear it under pressure.";
+  } catch {
+    /* unknown */
+  }
+  note.textContent = line || "This browser does not report how much storage is used.";
+}
+
+// --- the viewer -------------------------------------------------------------
+
+const viewer = { id: null, order: [], from: "gallery", url: null, seq: 0, zoom: false, rec: null, blob: null };
+
+function releaseViewerUrl() {
+  if (viewer.url) URL.revokeObjectURL(viewer.url);
+  viewer.url = null;
+}
+
+function viewerOpen() {
+  return !$("viewer").classList.contains("hidden");
+}
+
+async function openViewer(id, { from, order } = {}) {
+  if (order) viewer.order = order;
+  else if (!viewer.order.includes(id)) viewer.order = (await galleryAll()).map((r) => r.id);
+  if (from) viewer.from = from;
+  const seq = ++viewer.seq;
   const rec = await galleryGet(id);
-  if (seq !== lightboxSeq) return;
-  if (!rec) return void renderRecent();
+  if (seq !== viewer.seq) return;
+  if (!rec) {
+    viewer.order = viewer.order.filter((x) => x !== id);
+    refreshGalleryViews();
+    return void setStatus("That item is no longer stored on this device.", "err");
+  }
   // The only place the full-size bytes are read.
   const bytes = await galleryBytesGet(id);
-  if (seq !== lightboxSeq) return;
+  if (seq !== viewer.seq) return;
   if (!bytes) {
-    // The light record outlived its image somehow; drop it rather than open an
-    // empty frame.
     await galleryDelete(id);
-    renderRecent();
-    return void setStatus("That image is no longer stored on this device.", "err");
+    refreshGalleryViews();
+    return void setStatus("That item is no longer stored on this device.", "err");
   }
-
   const kind = recordKind(rec);
   const blob = new Blob([bytes], { type: rec.type || (kind === "video" ? "video/mp4" : "image/jpeg") });
-  releaseLightboxUrl();
-  lightboxObjectUrl = URL.createObjectURL(blob);
+  releaseViewerUrl();
+  viewer.url = URL.createObjectURL(blob);
+  viewer.id = id;
+  viewer.rec = rec;
+  viewer.blob = blob;
+  viewer.zoom = false;
 
-  const media = $("lightbox-media");
+  const media = $("viewer-media");
   media.innerHTML = "";
+  media.classList.remove("zoomed");
   if (kind === "video") {
     const v = document.createElement("video");
-    v.src = lightboxObjectUrl;
+    v.src = viewer.url;
     v.controls = true;
     v.loop = true;
     v.playsInline = true;
     media.appendChild(v);
   } else {
     const img = document.createElement("img");
-    img.src = lightboxObjectUrl;
-    img.alt = rec.prompt ? `Generated image: ${rec.prompt}` : "Generated image";
+    img.src = viewer.url;
+    img.alt = rec.name || (rec.prompt ? `Generated image: ${rec.prompt}` : "Generated image");
     media.appendChild(img);
   }
-
-  const model = MODELS.find((m) => m.id === rec.modelId);
-  const when = new Date(rec.createdAt);
-  const size =
-    rec.size >= 1024 * 1024
-      ? `${(rec.size / 1024 / 1024).toFixed(1)} MB`
-      : rec.size >= 1024
-        ? `${Math.round(rec.size / 1024)} KB`
-        : `${rec.size} bytes`;
-  lightboxId = id;
-  const pos = refreshLightboxNav();
-  $("lightbox-meta").textContent =
-    (galleryOrder.length > 1 && pos >= 0 ? `${pos + 1} of ${galleryOrder.length} · ` : "") +
-    `${model ? model.label : rec.modelId || "unknown model"} · ${when.toLocaleString()} · ${size}`;
-  $("lightbox-prompt").textContent = rec.prompt || "";
-
-  const actions = $("lightbox-actions");
-  actions.innerHTML = "";
-
-  const save = document.createElement("button");
-  save.type = "button";
-  save.className = "download";
-  save.textContent = "⬇ Save";
-  save.addEventListener("click", () => saveBlob(blob, `generated-${rec.createdAt}.${extFromType(rec.type, kind)}`));
-  actions.appendChild(save);
-
-  // Hidden rather than inert where nothing on this model, and no model at all,
-  // can take this kind of file back in.
-  const reuseText = reuseLabel(reuseTarget(kind), kind);
-  if (reuseText) {
-    const reuse = document.createElement("button");
-    reuse.type = "button";
-    reuse.className = "secondary";
-    reuse.textContent = reuseText;
-    reuse.addEventListener("click", () => {
-      closeLightbox();
-      useGeneratedAsInput(blob, 0, kind);
-    });
-    actions.appendChild(reuse);
+  $("viewer-zoom").classList.toggle("hidden", kind === "video");
+  refreshViewerNav();
+  renderViewerInfo(rec);
+  if (!viewerOpen()) {
+    $("viewer").classList.remove("hidden");
+    document.body.classList.add("viewer-open");
+    // So the phone's own Back closes the viewer rather than leaving the app.
+    try {
+      history.pushState({ patchbayViewer: true }, "");
+    } catch {
+      /* no history in this context */
+    }
   }
-
-  // Records written before the setup was stored fall back to the prompt alone
-  // rather than offering a button that would restore nothing.
-  if (rec.setup || rec.prompt) {
-    const restore = document.createElement("button");
-    restore.type = "button";
-    restore.className = "secondary";
-    restore.textContent = rec.setup ? "↩ Restore setup" : "↩ Restore prompt";
-    restore.title = rec.setup
-      ? `Put ${model ? model.label : rec.modelId} back with the settings that made this`
-      : "Put this prompt back in the box";
-    restore.addEventListener("click", () => restoreFromRecord(rec));
-    actions.appendChild(restore);
-  }
-
-  const del = document.createElement("button");
-  del.type = "button";
-  del.className = "secondary";
-  del.textContent = "Delete";
-  // Goes on to the item beside it rather than closing, so clearing out a run
-  // of rejects is one tap each. Closes only when nothing is left.
-  del.addEventListener("click", async () => {
-    const next = lightboxNeighbour(1) || lightboxNeighbour(-1);
-    await galleryDelete(rec.id);
-    await renderRecent();
-    if (next) openLightbox(next);
-    else closeLightbox();
-  });
-  actions.appendChild(del);
-
-  const close = document.createElement("button");
-  close.type = "button";
-  close.className = "secondary";
-  close.textContent = "Close";
-  close.addEventListener("click", closeLightbox);
-  actions.appendChild(close);
-
-  $("lightbox").classList.remove("hidden");
+  $("viewer-info").scrollTop = 0;
 }
 
-// Puts a past run back on screen: the model, the prompt, and every option as it
-// stood. Two ordering constraints, both load-bearing. The model switch goes
-// first, because applyRestoredFields writes into whatever fields are currently
-// rendered. And `restoringSession` has to be held across the pair, or
-// selectModel carries the outgoing model's text in over the top of the snapshot
-// it is about to apply — the same reason restoreSession sets it.
-function restoreFromRecord(rec) {
-  const known = Boolean(rec.modelId) && MODELS.some((m) => m.id === rec.modelId);
+function closeViewer({ viaHistory = false } = {}) {
+  if (!viewerOpen()) return;
+  viewer.seq++; // an open still reading its bytes must not reopen it
+  viewer.id = null;
+  viewer.rec = null;
+  viewer.blob = null;
+  $("viewer").classList.add("hidden");
+  document.body.classList.remove("viewer-open");
+  // Emptied rather than blanked: a <video> left in the DOM with a revoked src
+  // keeps decoding against nothing.
+  $("viewer-media").innerHTML = "";
+  $("viewer-info").innerHTML = "";
+  releaseViewerUrl();
+  if (!viaHistory && history.state && history.state.patchbayViewer) {
+    try {
+      history.back();
+    } catch {
+      /* nothing to go back to */
+    }
+  }
+}
+
+function viewerNeighbour(step) {
+  const i = viewer.order.indexOf(viewer.id);
+  const j = i + step;
+  return i >= 0 && j >= 0 && j < viewer.order.length ? viewer.order[j] : null;
+}
+
+function refreshViewerNav() {
+  const i = viewer.order.indexOf(viewer.id);
+  $("viewer-prev").disabled = !viewerNeighbour(-1);
+  $("viewer-next").disabled = !viewerNeighbour(1);
+  $("viewer-prev").classList.toggle("hidden", viewer.order.length < 2);
+  $("viewer-next").classList.toggle("hidden", viewer.order.length < 2);
+  $("viewer-pos").textContent = i >= 0 && viewer.order.length > 1 ? `${i + 1} of ${viewer.order.length}` : "";
+}
+
+function stepViewer(step) {
+  if (!viewerOpen()) return;
+  const id = viewerNeighbour(step);
+  if (id) openViewer(id);
+}
+
+function fmtBytes(n) {
+  return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} bytes`;
+}
+
+function infoSection(title) {
+  const s = document.createElement("section");
+  s.className = "viewer-section";
+  if (title) {
+    const h = document.createElement("h3");
+    h.textContent = title;
+    s.appendChild(h);
+  }
+  return s;
+}
+
+function renderViewerInfo(rec) {
+  const box = $("viewer-info");
+  box.innerHTML = "";
+  const kind = recordKind(rec);
   const model = MODELS.find((m) => m.id === rec.modelId);
+
+  // The actions first: on a phone they are what the thumb reaches for.
+  const actions = document.createElement("div");
+  actions.className = "viewer-actions";
+  const reuse = button("♻ Reuse parameters", "", () => reuseParameters(rec));
+  reuse.id = "viewer-reuse";
+  reuse.title = rec.setup
+    ? `Put ${model ? model.label : rec.modelId} back with the settings${rec.inputs ? " and files" : ""} that made this`
+    : "Put this prompt back in the box";
+  if (!rec.setup && !rec.prompt) reuse.disabled = true;
+  actions.appendChild(reuse);
+  const reuseText = reuseLabel(reuseTarget(kind), kind);
+  if (reuseText) {
+    const use = button(reuseText, "secondary", () => {
+      const blob = viewer.blob;
+      closeViewer();
+      showScreen("create");
+      useGeneratedAsInput(blob, 0, kind);
+    });
+    use.id = "viewer-use";
+    actions.appendChild(use);
+  }
+  const save = button("⬇ Save", "secondary download", () =>
+    saveBlob(viewer.blob, `${safeFileName(rec.name) || "generated-" + rec.createdAt}.${extFromType(rec.type, kind)}`)
+  );
+  actions.appendChild(save);
+  box.appendChild(actions);
+
+  // Name
+  const nameSec = infoSection("");
+  const name = document.createElement("input");
+  name.type = "text";
+  name.id = "viewer-name";
+  name.className = "viewer-name";
+  name.placeholder = "Add a name";
+  name.value = rec.name || "";
+  name.setAttribute("aria-label", "Name");
+  const saveName = async () => {
+    const v = name.value.trim();
+    if (v === (rec.name || "")) return;
+    rec.name = v;
+    await galleryUpdate(rec);
+    refreshGalleryViews();
+    // Being named changes whether the limits can remove it, which the panel says.
+    if (viewer.rec === rec) renderViewerInfo(rec);
+  };
+  name.addEventListener("change", saveName);
+  name.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      name.blur();
+    }
+  });
+  nameSec.appendChild(name);
+  const meta = document.createElement("p");
+  meta.id = "viewer-meta";
+  meta.className = "viewer-meta";
+  const dims = rec.width && rec.height ? ` · ${rec.width}×${rec.height}` : "";
+  const dur = rec.duration ? ` · ${rec.duration.toFixed(1)} s` : "";
+  meta.textContent = `${model ? model.label : rec.modelId || "unknown model"} · ${new Date(rec.createdAt).toLocaleString()}${dims}${dur} · ${fmtBytes(rec.size || 0)}`;
+  nameSec.appendChild(meta);
+  if (isProtected(rec)) {
+    const keep = document.createElement("p");
+    keep.className = "viewer-keep";
+    keep.textContent = "Kept until you delete it — named or in an album, so the gallery's limits never remove it.";
+    nameSec.appendChild(keep);
+  }
+  box.appendChild(nameSec);
+
+  // Albums
+  const albSec = infoSection("Albums");
+  const chips = document.createElement("div");
+  chips.className = "album-chips";
+  for (const id of rec.albums || []) {
+    const n = albumName(id);
+    if (!n) continue;
+    const c = document.createElement("button");
+    c.type = "button";
+    c.className = "album-chip";
+    c.textContent = n;
+    c.title = `Show the album "${n}"`;
+    c.addEventListener("click", () => {
+      gallery.album = id;
+      gallery.q = "";
+      $("gallery-search").value = "";
+      saveGalleryView();
+      closeViewer();
+      showScreen("gallery");
+    });
+    chips.appendChild(c);
+  }
+  chips.appendChild(button((rec.albums || []).length ? "Edit albums" : "+ Add to album", "secondary album-add", () => openAlbums([rec.id])));
+  albSec.appendChild(chips);
+  box.appendChild(albSec);
+
+  // Prompt
+  if (rec.prompt) {
+    const pSec = infoSection("Prompt");
+    const p = document.createElement("p");
+    p.id = "viewer-prompt";
+    p.className = "viewer-prompt";
+    p.textContent = rec.prompt;
+    pSec.appendChild(p);
+    const copy = button("Copy prompt", "secondary", () => copyText(rec.prompt, copy, "Copy prompt"));
+    pSec.appendChild(copy);
+    box.appendChild(pSec);
+  }
+
+  // Parameters
+  const params = recordParams(rec);
+  const parSec = infoSection("Settings");
+  if (!rec.setup) {
+    const p = document.createElement("p");
+    p.className = "chat-note";
+    p.textContent = "No settings were recorded for this one — it was made before they were kept, or collected from a job started on an older version.";
+    parSec.appendChild(p);
+  } else if (!params.length) {
+    const p = document.createElement("p");
+    p.className = "chat-note";
+    p.textContent = "This model has no settings besides the prompt.";
+    parSec.appendChild(p);
+  } else {
+    const table = document.createElement("dl");
+    table.className = "param-table";
+    for (const prm of params) {
+      const row = document.createElement("div");
+      row.className = "param-row" + (prm.changed ? " changed" : "");
+      const dt = document.createElement("dt");
+      dt.textContent = prm.label;
+      const dd = document.createElement("dd");
+      dd.textContent = prm.display;
+      // Finds everything else made with this value.
+      const find = document.createElement("button");
+      find.type = "button";
+      find.className = "param-find";
+      find.textContent = "🔍";
+      find.title = `Find items with ${prm.label} ${prm.display}`;
+      find.setAttribute("aria-label", find.title);
+      find.addEventListener("click", () => {
+        const v = String(prm.raw);
+        gallery.q = `${prm.name}${prm.numeric ? "=" : ":"}${/\s/.test(v) ? `"${v}"` : v}`;
+        $("gallery-search").value = gallery.q;
+        closeViewer();
+        showScreen("gallery");
+      });
+      row.append(dt, dd, find);
+      table.appendChild(row);
+    }
+    parSec.appendChild(table);
+    const legend = document.createElement("p");
+    legend.className = "chat-note";
+    legend.textContent = "Marked rows were changed from the model's default.";
+    parSec.appendChild(legend);
+  }
+  box.appendChild(parSec);
+
+  // Inputs
+  if (rec.inputs && Object.keys(rec.inputs).length) {
+    const inSec = infoSection("Input files");
+    const list = document.createElement("div");
+    list.className = "viewer-inputs";
+    for (const [field, refs] of Object.entries(rec.inputs)) {
+      const f = model && model.fields.find((x) => x.name === field);
+      for (const ref of refs) {
+        const row = document.createElement("div");
+        row.className = "viewer-input";
+        row.textContent = `${f ? f.label : field}: ${ref.name}${ref.size ? ` (${fmtBytes(ref.size)})` : ""}${ref.missing ? ` — not kept, ${ref.missing}` : ""}`;
+        list.appendChild(row);
+      }
+    }
+    inSec.appendChild(list);
+    box.appendChild(inSec);
+  } else if (rec.inputs) {
+    const inSec = infoSection("Input files");
+    const p = document.createElement("p");
+    p.className = "chat-note";
+    p.textContent = "None — this was made from the prompt and settings alone.";
+    inSec.appendChild(p);
+    box.appendChild(inSec);
+  }
+
+  const del = button("Delete", "secondary danger", async () => {
+    if (!window.confirm(`Delete this ${kind} from the device?`)) return;
+    const next = viewerNeighbour(1) || viewerNeighbour(-1);
+    await deleteItems([rec.id]);
+    viewer.order = viewer.order.filter((x) => x !== rec.id);
+    refreshGalleryViews();
+    if (next) openViewer(next);
+    else closeViewer();
+  });
+  del.id = "viewer-delete";
+  box.appendChild(del);
+}
+
+function safeFileName(s) {
+  return (s || "").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").trim().slice(0, 80);
+}
+
+// The gallery grid and the strip both follow any change to an item.
+function refreshGalleryViews() {
+  renderRecent();
+  if (currentScreen === "gallery") renderGallery();
+}
+
+// Puts a past run back on Create: the model, every setting as it stood (and
+// which were deliberately set, since that alone decides whether a value equal
+// to the default is still sent), the prompt, and the files it was given.
+//
+// Two ordering constraints, both load-bearing. The model is rendered first,
+// because applyRestoredFields writes into whatever fields are on screen, and the
+// files ride in through restoreFiles as those fields are built. And
+// `restoringSession` is held across the pair, or selectModel carries the
+// outgoing model's text and files in over the top of the snapshot.
+async function reuseParameters(rec) {
+  const model = MODELS.find((m) => m.id === rec.modelId);
+  closeViewer();
+  showScreen("create");
 
   // No stored setup (a record from before this shipped), or a model that has
   // since left the catalogue: the prompt is all there is to give back.
-  if (!rec.setup || !known) {
-    if (!rec.prompt) return void setStatus("Nothing stored for that one to restore.", "err");
+  if (!rec.setup || !model) {
+    if (!rec.prompt) return void setStatus("Nothing stored for that one to reuse.", "err");
     const el = primaryPromptEl();
     if (!el) return void setStatus("This model has no prompt box.", "err");
     el.value = rec.prompt;
     el.dispatchEvent(new Event("input", { bubbles: true }));
-    commitPromptHistory(); // one entry, so Undo reverses the whole restore
-    closeLightbox();
-    setStatus(
-      known
-        ? "Prompt restored — press Undo to put it back."
-        : "Prompt restored. The model that made it is no longer in the catalogue.",
+    commitPromptHistory(); // one entry, so Undo reverses the whole reuse
+    return void setStatus(
+      model ? "Prompt reused — no settings were recorded for that one. Undo puts yours back." : "Prompt reused. The model that made it is no longer in the catalogue.",
       "ok"
     );
-    return;
   }
 
-  // Restoring onto the model already selected keeps whatever is attached.
-  // Switching cannot: selectModel clears the uploads, and the files that made
-  // the original are not stored, so say so rather than let them vanish quietly.
+  let files = null;
+  let missing = [];
+  if (rec.inputs) {
+    const got = await loadInputFiles(rec.inputs);
+    files = got.files;
+    missing = got.missing;
+  }
   const sameModel = Boolean(currentModel) && currentModel.id === rec.modelId;
   const hadUploads = Object.values(uploads).some((list) => list.length);
+  // Counted now: the image controls take the files out of these lists as they
+  // adopt them.
+  const n = files ? Object.values(files).reduce((a, l) => a + l.length, 0) : 0;
 
   commitPromptHistory(); // what is in the box now stays reachable by Undo
   restoringSession = true;
   try {
-    if (!sameModel) selectModel(rec.modelId);
+    if (files) {
+      // The run's own inputs replace whatever is attached now — including none.
+      restoreFiles = files;
+      selectModel(rec.modelId);
+    } else if (!sameModel) {
+      selectModel(rec.modelId);
+    }
     applyRestoredFields(rec.setup);
   } catch (e) {
-    setStatus("Could not restore that setup: " + e.message, "err");
+    setStatus("Could not reuse those parameters: " + e.message, "err");
     return;
   } finally {
+    restoreFiles = {};
     restoringSession = false;
   }
-  // The restored text arrived wholesale, so it is one entry rather than a burst
-  // of typing — Undo reverses the whole thing.
+  // The text arrived wholesale, so it is one entry rather than a burst of
+  // typing — Undo reverses the whole thing.
   commitPromptHistory();
   scheduleSessionSave();
-  closeLightbox();
+  $("gen-form").scrollIntoView({ behavior: "smooth", block: "start" });
 
-  const what = recordKind(rec) === "video" ? "video" : "image";
-  setStatus(
-    `Restored ${model ? model.label : rec.modelId} with the settings that made that ${what}.` +
-      (!sameModel && hadUploads ? " The files you had attached were cleared by the model switch." : ""),
-    "ok"
-  );
+  let msg = `Reused ${model.label} with the settings that made that ${recordKind(rec)}`;
+  if (files) msg += n ? `, and its ${n} input file${n === 1 ? "" : "s"}.` : ".";
+  else msg += !sameModel && hadUploads ? ". Its input files were not recorded, and the ones you had attached were cleared by the model switch." : ". Its input files were not recorded, so what is attached now was left as it is.";
+  if (missing.length) msg += ` Not put back: ${missing.join(", ")}.`;
+  setStatus(msg, missing.length ? "err" : "ok");
 }
 
 // The iOS-safe save: a plain <a download> sends Safari to a full-screen file
-// viewer with no way back. Shared by the result panel and the lightbox.
+// viewer with no way back. Shared by the result panel and the viewer.
 async function saveBlob(blob, name) {
   try {
     const file = new File([blob], name, { type: blob.type || "application/octet-stream" });
@@ -3367,47 +4593,152 @@ async function saveBlob(blob, name) {
   }
 }
 
-function initRecent() {
-  $("recent-clear").addEventListener("click", async () => {
-    if (!window.confirm("Delete the recent images and videos kept on this device?")) return;
+function initGallery() {
+  loadGalleryView();
+  $("recent-open").addEventListener("click", () => showScreen("gallery"));
+
+  let searchTimer = null;
+  $("gallery-search").addEventListener("input", (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      gallery.q = e.target.value;
+      renderGallery();
+    }, 200);
+  });
+  for (const b of document.querySelectorAll("#gallery-kind button")) {
+    b.addEventListener("click", () => {
+      gallery.kind = b.dataset.kind;
+      saveGalleryView();
+      renderGallery();
+    });
+  }
+  $("gallery-album").addEventListener("change", (e) => {
+    gallery.album = e.target.value;
+    saveGalleryView();
+    renderGallery();
+  });
+  $("gallery-sort").addEventListener("change", (e) => {
+    gallery.sort = e.target.value;
+    saveGalleryView();
+    renderGallery();
+  });
+  $("gallery-reverse").addEventListener("click", () => {
+    gallery.reverse = !gallery.reverse;
+    saveGalleryView();
+    renderGallery();
+  });
+  $("gallery-more").addEventListener("click", appendGalleryPage);
+  if ("IntersectionObserver" in window) {
+    new IntersectionObserver((es) => {
+      if (es.some((e) => e.isIntersecting) && gallery.shown < gallery.list.length) appendGalleryPage();
+    }, { rootMargin: "600px 0px" }).observe($("gallery-more"));
+  }
+
+  $("gallery-select").addEventListener("click", () => setSelecting(true));
+  $("sel-done").addEventListener("click", () => setSelecting(false));
+  $("sel-all").addEventListener("click", () => {
+    const all = gallery.list.every((r) => gallery.selected.has(r.id));
+    gallery.selected = new Set(all ? [] : gallery.list.map((r) => r.id));
+    setSelecting(true);
+  });
+  $("sel-album").addEventListener("click", () => openAlbums([...gallery.selected]));
+  $("sel-unalbum").addEventListener("click", async () => {
+    const name = albumName(gallery.album);
+    await setAlbumMembership([...gallery.selected], gallery.album, false);
+    setStatus(`Removed ${gallery.selected.size} from "${name}".`, "ok");
+    gallery.selected.clear();
+    refreshGalleryViews();
+  });
+  $("sel-delete").addEventListener("click", async () => {
+    const n = gallery.selected.size;
+    if (!n || !window.confirm(`Delete ${n} item${n === 1 ? "" : "s"} from the device?`)) return;
+    await deleteItems([...gallery.selected]);
+    gallery.selected.clear();
+    setSelecting(false);
+    refreshGalleryViews();
+    setStatus(`Deleted ${n} item${n === 1 ? "" : "s"}.`, "ok");
+  });
+  $("gallery-albums").addEventListener("click", () => openAlbums([]));
+  $("album-new-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = $("album-new");
+    const album = await createAlbum(input.value);
+    input.value = "";
+    if (!album) return;
+    if (albumTargets.length) await setAlbumMembership(albumTargets, album.id, true);
+    await renderAlbumSheet();
+    refreshGalleryViews();
+  });
+  sheetAfterClose["sheet-albums"] = () => {
+    if (viewer.rec && viewerOpen()) openViewer(viewer.rec.id);
+    if (gallery.selecting && albumTargets.length > 1) setSelecting(false);
+  };
+
+  $("gallery-settings").addEventListener("click", () => {
+    renderGallerySettings();
+    openSheet("sheet-gallery-settings");
+  });
+  for (const kind of ["image", "video", "days"]) {
+    $(`limit-${kind}`).addEventListener("change", async (e) => {
+      const n = Number(e.target.value);
+      const lim = galleryLimits();
+      const tighter = n > 0 && (lim[kind] === 0 || n < lim[kind]);
+      if (tighter && !window.confirm(`${limitLabel(kind, n)}? Items past the limit that are not named or in an album are deleted now.`)) {
+        e.target.value = String(lim[kind]);
+        return;
+      }
+      setGalleryLimits({ [kind]: n });
+      const removed = await pruneGallery();
+      refreshGalleryViews();
+      setStatus(removed ? `Limit changed; ${removed} item${removed === 1 ? "" : "s"} removed.` : "Limit changed.", "ok");
+    });
+  }
+  $("gallery-clear").addEventListener("click", async () => {
+    if (!window.confirm("Delete everything in the gallery from this device — named items and albums' contents included?")) return;
     await galleryClear();
-    releaseGalleryUrls();
-    renderRecent();
+    closeSheet("sheet-gallery-settings");
+    refreshGalleryViews();
     // The status line belongs to a run while one is going: writing "Cleared…"
     // over "Processing… 2m 10s elapsed" reads as the generation having stopped.
-    // The strip emptying is the confirmation either way.
-    if (!generationInFlight) setStatus("Cleared the recent images and videos.", "ok");
+    if (!anyJobRunning()) setStatus("Cleared the gallery.", "ok");
   });
-  // Tapping the backdrop closes, the card itself does not.
-  $("lightbox").addEventListener("click", (e) => {
-    if (e.target === $("lightbox")) closeLightbox();
+
+  // The viewer.
+  $("viewer-close").addEventListener("click", () => closeViewer());
+  $("viewer-prev").addEventListener("click", () => stepViewer(-1));
+  $("viewer-next").addEventListener("click", () => stepViewer(1));
+  $("viewer-zoom").addEventListener("click", () => {
+    viewer.zoom = !viewer.zoom;
+    $("viewer-media").classList.toggle("zoomed", viewer.zoom);
   });
-  $("lightbox-prev").addEventListener("click", () => stepLightbox(-1));
-  $("lightbox-next").addEventListener("click", () => stepLightbox(1));
+  window.addEventListener("popstate", () => {
+    if (viewerOpen()) closeViewer({ viaHistory: true });
+  });
   document.addEventListener("keydown", (e) => {
-    if ($("lightbox").classList.contains("hidden")) return;
-    if (e.key === "Escape") closeLightbox();
-    else if (e.key === "ArrowLeft") stepLightbox(-1);
-    else if (e.key === "ArrowRight") stepLightbox(1);
+    if (!viewerOpen() || e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+    if (document.querySelector(".sheet:not(.hidden)")) return;
+    if (e.key === "Escape") closeViewer();
+    else if (e.key === "ArrowLeft") stepViewer(-1);
+    else if (e.key === "ArrowRight") stepViewer(1);
   });
-  // A swipe across the picture steps through the strip: left for the older
-  // item, right for the newer, matching which way the strip itself runs.
-  // Mostly-sideways only, so scrolling a tall card up and down is not a swipe.
+  // A sideways swipe across the picture steps: left for the next item in the
+  // list, right for the previous. Mostly-sideways only, and not while zoomed,
+  // where a drag pans the picture instead.
   let touchX = null;
   let touchY = null;
-  const media = $("lightbox-media");
-  media.addEventListener("touchstart", (e) => {
-    if (e.touches.length !== 1) return void (touchX = null);
+  const stage = $("viewer-stage");
+  stage.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1 || viewer.zoom) return void (touchX = null);
     touchX = e.touches[0].clientX;
     touchY = e.touches[0].clientY;
   }, { passive: true });
-  media.addEventListener("touchend", (e) => {
+  stage.addEventListener("touchend", (e) => {
     if (touchX == null) return;
     const t = e.changedTouches[0];
     const dx = t.clientX - touchX;
     const dy = t.clientY - touchY;
     touchX = null;
-    if (Math.abs(dx) >= 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) stepLightbox(dx < 0 ? 1 : -1);
+    if (Math.abs(dx) >= 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) stepViewer(dx < 0 ? 1 : -1);
   }, { passive: true });
 }
 
@@ -3571,7 +4902,7 @@ async function showResult(prunaUrls, kind, meta, { timer, onDisplayed } = {}) {
     // it is not previewable, is never fetched into a Blob above, and its link
     // expires about half an hour after the run either way.
     if (blob && (kind === "image" || kind === "video")) {
-      archived.push(archiveGeneration(blob, info.modelId, info.prompt, kind, info.setup));
+      archived.push(archiveGeneration(blob, info, kind));
     }
 
     const item = document.createElement("div");
@@ -3625,15 +4956,23 @@ async function showResult(prunaUrls, kind, meta, { timer, onDisplayed } = {}) {
   }
 
   // The strip follows the archive, and only once every result has been stored.
+  let ids = [];
   if (archived.length) {
-    await Promise.all(archived);
-    await renderRecent();
+    ids = (await Promise.all(archived)).filter(Boolean);
+    refreshGalleryViews();
     if (timer) timer.rec.saved = timer.at();
+    if (ids.length < archived.length) {
+      const note = document.createElement("p");
+      note.className = "help gallery-warn";
+      note.textContent = galleryProblem || "This result could not be kept in the gallery.";
+      box.appendChild(note);
+    }
   }
   if (timer) {
     timer.finish("ok");
     box.appendChild(timingBlock(timer.rec));
   }
+  return ids;
 }
 
 // ---------------------------------------------------------------------------
@@ -3838,23 +5177,60 @@ function downloadButton(prunaUrl, kind, index, total, blob) {
 // Prompt library
 //
 // Saved prompts live in this browser's localStorage only — they are never sent
-// to the Worker or to Pruna. (The "don't store anything" rule was about
-// generated media; these are your own notes, on your own device.)
+// to the Worker or to a provider. Each one shows its text, not just its name,
+// so the right one can be picked without loading it to look; and they can be
+// filed in folders, searched, renamed and edited in place.
 // ---------------------------------------------------------------------------
+const LIBRARY_KEY = "patchbay_prompt_library";
+// The flat [{ name, text }] list earlier versions kept, moved over once.
 const PROMPTS_KEY = "pruna_prompts";
 
-function loadPrompts() {
+let library = { folders: [], prompts: [] };
+const libView = { folder: "all", q: "", sort: "recent", editing: null, expanded: new Set() };
+
+const libId = (p) => `${p}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+function loadLibrary() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(LIBRARY_KEY));
+  } catch {
+    /* unreadable — start from whatever the old list has */
+  }
+  if (saved && Array.isArray(saved.prompts)) {
+    library = {
+      folders: Array.isArray(saved.folders) ? saved.folders.filter((f) => f && f.id && typeof f.name === "string") : [],
+      prompts: saved.prompts.filter((p) => p && p.id && typeof p.text === "string"),
+    };
+    return;
+  }
+  let old = [];
   try {
     const v = JSON.parse(localStorage.getItem(PROMPTS_KEY));
-    return Array.isArray(v) ? v : [];
+    if (Array.isArray(v)) old = v.filter((p) => p && typeof p.text === "string");
   } catch {
-    return [];
+    /* nothing to move */
+  }
+  const now = Date.now();
+  library = {
+    folders: [],
+    // Oldest first in the old list; kept in that order by time.
+    prompts: old.map((p, i) => ({ id: libId("p"), name: p.name || "Untitled", text: p.text, folder: null, createdAt: now - (old.length - i), updatedAt: now - (old.length - i) })),
+  };
+  if (old.length) storeLibrary();
+}
+
+function storeLibrary() {
+  try {
+    localStorage.setItem(LIBRARY_KEY, JSON.stringify(library));
+    return true;
+  } catch {
+    setStatus("Could not save the prompt library: this browser's storage refused it.", "err");
+    return false;
   }
 }
 
-function storePrompts(list) {
-  localStorage.setItem(PROMPTS_KEY, JSON.stringify(list));
-}
+const folderName = (id) => (library.folders.find((f) => f.id === id) || {}).name || "";
 
 // The box a saved prompt should load into, for whichever model is selected.
 function primaryPromptEl() {
@@ -3869,24 +5245,277 @@ function primaryPromptEl() {
   );
 }
 
-function refreshPromptSelect(keepValue) {
-  const sel = $("prompt-select");
-  const list = loadPrompts();
-  sel.innerHTML = "";
-  const ph = document.createElement("option");
-  ph.value = "";
-  ph.textContent = list.length ? "Saved prompts…" : "No saved prompts yet";
-  sel.appendChild(ph);
-  list.forEach((p, i) => {
-    const o = document.createElement("option");
-    o.value = String(i);
-    o.textContent = p.name;
-    sel.appendChild(o);
+function openPromptLibrary() {
+  libView.editing = null;
+  renderLibrary();
+  openSheet("sheet-prompts");
+}
+
+function usePrompt(p) {
+  const el = primaryPromptEl();
+  if (!el) return void setStatus("This model has no prompt box.", "err");
+  el.value = p.text;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  commitPromptHistory(); // one entry for the whole load, undoable in one press
+  closeSheet("sheet-prompts");
+  setStatus(`Loaded prompt "${p.name}" — press Undo to get yours back.`, "ok");
+}
+
+function renderLibrary() {
+  const folders = $("lib-folders");
+  folders.innerHTML = "";
+  const count = (fid) => library.prompts.filter((p) => (fid === "all" ? true : fid === "none" ? !p.folder : p.folder === fid)).length;
+  const chip = (fid, text) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "lib-folder";
+    b.setAttribute("aria-pressed", String(libView.folder === fid));
+    b.textContent = `${text} (${count(fid)})`;
+    b.addEventListener("click", () => {
+      libView.folder = fid;
+      renderLibrary();
+    });
+    folders.appendChild(b);
+  };
+  chip("all", "All");
+  chip("none", "No folder");
+  for (const f of library.folders.slice().sort((a, b) => a.name.localeCompare(b.name))) chip(f.id, `📁 ${f.name}`);
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "lib-folder lib-folder-add";
+  add.textContent = "+ Folder";
+  add.addEventListener("click", () => {
+    const name = (window.prompt("New folder name") || "").trim();
+    if (!name) return;
+    const f = { id: libId("f"), name };
+    library.folders.push(f);
+    storeLibrary();
+    libView.folder = f.id;
+    renderLibrary();
   });
-  if (keepValue != null && list[keepValue]) sel.value = String(keepValue);
+  folders.appendChild(add);
+
+  // Folder tools, for a real folder only.
+  const ftools = $("lib-folder-tools");
+  ftools.innerHTML = "";
+  const isFolder = !["all", "none"].includes(libView.folder) && library.folders.some((f) => f.id === libView.folder);
+  if (!isFolder && !["all", "none"].includes(libView.folder)) libView.folder = "all";
+  ftools.classList.toggle("hidden", !isFolder);
+  if (isFolder) {
+    const f = library.folders.find((x) => x.id === libView.folder);
+    ftools.appendChild(
+      button("Rename folder", "linkish", () => {
+        const name = (window.prompt("Rename folder", f.name) || "").trim();
+        if (!name) return;
+        f.name = name;
+        storeLibrary();
+        renderLibrary();
+      })
+    );
+    ftools.appendChild(
+      button("Delete folder", "linkish", () => {
+        const n = count(f.id);
+        if (!window.confirm(`Delete the folder "${f.name}"?${n ? ` Its ${n} prompt${n === 1 ? "" : "s"} move to No folder.` : ""}`)) return;
+        for (const p of library.prompts) if (p.folder === f.id) p.folder = null;
+        library.folders = library.folders.filter((x) => x !== f);
+        storeLibrary();
+        libView.folder = "all";
+        renderLibrary();
+      })
+    );
+  }
+
+  const editor = $("lib-editor");
+  editor.classList.toggle("hidden", !libView.editing);
+  if (libView.editing) renderLibraryEditor(editor);
+
+  const list = $("lib-list");
+  list.innerHTML = "";
+  const q = libView.q.trim().toLowerCase();
+  let items = library.prompts.filter((p) => {
+    if (libView.folder === "none" && p.folder) return false;
+    if (!["all", "none"].includes(libView.folder) && p.folder !== libView.folder) return false;
+    if (!q) return true;
+    return q.split(/\s+/).every((w) => `${p.name}\n${p.text}\n${folderName(p.folder)}`.toLowerCase().includes(w));
+  });
+  items =
+    libView.sort === "name"
+      ? items.sort((a, b) => a.name.localeCompare(b.name))
+      : items.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const empty = $("lib-empty");
+  empty.textContent = library.prompts.length
+    ? "No saved prompts match."
+    : "No saved prompts yet. Write one in the prompt box, then Save current prompt.";
+  empty.classList.toggle("hidden", items.length > 0);
+
+  for (const p of items) {
+    const card = document.createElement("div");
+    card.className = "lib-card";
+    card.dataset.id = p.id;
+    const head = document.createElement("div");
+    head.className = "lib-card-head";
+    const name = document.createElement("span");
+    name.className = "lib-name";
+    name.textContent = p.name;
+    head.appendChild(name);
+    if (p.folder && libView.folder === "all") {
+      const tag = document.createElement("span");
+      tag.className = "lib-tag";
+      tag.textContent = `📁 ${folderName(p.folder)}`;
+      head.appendChild(tag);
+    }
+    card.appendChild(head);
+    // The text itself, a few lines of it, and all of it on a tap.
+    const text = document.createElement("p");
+    text.className = "lib-text" + (libView.expanded.has(p.id) ? " expanded" : "");
+    text.textContent = p.text;
+    text.title = "Tap to show all of it";
+    text.addEventListener("click", () => {
+      if (libView.expanded.has(p.id)) libView.expanded.delete(p.id);
+      else libView.expanded.add(p.id);
+      text.classList.toggle("expanded");
+    });
+    card.appendChild(text);
+    const meta = document.createElement("div");
+    meta.className = "lib-meta";
+    meta.textContent = `${p.text.length.toLocaleString()} characters`;
+    card.appendChild(meta);
+    const actions = document.createElement("div");
+    actions.className = "lib-actions";
+    const use = button("Use", "lib-use", () => usePrompt(p));
+    actions.appendChild(use);
+    actions.appendChild(
+      button("Edit", "secondary", () => {
+        libView.editing = p.id;
+        renderLibrary();
+        $("sheet-prompts").querySelector(".sheet-card").scrollTop = 0;
+      })
+    );
+    actions.appendChild(
+      button("Delete", "secondary", () => {
+        if (!window.confirm(`Delete saved prompt "${p.name}"?`)) return;
+        library.prompts = library.prompts.filter((x) => x !== p);
+        storeLibrary();
+        renderLibrary();
+        setStatus(`Deleted prompt "${p.name}".`, "ok");
+      })
+    );
+    card.appendChild(actions);
+    list.appendChild(card);
+  }
+}
+
+// One form for a new prompt and for editing one: name, folder, and the text.
+function renderLibraryEditor(box) {
+  const isNew = libView.editing === "new";
+  const p = isNew ? null : library.prompts.find((x) => x.id === libView.editing);
+  if (!isNew && !p) {
+    libView.editing = null;
+    box.classList.add("hidden");
+    return;
+  }
+  const current = primaryPromptEl();
+  const startText = isNew ? (current ? current.value : "") : p.text;
+  box.innerHTML = "";
+  const h = document.createElement("h3");
+  h.textContent = isNew ? "Save prompt" : "Edit prompt";
+  box.appendChild(h);
+  const nameLab = document.createElement("label");
+  nameLab.textContent = "Name";
+  const name = document.createElement("input");
+  name.type = "text";
+  name.id = "lib-edit-name";
+  const t = startText.trim();
+  name.value = isNew ? (t.length > 40 ? t.slice(0, 40).trim() + "…" : t) : p.name;
+  nameLab.appendChild(name);
+  box.appendChild(nameLab);
+  const folderLab = document.createElement("label");
+  folderLab.textContent = "Folder";
+  const folder = document.createElement("select");
+  folder.id = "lib-edit-folder";
+  const opt = (v, text) => {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = text;
+    folder.appendChild(o);
+  };
+  opt("", "No folder");
+  for (const f of library.folders.slice().sort((a, b) => a.name.localeCompare(b.name))) opt(f.id, f.name);
+  opt("__new__", "New folder…");
+  folder.value = isNew ? (["all", "none"].includes(libView.folder) ? "" : libView.folder) : p.folder || "";
+  folder.addEventListener("change", () => {
+    if (folder.value !== "__new__") return;
+    const n = (window.prompt("New folder name") || "").trim();
+    if (!n) return void (folder.value = "");
+    const f = { id: libId("f"), name: n };
+    library.folders.push(f);
+    storeLibrary();
+    const o = document.createElement("option");
+    o.value = f.id;
+    o.textContent = n;
+    folder.insertBefore(o, folder.lastChild);
+    folder.value = f.id;
+  });
+  folderLab.appendChild(folder);
+  box.appendChild(folderLab);
+  const textLab = document.createElement("label");
+  textLab.textContent = "Prompt";
+  const text = document.createElement("textarea");
+  text.id = "lib-edit-text";
+  text.rows = 5;
+  text.value = startText;
+  textLab.appendChild(text);
+  box.appendChild(textLab);
+  const row = document.createElement("div");
+  row.className = "sheet-actions";
+  row.appendChild(
+    button(isNew ? "Save" : "Save changes", "", () => {
+      const body = text.value.trim();
+      const nm = name.value.trim() || (body.length > 40 ? body.slice(0, 40).trim() + "…" : body);
+      if (!body) return void setStatus("A saved prompt needs some text.", "err");
+      const fid = folder.value && folder.value !== "__new__" ? folder.value : null;
+      const clash = library.prompts.find((x) => x.name === nm && x !== p && (x.folder || null) === fid);
+      if (clash && !window.confirm(`"${nm}" already exists in that folder. Replace it?`)) return;
+      if (clash) library.prompts = library.prompts.filter((x) => x !== clash);
+      const now = Date.now();
+      if (p) Object.assign(p, { name: nm, text: body, folder: fid, updatedAt: now });
+      else library.prompts.push({ id: libId("p"), name: nm, text: body, folder: fid, createdAt: now, updatedAt: now });
+      if (!storeLibrary()) return;
+      libView.editing = null;
+      renderLibrary();
+      setStatus(`Saved prompt "${nm}".`, "ok");
+    })
+  );
+  row.appendChild(
+    button("Cancel", "secondary", () => {
+      libView.editing = null;
+      renderLibrary();
+    })
+  );
+  box.appendChild(row);
+}
+
+function initLibrary() {
+  loadLibrary();
+  $("lib-search").addEventListener("input", (e) => {
+    libView.q = e.target.value;
+    renderLibrary();
+  });
+  $("lib-sort").addEventListener("change", (e) => {
+    libView.sort = e.target.value;
+    renderLibrary();
+  });
+  $("prompt-save").addEventListener("click", () => {
+    const el = primaryPromptEl();
+    if (!el || !el.value.trim()) return void setStatus("Nothing to save — write a prompt first.", "err");
+    libView.editing = "new";
+    renderLibrary();
+    $("sheet-prompts").querySelector(".sheet-card").scrollTop = 0;
+  });
 }
 
 const IMPROVE_MODEL_KEY = "pruna_improve_model";
+const DESCRIBE_MODEL_KEY = "patchbay_describe_model";
 
 // Groups a list of {family, label} into <optgroup>s, families in first-seen
 // order. Anything without a family is appended ungrouped rather than dropped.
@@ -3913,15 +5542,39 @@ function fillGroupedSelect(sel, list, optionLabel) {
   for (const m of list) if (!m.family) sel.appendChild(mkOption(m));
 }
 
+// A tool-strip button is an icon over a caption; a running tool swaps both.
+function setStripLabel(btn, icon, caption) {
+  const i = btn.querySelector(".ico");
+  const c = btn.querySelector(".cap");
+  if (i && c) {
+    i.textContent = icon;
+    c.textContent = caption;
+  } else btn.textContent = `${icon} ${caption}`;
+}
+
 function improveNoteFor(m) {
   if (!m) return "";
   // The cost is the one thing here the picker does not already say.
-  return `✨ ~${m.neurons} neurons per rewrite`;
+  return `~${m.neurons} neurons per rewrite`;
 }
 
+// One muted line under the strip saying which models its buttons will use,
+// since the pickers themselves live in ⚙ Options rather than crowding the row.
 function updateImproveNote() {
-  const sel = $("improve-model");
-  $("improve-note").textContent = improveNoteFor(improveModels.find((m) => m.id === sel.value));
+  const im = improveModels.find((m) => m.id === ($("improve-model") || {}).value);
+  const dm = describeModels.find((m) => m.id === ($("describe-model") || {}).value);
+  const lang = (id) => {
+    const sel = $(id);
+    const o = sel && sel.selectedOptions && sel.selectedOptions[0];
+    return o ? o.textContent : "";
+  };
+  const parts = [];
+  if (im) parts.push(`✨ ${im.label} (${improveNoteFor(im)})`);
+  if (dm) parts.push(`🔍 ${dm.label}`);
+  if (lang("translate-from")) parts.push(`🌐 ${lang("translate-from")} → ${lang("translate-to")}`);
+  $("improve-note").textContent = parts.join(" · ");
+  const sheetNote = $("improve-cost");
+  if (sheetNote) sheetNote.textContent = im ? `✨ ${improveNoteFor(im)}` : "";
 }
 
 function initImproveModelPicker() {
@@ -3961,7 +5614,22 @@ function initDescribe() {
   const sel = $("describe-model");
   // Bare names here too; the per-model caveat lives in the note below.
   fillGroupedSelect(sel, describeModels);
-  sel.value = defaultDescribeModel;
+  // Remembered, since its picker now sits in ⚙ Options out of sight.
+  let savedDescribe = null;
+  try {
+    savedDescribe = localStorage.getItem(DESCRIBE_MODEL_KEY);
+  } catch {
+    /* default below */
+  }
+  sel.value = describeModels.some((m) => m.id === savedDescribe) ? savedDescribe : defaultDescribeModel;
+  sel.addEventListener("change", () => {
+    try {
+      localStorage.setItem(DESCRIBE_MODEL_KEY, sel.value);
+    } catch {
+      /* this visit only */
+    }
+    updateImproveNote();
+  });
 
   const btn = $("prompt-describe");
   const file = $("describe-file");
@@ -4420,7 +6088,7 @@ const TOOL_TABS = [
 
 const TOOL_INFO = {
   improve: {
-    where: "Picked beside ✨ Improve.",
+    where: "Picked in ⚙ Options under the prompt.",
     reads: "The prompt box text, and nothing else: it is a copy edit.",
     scope: "all Improve models",
     writes: "Replaces the prompt box, as one Undo step.",
@@ -4433,14 +6101,14 @@ const TOOL_INFO = {
     writes: "The thread. “Put in prompt box” replaces the prompt, as one Undo step.",
   },
   describe: {
-    where: "Picked under ⋯ More.",
+    where: "Picked in ⚙ Options under the prompt.",
     reads: "The first attached image, or one you pick when none is attached. Not the prompt.",
     scope: "all Describe models",
     writes: "Replaces the prompt box, as one Undo step.",
   },
   translate: {
     model: "m2m100 1.2B · @cf/meta/m2m100-1.2b — the one translation model in the catalogue.",
-    reads: "The prompt box text, and the two languages picked under ⋯ More.",
+    reads: "The prompt box text, and the two languages picked in ⚙ Options.",
     instruction: "None. m2m100 translates: its input is the text and two language codes, and nothing else (Cloudflare's model schema).",
     limits: "None in its schema.",
     writes: "Replaces the prompt box, as one Undo step.",
@@ -5047,9 +6715,11 @@ function initTranslate() {
     } catch {
       /* this visit only */
     }
+    updateImproveNote();
   };
   from.addEventListener("change", remember);
   to.addEventListener("change", remember);
+  updateImproveNote();
 
   const btn = $("prompt-translate");
   btn.addEventListener("click", async () => {
@@ -5900,7 +7570,7 @@ function initPromptHistory() {
 }
 
 function initPromptLibrary() {
-  refreshPromptSelect();
+  initLibrary();
   initImproveModelPicker();
   initDescribe();
   initChat();
@@ -5912,43 +7582,6 @@ function initPromptLibrary() {
   initJudge();
   initPromptHistory();
 
-  $("prompt-select").addEventListener("change", (e) => {
-    const idx = e.target.value;
-    if (idx === "") return;
-    const p = loadPrompts()[Number(idx)];
-    const el = primaryPromptEl();
-    if (!p || !el) return;
-    el.value = p.text;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    commitPromptHistory(); // one entry for the whole load, undoable in one press
-    closeSheet("sheet-prompts");
-    setStatus(`Loaded prompt "${p.name}" — press Undo to get yours back.`, "ok");
-  });
-
-  $("prompt-save").addEventListener("click", () => {
-    const el = primaryPromptEl();
-    const text = el && el.value.trim();
-    if (!text) {
-      setStatus("Nothing to save — write a prompt first.", "err");
-      return;
-    }
-    const suggested = text.length > 40 ? text.slice(0, 40).trim() + "…" : text;
-    const name = (window.prompt("Save this prompt as:", suggested) || "").trim();
-    if (!name) return;
-
-    const list = loadPrompts();
-    const existing = list.findIndex((p) => p.name === name);
-    if (existing >= 0) {
-      if (!window.confirm(`"${name}" already exists. Replace it?`)) return;
-      list[existing].text = text;
-    } else {
-      list.push({ name, text });
-    }
-    storePrompts(list);
-    refreshPromptSelect(existing >= 0 ? existing : list.length - 1);
-    setStatus(`Saved prompt "${name}".`, "ok");
-  });
-
   // "Improve" rewrites the prompt in place via a small chat model. It used to
   // turn into its own one-shot "↩ Undo" afterwards, which is now the prompt
   // Undo button's job — and that one is not one-shot, does not go stale when you
@@ -5957,7 +7590,6 @@ function initPromptLibrary() {
   // Improve reads the prompt text and nothing else: it is a copy edit, and the
   // instruction it runs under says so. While it runs the button is its Cancel.
   const improveBtn = $("prompt-improve");
-  const improveIdle = improveBtn.textContent;
   let improving = null;
   improveBtn.addEventListener("click", async () => {
     if (improving) return void improving.abort();
@@ -5972,7 +7604,7 @@ function initPromptLibrary() {
 
     improving = new AbortController();
     const cancel = () => improving && improving.abort();
-    improveBtn.textContent = "✕ Cancel";
+    setStripLabel(improveBtn, "✕", "Cancel");
     improveBtn.classList.add("running");
     setStatus("Improving the prompt…", "load", { cancel });
     const modelId = $("improve-model").value;
@@ -6007,24 +7639,10 @@ function initPromptLibrary() {
     } finally {
       improving = null;
       improveBtn.classList.remove("running");
-      improveBtn.textContent = improveIdle;
+      setStripLabel(improveBtn, "✨", "Improve");
     }
   });
 
-  $("prompt-del").addEventListener("click", () => {
-    const sel = $("prompt-select");
-    if (sel.value === "") {
-      setStatus("Pick a saved prompt to delete.", "err");
-      return;
-    }
-    const list = loadPrompts();
-    const p = list[Number(sel.value)];
-    if (!p || !window.confirm(`Delete saved prompt "${p.name}"?`)) return;
-    list.splice(Number(sel.value), 1);
-    storePrompts(list);
-    refreshPromptSelect();
-    setStatus(`Deleted prompt "${p.name}".`, "ok");
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -6038,9 +7656,6 @@ function initPromptLibrary() {
 let sessionSpend = 0;
 let sessionRuns = 0;
 let sessionNeurons = 0;
-// Real dollar cost of the most recent xAI video job, reported by xAI itself
-// rather than estimated. Set in runGeneration(), consumed once by addSpend().
-let lastActualCostUsd = null;
 const CF_FREE_NEURONS = 10000; // Workers AI free allowance per day, resets 00:00 UTC
 const CF_USD_PER_NEURON = 0.011 / 1000; // $0.011 per 1,000 neurons beyond the allowance
 const CF_NEURON_WARN_AT = 0.8; // the spend bar turns amber at 8,000 of the 10,000
@@ -6217,7 +7832,9 @@ function fmtUsd(v) {
   return "$" + n.replace(/\.(\d)$/, ".$10");
 }
 
-function addSpend(model, input, outputCount) {
+// `actualUsd` is a job's real dollar cost where the provider reports one (xAI
+// video), which beats any estimate.
+function addSpend(model, input, outputCount, actualUsd = null) {
   sessionRuns++;
 
   const neurons = estimateNeurons(model, input);
@@ -6241,12 +7858,10 @@ function addSpend(model, input, outputCount) {
   }
 
   // xAI video jobs report their real dollar cost — use that instead of an estimate.
-  if (lastActualCostUsd != null) {
-    const actual = lastActualCostUsd;
-    lastActualCostUsd = null;
-    sessionSpend += actual;
+  if (actualUsd != null) {
+    sessionSpend += actualUsd;
     updateSpendBar();
-    return `${fmtUsd(actual)} (xAI's reported cost).`;
+    return `${fmtUsd(actualUsd)} (xAI's reported cost).`;
   }
 
   const cost = estimateCost(model, input, outputCount);
@@ -6349,8 +7964,12 @@ function updateSpendBar() {
 // every run reports, and Generate never scrolls out of reach.
 // ---------------------------------------------------------------------------
 const SCREEN_KEY = "patchbay_screen";
+const SCREENS = ["create", "gallery", "lab"];
+let currentScreen = "create";
 // Per sheet, a check run before it closes; false keeps it open.
 const sheetGuards = {};
+// Per sheet, run once it has closed.
+const sheetAfterClose = {};
 
 function openSheet(id) {
   const el = $(id);
@@ -6365,22 +7984,35 @@ function closeSheet(id) {
   if (sheetGuards[id] && !sheetGuards[id]()) return false;
   el.classList.add("hidden");
   if (!document.querySelector(".sheet:not(.hidden)")) document.body.classList.remove("sheet-open");
+  if (sheetAfterClose[id]) sheetAfterClose[id]();
   return true;
 }
 
 function showScreen(which) {
-  const lab = which === "lab";
-  $("screen-create").classList.toggle("hidden", lab);
-  $("screen-lab").classList.toggle("hidden", !lab);
-  $("tab-create").setAttribute("aria-selected", String(!lab));
-  $("tab-lab").setAttribute("aria-selected", String(lab));
-  // Generate belongs to Create; the status line stays, since Lab reports there too.
-  $("action-row").classList.toggle("hidden", lab);
+  if (!SCREENS.includes(which)) which = "create";
+  currentScreen = which;
+  for (const name of SCREENS) {
+    $(`screen-${name}`).classList.toggle("hidden", name !== which);
+    $(`tab-${name}`).setAttribute("aria-selected", String(name === which));
+  }
+  refreshActionRow();
+  if (which === "gallery") renderGallery();
+  else if (gallery.selecting) setSelecting(false);
   try {
-    localStorage.setItem(SCREEN_KEY, lab ? "lab" : "create");
+    localStorage.setItem(SCREEN_KEY, which);
   } catch {
     /* this visit only */
   }
+}
+
+// Generate belongs to Create; the jobs chip goes everywhere, since a run keeps
+// going whichever screen is showing. The status line stays on every screen.
+function refreshActionRow() {
+  const gen = $("generate-btn");
+  const chip = $("jobs-btn");
+  if (!gen || !chip) return;
+  gen.classList.toggle("hidden", currentScreen !== "create");
+  $("action-row").classList.toggle("hidden", currentScreen !== "create" && chip.classList.contains("hidden"));
 }
 
 function initShell() {
@@ -6403,18 +8035,22 @@ function initShell() {
     const box = $("chat-thread");
     box.scrollTop = box.scrollHeight;
   });
-  $("open-prompts").addEventListener("click", () => openSheet("sheet-prompts"));
+  $("open-prompts").addEventListener("click", () => openPromptLibrary());
   $("open-more").addEventListener("click", () => openSheet("sheet-more"));
 
-  $("tab-create").addEventListener("click", () => showScreen("create"));
-  $("tab-lab").addEventListener("click", () => showScreen("lab"));
+  for (const name of SCREENS) $(`tab-${name}`).addEventListener("click", () => showScreen(name));
   let screen = "create";
   try {
     screen = localStorage.getItem(SCREEN_KEY) || "create";
   } catch {
     /* Create */
   }
-  showScreen(screen);
+  // The gallery is drawn once the stores are open, further into startup.
+  currentScreen = SCREENS.includes(screen) ? screen : "create";
+  for (const name of SCREENS) {
+    $(`screen-${name}`).classList.toggle("hidden", name !== currentScreen);
+    $(`tab-${name}`).setAttribute("aria-selected", String(name === currentScreen));
+  }
 
   const pill = $("spend-pill");
   pill.addEventListener("click", () => {

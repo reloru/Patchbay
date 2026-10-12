@@ -41,6 +41,7 @@
         <h1 class="brand">🎛️ <span class="brand-name">Patchbay</span></h1>
         <nav class="tabs" role="tablist" aria-label="Screens">
           <button id="tab-create" class="tab" type="button" role="tab" aria-selected="true" aria-controls="screen-create">Create</button>
+          <button id="tab-gallery" class="tab" type="button" role="tab" aria-selected="false" aria-controls="screen-gallery">Gallery</button>
           <button id="tab-lab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="screen-lab">Lab</button>
         </nav>
         <!-- The day's usage in a few characters; the full sentence opens below. -->
@@ -69,23 +70,21 @@
             <!-- Moved under the prompt box whenever the fields are built; hidden
                  for a model that has no prompt. -->
             <div id="prompt-tools" class="prompt-tools">
-              <div class="toolbar">
+              <!-- One row of tools, icon over caption, each one tap. The models
+                   they use are picked in ⚙ Options and named on the line below. -->
+              <div class="tool-strip">
                 <!-- Undo/redo for the prompt box only. Visible rather than
                      keyboard-only because this is mainly used on a phone. -->
-                <span class="undo-redo">
-                  <button id="prompt-undo" type="button" class="secondary" title="Undo the last prompt change" disabled>↶ Undo</button>
-                  <button id="prompt-redo" type="button" class="secondary" title="Redo the last undone prompt change" disabled>↷ Redo</button>
-                </span>
-                <!-- Improve is the tool used most, so its model stays one tap away. -->
-                <span class="tool improve-tool">
-                  <button id="prompt-improve" type="button" class="secondary" title="Rewrite the prompt with more clarity">✨ Improve</button>
-                  <select id="improve-model" aria-label="Model used by Improve" title="Which model rewrites the prompt"></select>
-                  <button id="improve-settings" type="button" class="secondary gear" title="Improve settings" aria-label="Improve settings">⚙</button>
-                </span>
-                <button id="open-prompts" type="button" class="secondary" title="Saved prompts">📚 Saved</button>
-                <button id="open-chat" type="button" class="secondary" title="Chat about the prompt">💬 Chat</button>
-                <button id="open-more" type="button" class="secondary" title="Describe an image, translate the prompt">⋯ More</button>
+                <button id="prompt-undo" type="button" class="strip-btn" title="Undo the last prompt change" disabled><span class="ico">↶</span><span class="cap">Undo</span></button>
+                <button id="prompt-redo" type="button" class="strip-btn" title="Redo the last undone prompt change" disabled><span class="ico">↷</span><span class="cap">Redo</span></button>
+                <button id="prompt-improve" type="button" class="strip-btn" title="Copy-edit the prompt"><span class="ico">✨</span><span class="cap">Improve</span></button>
+                <button id="prompt-describe" type="button" class="strip-btn" title="Caption the attached image into the prompt box"><span class="ico">🔍</span><span class="cap">Describe</span></button>
+                <button id="prompt-translate" type="button" class="strip-btn" title="Translate the prompt box"><span class="ico">🌐</span><span class="cap">Translate</span></button>
+                <button id="open-chat" type="button" class="strip-btn" title="Chat about the prompt"><span class="ico">💬</span><span class="cap">Chat</span></button>
+                <button id="open-prompts" type="button" class="strip-btn" title="Saved prompts"><span class="ico">📚</span><span class="cap">Prompts</span></button>
+                <button id="open-more" type="button" class="strip-btn" title="Pick the models and languages these tools use"><span class="ico">⚙</span><span class="cap">Options</span></button>
               </div>
+              <input id="describe-file" type="file" accept="image/*" hidden />
               <p class="tool-notes">
                 <span id="improve-note"></span>
                 <span id="describe-note" class="describe-note"></span>
@@ -100,16 +99,54 @@
                just made against the prompt that made it is the common case. -->
           <button id="prompt-judge" type="button" class="secondary judge-btn hidden" title="Score how well the image matches the prompt">⚖️ Score against prompt</button>
           <div id="judge-result" class="judge hidden"></div>
-          <!-- The last few generations, kept on the device. Hidden entirely
-               when empty rather than showing a placeholder. -->
+          <!-- The newest few from the gallery. Hidden entirely when the gallery
+               is empty rather than showing a placeholder. -->
           <div id="recent" class="recent hidden">
             <div class="recent-head">
               <span id="recent-count"></span>
-              <button id="recent-clear" type="button" class="linkish">Clear</button>
+              <button id="recent-open" type="button" class="linkish">Open gallery</button>
             </div>
             <div id="recent-strip" class="recent-strip"></div>
           </div>
         </section>
+      </main>
+
+      <!-- ── Gallery ────────────────────────────────────────────────────── -->
+      <main id="screen-gallery" class="screen screen-gallery hidden">
+        <div class="gallery-bar">
+          <input id="gallery-search" type="search" placeholder="Search prompts, names, settings" aria-label="Search the gallery" autocomplete="off" />
+          <p class="gallery-hint">Words match prompts, names and settings. <code>seed:42</code>, <code>steps&gt;20</code>, <code>model:vace</code>, <code>album:trips</code>, <code>-blurry</code> narrow it.</p>
+          <div class="gallery-filters">
+            <div id="gallery-kind" class="seg" role="group" aria-label="Kind">
+              <button type="button" data-kind="all" aria-pressed="true">All</button>
+              <button type="button" data-kind="image" aria-pressed="false">Images</button>
+              <button type="button" data-kind="video" aria-pressed="false">Videos</button>
+            </div>
+            <select id="gallery-album" aria-label="Album"></select>
+            <select id="gallery-sort" aria-label="Sort"></select>
+            <button id="gallery-reverse" type="button" class="secondary" aria-pressed="false" title="Reverse the order" aria-label="Reverse the order">⇅</button>
+          </div>
+          <div class="gallery-head">
+            <span id="gallery-count"></span>
+            <span class="gallery-head-actions">
+              <button id="gallery-select" type="button" class="secondary">Select</button>
+              <button id="gallery-albums" type="button" class="secondary">Albums</button>
+              <button id="gallery-settings" type="button" class="secondary" title="Limits and storage" aria-label="Gallery settings">⚙</button>
+            </span>
+          </div>
+          <p id="gallery-problem" class="chat-note err"></p>
+          <div id="gallery-selbar" class="gallery-selbar hidden">
+            <span id="gallery-selcount"></span>
+            <button id="sel-all" type="button" class="secondary">All</button>
+            <button id="sel-album" type="button" class="secondary">Add to album</button>
+            <button id="sel-unalbum" type="button" class="secondary hidden">Remove from album</button>
+            <button id="sel-delete" type="button" class="secondary danger">Delete</button>
+            <button id="sel-done" type="button">Done</button>
+          </div>
+        </div>
+        <div id="gallery-grid" class="gallery-grid"></div>
+        <p id="gallery-empty" class="chat-note gallery-empty hidden"></p>
+        <button id="gallery-more" type="button" class="secondary gallery-more hidden">Show more</button>
       </main>
 
       <!-- ── Lab: tools that are not part of making an image ─────────────── -->
@@ -172,11 +209,9 @@
       <div id="bottombar" class="bottombar">
         <div id="status" class="status hidden" role="status"></div>
         <div id="action-row" class="action-row">
-          <!-- Shown only while a job is being watched. It stops the waiting,
-               not the job: the provider keeps running and billing, and the
-               next load reattaches through the same path a discarded tab
-               already uses. -->
-          <button id="stop-btn" type="button" class="secondary hidden">Stop waiting</button>
+          <!-- Shown while anything runs, or finished out of sight. Opens the
+               list of jobs; Generate is never held by one. -->
+          <button id="jobs-btn" type="button" class="secondary jobs-btn hidden"></button>
           <button id="generate-btn" type="submit" form="gen-form">Generate</button>
         </div>
       </div>
@@ -219,48 +254,105 @@
       </div>
     </div>
 
+    <!-- The prompt library: every saved prompt with its text, in folders. -->
     <div id="sheet-prompts" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="sheet-prompts-title">
       <div class="sheet-card">
         <div class="sheet-head">
-          <h2 id="sheet-prompts-title">📚 Saved prompts</h2>
+          <h2 id="sheet-prompts-title">📚 Prompts</h2>
           <button type="button" class="secondary sheet-close">Close</button>
         </div>
-        <p class="chat-note">Kept on this device. Loading one replaces the prompt box — Undo brings yours back.</p>
-        <select id="prompt-select" aria-label="Saved prompts">
-          <option value="">Saved prompts…</option>
-        </select>
-        <div class="sheet-actions">
-          <button id="prompt-save" type="button" class="secondary" title="Save the current prompt">Save current prompt</button>
-          <button id="prompt-del" type="button" class="secondary" title="Delete the selected prompt">Delete selected</button>
+        <p class="chat-note">Kept on this device. Use replaces the prompt box — Undo brings yours back.</p>
+        <button id="prompt-save" type="button" title="Save the current prompt">Save current prompt</button>
+        <div id="lib-editor" class="lib-editor hidden"></div>
+        <div class="lib-search-row">
+          <input id="lib-search" type="search" placeholder="Search names and text" aria-label="Search saved prompts" autocomplete="off" />
+          <select id="lib-sort" aria-label="Sort saved prompts">
+            <option value="recent">Recently saved</option>
+            <option value="name">Name A–Z</option>
+          </select>
         </div>
+        <div id="lib-folders" class="lib-folders" role="group" aria-label="Folders"></div>
+        <div id="lib-folder-tools" class="lib-folder-tools hidden"></div>
+        <p id="lib-empty" class="chat-note hidden"></p>
+        <div id="lib-list" class="lib-list"></div>
       </div>
     </div>
 
+    <!-- Which models and languages the tool strip uses. The strip's buttons
+         act straight away; this is where they are configured. -->
     <div id="sheet-more" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="sheet-more-title">
       <div class="sheet-card">
         <div class="sheet-head">
-          <h2 id="sheet-more-title">⋯ More prompt tools</h2>
+          <h2 id="sheet-more-title">⚙ Prompt tool options</h2>
           <button type="button" class="secondary sheet-close">Close</button>
         </div>
         <section class="more-tool">
+          <h3>✨ Improve</h3>
+          <p class="chat-note">A copy edit of the prompt box: grammar, phrasing and punctuation only.</p>
+          <div class="tool">
+            <select id="improve-model" aria-label="Model used by Improve" title="Which model rewrites the prompt"></select>
+            <button id="improve-settings" type="button" class="secondary gear" title="Improve settings" aria-label="Improve settings">⚙</button>
+          </div>
+          <p id="improve-cost" class="chat-note"></p>
+        </section>
+        <section class="more-tool">
           <h3>🔍 Describe</h3>
-          <p class="chat-note">Captions the first attached image — or one you pick — into the prompt box.</p>
+          <p class="chat-note">Captions the first attached image — or one you pick when none is — into the prompt box.</p>
           <div class="tool">
             <select id="describe-model" aria-label="Model used by Describe" title="Which model captions the image"></select>
             <button id="describe-settings" type="button" class="secondary gear" title="Describe settings" aria-label="Describe settings">⚙</button>
           </div>
-          <button id="prompt-describe" type="button" class="secondary">🔍 Describe</button>
-          <input id="describe-file" type="file" accept="image/*" hidden />
         </section>
         <section class="more-tool">
           <h3>🌐 Translate</h3>
-          <p class="chat-note">Rewrites the prompt box in another language. Undo brings the original back.</p>
+          <p class="chat-note">Rewrites the prompt box from one language into the other. Undo brings the original back.</p>
           <div class="tool translate-tool">
             <select id="translate-from" aria-label="Translate from"></select>
             <select id="translate-to" aria-label="Translate to"></select>
           </div>
-          <button id="prompt-translate" type="button" class="secondary">🌐 Translate</button>
         </section>
+      </div>
+    </div>
+
+    <!-- Running jobs, and what finished this visit. -->
+    <div id="sheet-jobs" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="sheet-jobs-title">
+      <div class="sheet-card">
+        <div class="sheet-head">
+          <h2 id="sheet-jobs-title">⏳ Jobs</h2>
+          <button type="button" class="secondary sheet-close">Close</button>
+        </div>
+        <p class="chat-note">A job keeps running while you do other things, and is checked again the moment the app comes back to the foreground. Finished results go to the gallery.</p>
+        <div id="jobs-list" class="jobs-list"></div>
+      </div>
+    </div>
+
+    <div id="sheet-albums" class="sheet sheet-over hidden" role="dialog" aria-modal="true" aria-labelledby="sheet-albums-title">
+      <div class="sheet-card">
+        <div class="sheet-head">
+          <h2 id="sheet-albums-title">Albums</h2>
+          <button type="button" class="secondary sheet-close">Done</button>
+        </div>
+        <p id="albums-note" class="chat-note"></p>
+        <div id="albums-list" class="albums-list"></div>
+        <form id="album-new-form" class="album-new">
+          <input id="album-new" type="text" placeholder="New album name" aria-label="New album name" />
+          <button type="submit" class="secondary">Add</button>
+        </form>
+      </div>
+    </div>
+
+    <div id="sheet-gallery-settings" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="sheet-gallery-settings-title">
+      <div class="sheet-card">
+        <div class="sheet-head">
+          <h2 id="sheet-gallery-settings-title">⚙ Gallery</h2>
+          <button type="button" class="secondary sheet-close">Close</button>
+        </div>
+        <p class="chat-note">Limits apply only to items with no name and in no album — those are kept until you delete them.</p>
+        <label class="field"><span class="field-label">Keep up to</span><select id="limit-image" aria-label="Image limit"></select></label>
+        <label class="field"><span class="field-label">Keep up to</span><select id="limit-video" aria-label="Video limit"></select></label>
+        <label class="field"><span class="field-label">By age</span><select id="limit-days" aria-label="Age limit"></select></label>
+        <p id="storage-note" class="chat-note"></p>
+        <button id="gallery-clear" type="button" class="secondary danger">Delete everything in the gallery</button>
       </div>
     </div>
 
@@ -278,20 +370,21 @@
       </div>
     </div>
 
-    <!-- One generation, full size, over the app. Built empty; filled when a
-         thumbnail is tapped. -->
-    <div id="lightbox" class="lightbox hidden">
-      <div class="lightbox-card">
-        <!-- Filled with an <img> or a <video> depending on what was opened,
-             rather than a fixed element that only one of the two can use. -->
-        <div class="lightbox-stage">
-          <div id="lightbox-media" class="lightbox-media"></div>
-          <button id="lightbox-prev" type="button" class="lightbox-nav prev" aria-label="Newer">‹</button>
-          <button id="lightbox-next" type="button" class="lightbox-nav next" aria-label="Older">›</button>
+    <!-- One gallery item, full screen: the picture or clip, then its name,
+         albums, prompt, settings and input files, and what can be done with it. -->
+    <div id="viewer" class="viewer hidden" role="dialog" aria-modal="true" aria-label="Gallery item">
+      <div class="viewer-top">
+        <button id="viewer-close" type="button" class="viewer-icon" aria-label="Close">✕</button>
+        <span id="viewer-pos" class="viewer-pos"></span>
+        <button id="viewer-zoom" type="button" class="viewer-icon" aria-label="Actual size" title="Actual size">⤢</button>
+      </div>
+      <div class="viewer-body">
+        <div id="viewer-stage" class="viewer-stage">
+          <div id="viewer-media" class="viewer-media"></div>
+          <button id="viewer-prev" type="button" class="viewer-nav prev" aria-label="Previous">‹</button>
+          <button id="viewer-next" type="button" class="viewer-nav next" aria-label="Next">›</button>
         </div>
-        <p id="lightbox-meta" class="lightbox-meta"></p>
-        <p id="lightbox-prompt" class="lightbox-prompt"></p>
-        <div id="lightbox-actions" class="lightbox-actions"></div>
+        <div id="viewer-info" class="viewer-info"></div>
       </div>
     </div>
 

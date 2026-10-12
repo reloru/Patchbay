@@ -79,6 +79,7 @@ select, input, textarea, button { max-width: 100%; }
 }
 .brand { margin: 0; font-size: 18px; white-space: nowrap; }
 .tabs {
+  flex: 0 0 auto;
   display: flex;
   gap: 2px;
   padding: 3px;
@@ -107,6 +108,8 @@ select, input, textarea, button { max-width: 100%; }
   font-weight: 500;
   white-space: nowrap;
   max-width: 40vw;
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -132,6 +135,7 @@ select, input, textarea, button { max-width: 100%; }
   gap: 20px;
   align-items: start;
 }
+.screen-gallery { display: flex; flex-direction: column; gap: 12px; }
 .screen-lab {
   display: flex;
   flex-direction: column;
@@ -375,27 +379,37 @@ button.secondary:hover { border-color: var(--accent); }
 }
 .linkish:hover { background: none; }
 
-/* ── Prompt toolbar: directly under the prompt it acts on ──────────────── */
+/* ── Prompt tool strip: directly under the prompt it acts on ───────────── */
 .prompt-tools { margin: -4px 0 4px; }
-.toolbar { display: flex; flex-wrap: wrap; gap: 8px; }
-.toolbar button { padding: 9px 12px; white-space: nowrap; }
-.undo-redo { display: flex; gap: 8px; flex: 0 0 auto; }
-.undo-redo button { min-width: 72px; }
+/* Four across in two rows on every width the form column takes: even, large
+   tap targets, an icon over a short caption. */
+.tool-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.strip-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 52px;
+  padding: 6px 2px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 500;
+}
+.strip-btn:hover { background: var(--panel-2); border-color: var(--accent); }
+.strip-btn .ico { font-size: 18px; line-height: 1.1; }
+.strip-btn .cap { font-size: 11.5px; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#prompt-improve.running { border-color: var(--accent); }
+#prompt-improve.running .cap { color: var(--accent); }
 .tool { display: flex; gap: 8px; min-width: 0; }
 .tool select { flex: 1 1 auto; min-width: 0; }
-/* A row of its own: the tool used most, with its model beside it. */
-.improve-tool { flex: 1 1 100%; }
-.improve-tool #prompt-improve { flex: 0 0 auto; }
-#prompt-improve.running { border-color: var(--accent); color: var(--accent); }
 .gear { padding: 9px 10px; flex: 0 0 auto; }
 .gear.custom { border-color: var(--accent); color: var(--accent); }
 .tool-notes { margin: 6px 2px 0; font-size: 12px; color: var(--muted); }
 .tool-notes span { display: block; overflow-wrap: anywhere; }
 .tool-notes span:empty { display: none; }
 .tool-notes .describe-note { color: var(--danger); }
-@media (max-width: 560px) {
-  .toolbar > button { flex: 1 1 auto; }
-}
 
 /* ── Bottom bar: status and Generate, always on screen ─────────────────── */
 .bottombar {
@@ -413,9 +427,12 @@ button.secondary:hover { border-color: var(--accent); }
 }
 .action-row { display: flex; gap: 10px; }
 .action-row #generate-btn { flex: 1; padding: 12px 18px; font-size: 16px; }
-/* Beside Generate only while something is running. Sized so it cannot be
-   mistaken for the primary action, but stays a comfortable tap target. */
-.action-row #stop-btn { flex: 0 0 auto; padding: 12px 16px; font-size: 15px; }
+/* Beside Generate while anything runs. Sized so it cannot be mistaken for
+   the primary action, but stays a comfortable tap target. */
+.action-row .jobs-btn { flex: 0 0 auto; padding: 12px 14px; font-size: 14px; white-space: nowrap; }
+/* Off Create, where Generate is not shown, the chip takes the row. */
+.action-row:has(#generate-btn.hidden) .jobs-btn { flex: 1; }
+.jobs-btn.attention { border-color: var(--danger); color: var(--danger); }
 @media (min-width: 900px) {
   /* Under the form's own column, where Generate belongs. */
   .action-row { max-width: 460px; }
@@ -548,17 +565,22 @@ button.secondary:hover { border-color: var(--accent); }
   cursor: pointer;
 }
 .recent-strip .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.recent-strip .thumb img:not([src]), .tile img:not([src]) { visibility: hidden; }
 .recent-strip .thumb:hover { border-color: var(--accent); }
 /* Stands in where the thumbnail would not encode, so the tile still reads as an
    item rather than as a broken picture. */
 .thumb-blank {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
   display: grid;
   place-items: center;
   width: 100%;
   height: 100%;
   font-size: 24px;
-  opacity: .5;
+  opacity: .35;
 }
+.recent-strip .thumb img, .tile img { position: relative; z-index: 1; }
 /* A clip's tile is a still frame, so without this it is indistinguishable from
    an image and which one opens a player is a surprise. */
 .thumb-kind {
@@ -572,6 +594,7 @@ button.secondary:hover { border-color: var(--accent); }
   font-size: 11px;
   line-height: 16px;
   pointer-events: none;
+  z-index: 2;
 }
 
 /* Voice panel inside audio fields */
@@ -592,7 +615,7 @@ body.sheet-open { overflow: hidden; }
   justify-content: center;
   background: rgba(0, 0, 0, .6);
 }
-.sheet.sheet-over { z-index: 32; }
+.sheet.sheet-over { z-index: 45; }
 .sheet-card {
   width: 100%;
   max-width: 640px;
@@ -753,56 +776,246 @@ body.sheet-open { overflow: hidden; }
 .other-result:empty { display: none; }
 .error { color: var(--danger); font-size: 13px; }
 
-/* ── Lightbox ──────────────────────────────────────────────────────────── */
-.lightbox {
+/* ── Gallery ───────────────────────────────────────────────────────────── */
+.gallery-bar { display: flex; flex-direction: column; gap: 8px; }
+.gallery-bar input[type="search"] { width: 100%; }
+.gallery-hint { margin: 0; font-size: 12px; color: var(--muted); }
+.gallery-hint code { font-size: 11.5px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 5px; padding: 0 4px; }
+.gallery-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.gallery-filters select { flex: 1 1 120px; min-width: 0; }
+.gallery-filters #gallery-reverse { flex: 0 0 auto; padding: 9px 12px; }
+#gallery-reverse[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.seg { display: flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; flex: 0 0 auto; }
+.seg button { background: var(--panel-2); color: var(--muted); border: 0; border-radius: 0; padding: 8px 11px; font-weight: 500; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #1a1206; }
+.gallery-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.gallery-head-actions { display: flex; gap: 6px; }
+.gallery-head-actions button { padding: 7px 11px; }
+.gallery-selbar {
+  position: sticky;
+  top: 58px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.gallery-selbar span { flex: 1 1 100%; font-size: 13px; }
+.gallery-selbar button { flex: 1 1 auto; padding: 8px 10px; }
+.gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 6px; }
+@media (max-width: 560px) {
+  .gallery-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+}
+.tile {
+  position: relative;
+  aspect-ratio: 1;
+  padding: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #000;
+}
+.tile:hover { background: #000; border-color: var(--accent); }
+.tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile-name {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  padding: 10px 6px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #fff;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: linear-gradient(transparent, rgba(0, 0, 0, .75));
+}
+.tile .thumb-kind { left: auto; right: 4px; top: 4px; bottom: auto; }
+.tile-check {
+  display: none;
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  z-index: 3;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: rgba(0, 0, 0, .4);
+  color: transparent;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: center;
+}
+.selecting .tile-check { display: block; }
+.tile.selected { border-color: var(--accent); }
+.tile.selected .tile-check { background: var(--accent); border-color: var(--accent); color: #1a1206; }
+.tile.selected img { opacity: .75; }
+.gallery-more { align-self: center; }
+.gallery-empty { text-align: center; padding: 30px 10px; }
+.gallery-warn { color: var(--danger); }
+button.danger { color: var(--danger); }
+button.danger:hover { border-color: var(--danger); }
+
+/* Albums */
+.albums-list { display: flex; flex-direction: column; gap: 6px; }
+.album-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.album-check, .album-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 14px; overflow-wrap: anywhere; }
+.album-check input { width: 20px; height: 20px; flex: 0 0 auto; }
+.album-row button { padding: 6px 10px; font-size: 13px; }
+.album-new { display: flex; gap: 8px; }
+.album-new input { flex: 1; min-width: 0; }
+
+/* Jobs */
+.jobs-list { display: flex; flex-direction: column; gap: 8px; }
+.jobs-heading { margin: 8px 0 0; font-size: 13px; color: var(--muted); font-weight: 600; }
+.job-row { border: 1px solid var(--border); border-radius: 10px; padding: 10px; background: var(--bg); display: flex; flex-direction: column; gap: 4px; }
+.job-row.failed { border-color: var(--danger); }
+.job-title { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+.job-prompt { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-state { font-size: 13px; overflow-wrap: anywhere; }
+.job-actions { display: flex; gap: 8px; margin-top: 4px; }
+.job-actions button { flex: 1 1 auto; padding: 7px 10px; font-size: 13px; }
+
+/* ── Viewer: one gallery item, full screen ─────────────────────────────── */
+body.viewer-open { overflow: hidden; }
+.viewer {
   position: fixed;
   inset: 0;
   z-index: 40;
-  display: grid;
-  place-items: center;
-  padding: 16px;
-  background: rgba(0, 0, 0, .8);
+  display: flex;
+  flex-direction: column;
+  background: #000;
 }
-.lightbox-card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 14px;
-  width: min(96vw, 560px);
-  max-height: 92vh;
-  overflow-y: auto;
+.viewer-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, .85);
+  border-bottom: 1px solid #222;
 }
-.lightbox-stage { position: relative; }
-.lightbox-media img,
-.lightbox-media video { width: 100%; border-radius: 10px; display: block; background: #000; }
-/* A tall portrait clip must not push the buttons under it off the card. */
-.lightbox-media video { max-height: 60vh; }
-/* Over the picture's edges, clear of a video's own controls at the bottom. */
-.lightbox-nav {
+.viewer-icon {
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .1);
+  color: #fff;
+  font-size: 18px;
+  flex: 0 0 auto;
+}
+.viewer-icon:hover { background: rgba(255, 255, 255, .2); }
+.viewer-pos { flex: 1; text-align: center; font-size: 13px; color: #bbb; }
+/* Phone: the picture on top, its details scrolling under it. Wide: side by
+   side, each scrolling on its own. */
+.viewer-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.viewer-stage { position: relative; background: #000; }
+.viewer-media { display: flex; align-items: center; justify-content: center; height: 62vh; min-height: 240px; }
+.viewer-media img, .viewer-media video { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* Actual size: the picture at its own pixels, panned by scrolling. */
+.viewer-media.zoomed { display: block; overflow: auto; touch-action: pan-x pan-y pinch-zoom; }
+.viewer-media.zoomed img { width: auto; height: auto; max-width: none; max-height: none; }
+.viewer-nav {
   position: absolute;
-  top: calc(50% - 40px);
+  top: calc(50% - 28px);
   width: 40px;
   height: 56px;
   padding: 0;
   border-radius: 10px;
-  background: rgba(0, 0, 0, .55);
+  background: rgba(0, 0, 0, .5);
   color: #fff;
   font-size: 28px;
   line-height: 1;
 }
-.lightbox-nav:hover { background: rgba(0, 0, 0, .75); }
-.lightbox-nav:disabled { opacity: .2; }
-.lightbox-nav.prev { left: 6px; }
-.lightbox-nav.next { right: 6px; }
-.lightbox-meta { margin: 10px 2px 0; font-size: 12px; color: var(--muted); }
-.lightbox-prompt {
-  margin: 6px 2px 0;
-  font-size: 13px;
-  overflow-wrap: anywhere;
+.viewer-nav:hover { background: rgba(0, 0, 0, .75); }
+.viewer-nav:disabled { opacity: .2; }
+.viewer-nav.prev { left: 6px; }
+.viewer-nav.next { right: 6px; }
+.viewer-info {
+  background: var(--panel);
+  padding: 14px 16px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
-.lightbox-prompt:empty { display: none; }
-.lightbox-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.lightbox-actions button { flex: 1 1 auto; }
+@media (min-width: 900px) {
+  .viewer-body { display: grid; grid-template-columns: minmax(0, 1fr) 400px; overflow: hidden; }
+  .viewer-stage { height: 100%; }
+  .viewer-media { height: 100%; }
+  .viewer-info { overflow-y: auto; border-left: 1px solid var(--border); }
+}
+.viewer-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.viewer-actions button { padding: 10px 8px; }
+.viewer-section h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.viewer-name { width: 100%; font-size: 16px; font-weight: 600; }
+.viewer-meta { margin: 6px 2px 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.viewer-keep { margin: 4px 2px 0; font-size: 12px; color: var(--ok); }
+.viewer-prompt { margin: 0 0 8px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.album-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.album-chip { background: var(--panel-2); color: var(--text); border: 1px solid var(--accent); border-radius: 999px; padding: 5px 12px; font-size: 13px; font-weight: 500; }
+.album-add { border-radius: 999px; padding: 5px 12px; font-size: 13px; }
+.param-table { margin: 0; display: flex; flex-direction: column; }
+.param-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px; gap: 8px; align-items: center; padding: 6px 0 6px 8px; border-bottom: 1px solid var(--border); border-left: 2px solid transparent; }
+.param-row.changed { border-left-color: var(--accent); }
+.param-row dt { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.param-row.changed dt { color: var(--text); font-weight: 600; }
+.param-row dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.param-find { padding: 4px; background: transparent; border: 1px solid var(--border); font-size: 13px; }
+.viewer-inputs { display: flex; flex-direction: column; gap: 4px; font-size: 13px; overflow-wrap: anywhere; }
+
+/* ── Prompt library ────────────────────────────────────────────────────── */
+.lib-search-row { display: flex; gap: 8px; }
+.lib-search-row input { flex: 1; min-width: 0; }
+.lib-search-row select { flex: 0 1 auto; min-width: 0; }
+.lib-folders { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
+.lib-folder {
+  flex: 0 0 auto;
+  background: var(--panel-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.lib-folder:hover { background: var(--panel-2); border-color: var(--accent); }
+.lib-folder[aria-pressed="true"] { background: var(--accent); color: #1a1206; border-color: var(--accent); }
+.lib-folder-add { border-style: dashed; }
+.lib-folder-tools { display: flex; gap: 16px; font-size: 13px; }
+.lib-list { display: flex; flex-direction: column; gap: 8px; }
+.lib-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px; background: var(--bg); display: flex; flex-direction: column; gap: 6px; }
+.lib-card-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.lib-name { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+.lib-tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; }
+.lib-text {
+  margin: 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  cursor: pointer;
+}
+.lib-text.expanded { display: block; -webkit-line-clamp: unset; }
+.lib-meta { font-size: 11px; color: var(--muted); }
+.lib-actions { display: flex; gap: 8px; }
+.lib-actions button { flex: 1 1 auto; padding: 8px 10px; }
+.lib-editor { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--accent); border-radius: 10px; }
+.lib-editor h3 { margin: 0; font-size: 15px; }
+.lib-editor label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.lib-editor textarea { min-height: 120px; }
 
 @media (max-width: 480px) {
   /* The icon says it; the tabs and the usage need the width. */
@@ -812,5 +1025,6 @@ body.sheet-open { overflow: hidden; }
   .app { padding: 0 12px calc(var(--bar-h) + 20px); }
   .panel { padding: 14px; }
   .brand { font-size: 16px; }
-  .tab { padding: 6px 11px; }
+  .tab { padding: 6px 10px; }
+  .pill { max-width: 32vw; }
 }

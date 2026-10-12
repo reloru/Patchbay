@@ -57,6 +57,92 @@ async function open(context, init) {
 
 const settle = (page) => page.waitForTimeout(900); // > SAVE_DEBOUNCE_MS
 
+// Every record in the named stores, with ArrayBuffers shown as their length so
+// they survive the trip out of the page.
+const readStores = (page, stores) =>
+  page.evaluate(
+    (stores) =>
+      new Promise((resolve) => {
+        const conv = (v) =>
+          v instanceof ArrayBuffer
+            ? { __buf: v.byteLength }
+            : Array.isArray(v)
+              ? v.map(conv)
+              : v && typeof v === "object"
+                ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, conv(x)]))
+                : v;
+        const r = indexedDB.open("patchbay");
+        r.onsuccess = () => {
+          const tx = r.result.transaction(stores, "readonly");
+          const out = {};
+          for (const name of stores) {
+            const q = tx.objectStore(name).getAll();
+            q.onsuccess = () => (out[name] = (q.result || []).map(conv));
+          }
+          tx.oncomplete = () => resolve(out);
+          tx.onerror = () => resolve(null);
+        };
+        r.onerror = () => resolve(null);
+      }),
+    stores
+  );
+
+// Empties the gallery and puts `n` items straight into its stores, each built
+// from defaults plus what `make(i, now)` returns.
+const seedGallery = (page, make, n) =>
+  page.evaluate(
+    ({ src, n }) =>
+      new Promise((resolve) => {
+        const make = new Function("return " + src)();
+        const r = indexedDB.open("patchbay");
+        r.onsuccess = () => {
+          const tx = r.result.transaction(["gallery", "galleryBytes", "galleryThumbs"], "readwrite");
+          const light = tx.objectStore("gallery");
+          const heavy = tx.objectStore("galleryBytes");
+          light.clear();
+          heavy.clear();
+          tx.objectStore("galleryThumbs").clear();
+          const now = Date.now();
+          for (let i = 0; i < n; i++) {
+            const rec = {
+              modelId: "p-image",
+              prompt: "",
+              kind: "image",
+              type: "image/png",
+              width: 10,
+              height: 10,
+              size: 1024,
+              name: "",
+              albums: [],
+              ...make(i, now),
+            };
+            light.put(rec);
+            heavy.put({ id: rec.id, bytes: new ArrayBuffer(1024) });
+          }
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        };
+      }),
+    { src: make.toString(), n }
+  );
+
+// The tool strip acts straight away; the models it uses are picked in ⚙
+// Options, a sheet over the form.
+async function openOptions(page) {
+  if (await page.locator("#sheet-more").isHidden()) await page.locator("#open-more").click();
+}
+async function closeOptions(page) {
+  if (await page.locator("#sheet-more").isVisible()) await page.locator("#sheet-more .sheet-close").click();
+}
+async function pickImprove(page, id) {
+  await openOptions(page);
+  await page.selectOption("#improve-model", id);
+}
+async function improveGear(page) {
+  await openOptions(page);
+  await page.locator("#improve-settings").click();
+}
+
 const browser = await ENGINE.launch();
 console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
 
@@ -295,7 +381,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     (s) => document.querySelector(s).value === "IMPROVED PROMPT TEXT",
     promptSel
   );
-  check("Improve stays Improve rather than becoming its own undo", (await page.locator("#prompt-improve").textContent()) === "✨ Improve");
+  check("Improve stays Improve rather than becoming its own undo", (await page.locator("#prompt-improve .cap").textContent()) === "Improve");
   await undo.click();
   check("Improve is undoable in one press", (await page.inputValue(promptSel)) === "cat on a skateboard");
   await redo.click();
@@ -317,7 +403,10 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForTimeout(400);
   const before = await page.inputValue(promptSel);
   await page.locator("#open-prompts").click();
-  await page.selectOption("#prompt-select", "0");
+  // The old flat list is moved into the library rather than lost.
+  check("a prompt saved by an earlier version is in the library", (await page.locator(".lib-card .lib-name").first().textContent()) === "saved one");
+  check("and its text shows without loading it", (await page.locator(".lib-card .lib-text").first().textContent()) === "a saved prompt body");
+  await page.locator(".lib-card .lib-use").first().click();
   check("saved prompt loaded", (await page.inputValue(promptSel)) === "a saved prompt body");
   check("and the sheet gets out of the way", await page.locator("#sheet-prompts").isHidden());
   await page.locator("#prompt-undo").click();
@@ -629,7 +718,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
-// ── Recent generations ─────────────────────────────────────────────────────
+// ── The gallery ────────────────────────────────────────────────────────────
 {
   const context = await browser.newContext();
   let page = await open(context);
@@ -647,49 +736,27 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
 
   await gen("first picture");
   check("a generation appears in the strip", (await page.locator(".recent-strip .thumb").count()) === 1);
-  const stored = await page.evaluate(
-    () =>
-      new Promise((resolve) => {
-        const r = indexedDB.open("patchbay");
-        r.onsuccess = () => {
-          const tx = r.result.transaction(["gallery", "galleryBytes"], "readonly");
-          const light = tx.objectStore("gallery").getAll();
-          const heavy = tx.objectStore("galleryBytes").getAll();
-          tx.oncomplete = () =>
-            resolve({
-              light: (light.result || []).map((x) => ({
-                id: x.id,
-                hasInlineBytes: "bytes" in x,
-                thumbIsBuffer: x.thumb instanceof ArrayBuffer || x.thumb === null,
-                prompt: x.prompt,
-                modelId: x.modelId,
-                size: x.size,
-              })),
-              heavy: (heavy.result || []).map((x) => ({ id: x.id, bytesIsBuffer: x.bytes instanceof ArrayBuffer })),
-            });
-          tx.onerror = () => resolve("read failed");
-        };
-        r.onerror = () => resolve("open failed");
-      })
+  const stored = await readStores(page, ["gallery", "galleryBytes", "galleryThumbs"]);
+  const light = stored.gallery[0] || {};
+  check(
+    "the metadata record holds no media bytes and no thumbnail",
+    stored.gallery.length === 1 && !("bytes" in light) && !("thumb" in light) && light.prompt === "first picture" && light.modelId === "p-image" && light.size > 0,
+    JSON.stringify(light)
   );
   check(
-    "the light record carries the thumbnail and metadata, and no image bytes",
-    stored.light &&
-      stored.light.length === 1 &&
-      stored.light[0].hasInlineBytes === false &&
-      stored.light[0].thumbIsBuffer &&
-      stored.light[0].prompt === "first picture" &&
-      stored.light[0].modelId === "p-image" &&
-      stored.light[0].size > 0,
-    JSON.stringify(stored.light)
+    "a run with nothing attached records that, so reusing it clears what is attached",
+    light.inputs && Object.keys(light.inputs).length === 0,
+    JSON.stringify(light.inputs)
   );
   check(
-    "the image itself is an ArrayBuffer in the other store, under the same id",
-    stored.heavy &&
-      stored.heavy.length === 1 &&
-      stored.heavy[0].bytesIsBuffer &&
-      stored.heavy[0].id === stored.light[0].id,
-    JSON.stringify(stored.heavy)
+    "the image itself is an ArrayBuffer in the bytes store, under the same id",
+    stored.galleryBytes.length === 1 && stored.galleryBytes[0].bytes.__buf > 0 && stored.galleryBytes[0].id === light.id,
+    JSON.stringify(stored.galleryBytes)
+  );
+  check(
+    "and its thumbnail in a store of its own",
+    stored.galleryThumbs.length === 1 && stored.galleryThumbs[0].id === light.id && stored.galleryThumbs[0].buf.__buf > 0,
+    JSON.stringify(stored.galleryThumbs)
   );
 
   // Survives a reopen — the assertion that would have caught the WebKit bug.
@@ -697,100 +764,142 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   page = await open(context);
   await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length === 1);
   check("the strip survives a reopen", (await page.locator(".recent-strip .thumb").count()) === 1);
-  check("the strip says what it is holding", (await page.locator("#recent-count").textContent()).includes("1 recent item"));
+  check("the strip says what the gallery holds", (await page.locator("#recent-count").textContent()).includes("1 in the gallery"));
+  await page.waitForFunction(() => !!document.querySelector(".recent-strip .thumb img[src^='blob:']"));
+  check("its thumbnail is loaded from the thumbnail store", true);
 
-  // The lightbox: metadata, setup restore, reuse, delete.
-  await page.locator(".recent-strip .thumb").first().click();
-  await page.waitForSelector("#lightbox:not(.hidden)");
-  check("lightbox names the model", (await page.locator("#lightbox-meta").textContent()).includes("P-Image"));
-  check("lightbox shows the prompt", (await page.locator("#lightbox-prompt").textContent()) === "first picture");
+  // The viewer: full screen, the settings, and Reuse parameters.
   await page.fill(promptSel, "something else entirely");
   await page.waitForTimeout(700);
-  await page.locator("#lightbox-actions button", { hasText: "Restore setup" }).click();
-  check("restoring the setup puts the prompt back", (await page.inputValue(promptSel)) === "first picture");
-  await page.locator("#prompt-undo").click();
-  check("a restored setup is undoable in one press", (await page.inputValue(promptSel)) === "something else entirely");
-
-  // Reuse from the lightbox takes the same path as the result panel.
   await page.locator(".recent-strip .thumb").first().click();
-  await page.waitForSelector("#lightbox:not(.hidden)");
-  await page.locator("#lightbox-actions button", { hasText: /Edit|reference/ }).click();
+  await page.waitForSelector("#viewer:not(.hidden)");
+  check("the viewer names the model", (await page.locator("#viewer-meta").textContent()).includes("P-Image"));
+  check("and shows the whole prompt", (await page.locator("#viewer-prompt").textContent()) === "first picture");
+  const rows = await page.locator(".param-row dt").allTextContents();
+  check("and every setting the run was made with", rows.includes("Aspect ratio") && rows.includes("Seed"), JSON.stringify(rows));
+  check("the viewer covers the screen", await page.locator("#viewer").evaluate((el) => el.getBoundingClientRect().width === window.innerWidth));
+  await page.locator("#viewer-reuse").click();
+  await page.waitForTimeout(300);
+  check("Reuse parameters closes the viewer", await page.locator("#viewer").isHidden());
+  check("and puts the prompt back", (await page.inputValue(promptSel)) === "first picture");
+  await page.locator("#prompt-undo").click();
+  check("as one Undo step", (await page.inputValue(promptSel)) === "something else entirely");
+
+  // Name it; a named item is kept whatever the limits say.
+  await page.locator(".recent-strip .thumb").first().click();
+  await page.waitForSelector("#viewer:not(.hidden)");
+  await page.fill("#viewer-name", "Fox at dawn");
+  await page.locator("#viewer-name").press("Enter");
+  await page.waitForTimeout(300);
+  check("a name is kept on the record", (await readStores(page, ["gallery"])).gallery[0].name === "Fox at dawn");
+  check("and the viewer says the item is now kept", (await page.locator(".viewer-keep").count()) === 1);
+
+  // Albums: made from the viewer, ticked, and shown as a chip.
+  await page.locator(".album-add").click();
+  await page.waitForSelector("#sheet-albums:not(.hidden)");
+  await page.fill("#album-new", "Animals");
+  await page.locator("#album-new-form button").click();
+  await page.waitForSelector(".album-check input");
+  check("a new album made from an item contains it", await page.locator(".album-check input").first().isChecked());
+  await page.locator("#sheet-albums .sheet-close").click();
+  await page.waitForFunction(() => [...document.querySelectorAll(".album-chip")].some((c) => c.textContent === "Animals"));
+  check("the viewer shows its album", true);
+
+  // Reuse as an input, from the viewer.
+  await page.locator("#viewer-use").click();
   await page.waitForTimeout(400);
-  check("reuse from the lightbox switches and attaches", (await page.inputValue("#model-select")) === "p-image-edit");
+  check("use as input switches and attaches", (await page.inputValue("#model-select")) === "p-image-edit");
   check("the image landed", (await page.evaluate(() => (uploads.images || []).length)) === 1);
 
-  // Count eviction. Seeded straight into both stores rather than generated:
-  // two hundred round trips through the UI would dominate the suite's runtime,
-  // and what is under test is pruneGallery, which runs at boot.
+  // The Gallery screen: search by word, by setting, by album, and sort.
   await page.selectOption("#model-select", "p-image");
   await page.waitForTimeout(200);
-  await page.evaluate(
-    () =>
-      new Promise((resolve) => {
-        const r = indexedDB.open("patchbay");
-        r.onsuccess = () => {
-          const tx = r.result.transaction(["gallery", "galleryBytes"], "readwrite");
-          const light = tx.objectStore("gallery");
-          const heavy = tx.objectStore("galleryBytes");
-          // Start from empty: the real generations earlier in this block carry
-          // their own timestamps and would otherwise displace seeds at the
-          // eviction boundary, making the assertion depend on how long the
-          // suite took to get here.
-          light.clear();
-          heavy.clear();
-          const now = Date.now();
-          for (let i = 0; i < 210; i++) {
-            const id = `seed-${String(i).padStart(3, "0")}`;
-            light.put({
-              id,
-              createdAt: now - i * 1000, // seed-000 newest
-              modelId: "p-image",
-              prompt: "seed " + i,
-              kind: "image",
-              type: "image/png",
-              thumb: new ArrayBuffer(8),
-              thumbType: "image/jpeg",
-              width: 10,
-              height: 10,
-              size: 1024,
-            });
-            heavy.put({ id, bytes: new ArrayBuffer(1024) });
-          }
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => resolve();
-        };
-      })
-  );
+  await page.locator(".options > summary").click();
+  await page.fill('[data-field="seed"]', "777");
+  await gen("second picture of a boat");
+  await page.locator("#tab-gallery").click();
+  await page.waitForFunction(() => document.querySelectorAll("#gallery-grid .tile").length === 2);
+  check("the Gallery tab is its own screen", (await page.locator("#screen-create").isHidden()) && (await page.locator("#screen-gallery").isVisible()));
+  check("Generate is not on it", await page.locator("#generate-btn").isHidden());
+  const search = async (q, n) => {
+    await page.fill("#gallery-search", q);
+    await page.waitForFunction((n) => document.querySelectorAll("#gallery-grid .tile").length === n, n, { timeout: 3000 }).catch(() => {});
+    return page.locator("#gallery-grid .tile").count();
+  };
+  check("a word from the prompt finds it", (await search("boat", 1)) === 1);
+  check("so does its name", (await search("dawn", 1)) === 1);
+  check("a setting by name and value", (await search("seed:777", 1)) === 1);
+  check("a setting compared as a number", (await search("seed>700", 1)) === 1);
+  check("an album", (await search("album:animals", 1)) === 1);
+  check("a word ruled out", (await search("-boat", 1)) === 1);
+  check("and nothing for no match", (await search("giraffe", 0)) === 0);
+  check("which says so", await page.locator("#gallery-empty").isVisible());
+  await search("", 2);
+  await page.selectOption("#gallery-sort", "name");
+  await page.waitForTimeout(300);
+  check("sorting by name puts named items first", (await page.locator("#gallery-grid .tile").first().getAttribute("title")) === "Fox at dawn");
+  await page.selectOption("#gallery-sort", "new");
+  await page.selectOption("#gallery-album", { label: "Animals" });
+  await page.waitForTimeout(300);
+  check("the album filter shows the album", (await page.locator("#gallery-grid .tile").count()) === 1);
+  await page.selectOption("#gallery-album", "all");
+  await page.waitForTimeout(300);
+
+  // A setting's 🔍 in the viewer finds everything made with that value.
+  await page.locator("#gallery-grid .tile").first().click();
+  await page.waitForSelector("#viewer:not(.hidden)");
+  await page.locator(".param-row", { hasText: "Seed" }).locator(".param-find").click();
+  await page.waitForTimeout(400);
+  check("a setting's 🔍 searches the gallery for it", (await page.inputValue("#gallery-search")) === "seed=777" && (await page.locator("#gallery-grid .tile").count()) === 1, await page.inputValue("#gallery-search"));
+  await search("", 2);
+
+  // Select several, and file them together.
+  await page.locator("#gallery-select").click();
+  await page.locator("#gallery-grid .tile").nth(0).click();
+  await page.locator("#gallery-grid .tile").nth(1).click();
+  check("selecting counts", (await page.locator("#gallery-selcount").textContent()) === "2 selected");
+  await page.locator("#sel-album").click();
+  await page.fill("#album-new", "Keepers");
+  await page.locator("#album-new-form button").click();
+  await page.waitForTimeout(300);
+  await page.locator("#sheet-albums .sheet-close").click();
+  const inKeepers = (await readStores(page, ["gallery", "albums"]));
+  const keepersId = inKeepers.albums.find((a) => a.name === "Keepers").id;
+  check("both went into the new album", inKeepers.gallery.every((r) => r.albums.includes(keepersId)), JSON.stringify(inKeepers.gallery.map((r) => r.albums)));
+
+  // Count eviction, under a limit set low enough to test. Seeded straight
+  // into the stores: two hundred round trips through the UI would dominate the
+  // suite's runtime, and what is under test is pruneGallery, which runs at boot.
+  await page.evaluate(() => localStorage.setItem("patchbay_gallery_limits", JSON.stringify({ image: 200 })));
+  await seedGallery(page, (i, now) => ({
+    id: `seed-${String(i).padStart(3, "0")}`,
+    createdAt: now - i * 1000, // seed-000 newest
+    prompt: "seed " + i,
+    // Past the cut, but named: kept anyway.
+    name: i === 205 ? "keeper" : "",
+  }), 210);
   await page.close();
   page = await open(context);
   await page.waitForTimeout(800);
-  const counts = await page.evaluate(
-    () =>
-      new Promise((resolve) => {
-        const r = indexedDB.open("patchbay");
-        r.onsuccess = () => {
-          const tx = r.result.transaction(["gallery", "galleryBytes"], "readonly");
-          const light = tx.objectStore("gallery").getAll();
-          const heavy = tx.objectStore("galleryBytes").count();
-          tx.oncomplete = () =>
-            resolve({
-              kept: (light.result || []).map((x) => x.prompt),
-              heavy: heavy.result,
-            });
-          tx.onerror = () => resolve(null);
-        };
-      })
-  );
-  check("the image store is capped at two hundred", counts && counts.kept.length === 200, counts && String(counts.kept.length));
+  const after = await readStores(page, ["gallery", "galleryBytes"]);
+  const kept = after.gallery.map((x) => x.prompt);
+  check("unnamed images are capped at the set limit", kept.length === 201, String(kept.length));
   check(
     "the newest were kept and the oldest dropped",
-    counts && counts.kept.includes("seed 0") && counts.kept.includes("seed 199") && !counts.kept.includes("seed 200"),
-    counts && counts.kept.length + " items"
+    kept.includes("seed 0") && kept.includes("seed 199") && !kept.includes("seed 200"),
+    kept.length + " items"
   );
-  check("both halves were pruned together", counts && counts.heavy === 200, counts && String(counts.heavy));
-  check("the strip shows them all", (await page.locator(".recent-strip .thumb").count()) === 200);
+  check("a named item past the limit is never removed by it", kept.includes("seed 205"));
+  check("both halves were pruned together", after.galleryBytes.length === 201, String(after.galleryBytes.length));
+  // The reopen comes back on the screen it was left on, the gallery.
+  await page.locator("#tab-create").click();
+  check("the strip shows the newest dozen", (await page.locator(".recent-strip .thumb").count()) === 12);
+  await page.locator("#recent-open").click();
+  await page.waitForFunction(() => document.querySelector("#gallery-count").textContent.startsWith("201"));
+  check("and the gallery counts them all", (await page.locator("#gallery-count").textContent()).startsWith("201 items"));
+  check("drawing them in pages rather than all at once", (await page.locator("#gallery-grid .tile").count()) <= 240);
 
-  // Age eviction: backdate everything and reopen.
+  // Nothing expires by default; an age limit is a setting.
   await page.evaluate(
     () =>
       new Promise((resolve) => {
@@ -809,55 +918,127 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
         };
       })
   );
+  await page.evaluate(() => localStorage.removeItem("patchbay_gallery_limits"));
   await page.close();
   page = await open(context);
   await page.waitForTimeout(600);
-  check("anything older than a week is gone on the next load", (await page.locator(".recent-strip .thumb").count()) === 0);
-  check("and the strip hides itself again", await page.locator("#recent").evaluate((el) => el.classList.contains("hidden")));
+  check("by default nothing is removed for its age", (await readStores(page, ["gallery"])).gallery.length === 201);
+  await page.evaluate(() => localStorage.setItem("patchbay_gallery_limits", JSON.stringify({ days: 7 })));
+  await page.close();
+  page = await open(context);
+  await page.waitForTimeout(600);
+  check("with an age limit set, older unnamed items go on the next load", (await readStores(page, ["gallery"])).gallery.length === 1);
+  check("and the named one stays", (await page.locator(".recent-strip .thumb").count()) === 1);
+  await page.evaluate(() => localStorage.removeItem("patchbay_gallery_limits"));
 
-  // Clear removes the lot.
+  // Clear removes the lot, from the gallery's ⚙.
+  await page.locator("#tab-create").click();
   await page.selectOption("#model-select", "p-image");
   await gen("to be cleared");
+  await page.locator("#tab-gallery").click();
+  await page.locator("#gallery-settings").click();
+  check("the settings say how much storage is used", (await page.locator("#storage-note").textContent()).length > 0);
   page.once("dialog", (d) => d.accept());
-  await page.locator("#recent-clear").click();
+  await page.locator("#gallery-clear").click();
   await page.waitForTimeout(400);
-  check("Clear empties the strip", (await page.locator(".recent-strip .thumb").count()) === 0);
+  check("Clear empties the gallery", (await readStores(page, ["gallery"])).gallery.length === 0);
+  check("and the strip", (await page.locator(".recent-strip .thumb").count()) === 0);
+  await page.locator("#tab-create").click();
 
-  // Clearing while a job runs must not look like it stopped the job. The
-  // status line belonged to the run and was being written over with
-  // "Cleared…", and an archive write already in flight could land afterwards
-  // and put an item back into the strip the user had just emptied.
+  // Clearing while a job runs must not look like it stopped the job, and an
+  // archive write already in flight must not put an item back afterwards.
   await gen("something to clear later");
   await page.request.get(BASE + "__slow?on=1");
   await page.fill(promptSel, "a run that must survive a Clear");
   await page.waitForTimeout(700);
   await page.locator("#generate-btn").click();
-  await page.waitForSelector("#stop-btn:not(.hidden)", { timeout: 10000 });
+  await page.waitForSelector("#jobs-btn:not(.hidden)", { timeout: 10000 });
   await page.waitForTimeout(2200);
+  await page.locator("#tab-gallery").click();
+  await page.locator("#gallery-settings").click();
   page.once("dialog", (d) => d.accept());
-  await page.locator("#recent-clear").click();
+  await page.locator("#gallery-clear").click();
   await page.waitForTimeout(1500);
   check(
     "clearing does not write over a running job's status",
     /elapsed/.test(await page.locator("#status").textContent()),
     await page.locator("#status").textContent()
   );
-  check("the run is still going", await page.locator("#stop-btn").isVisible());
-  check("and the strip did empty", (await page.locator(".recent-strip .thumb").count()) === 0);
-
+  check("the run is still going", (await page.locator("#jobs-btn").textContent()).includes("running"));
+  check("and the gallery did empty", (await readStores(page, ["gallery"])).gallery.length === 0);
   await page.request.get(BASE + "__slow?on=0");
   await page.waitForSelector("#status.ok", { timeout: 20000 });
   await page.waitForTimeout(600);
   check(
     "a result finishing after the Clear is still kept",
-    (await page.locator(".recent-strip .thumb").count()) === 1,
-    String(await page.locator(".recent-strip .thumb").count())
+    (await readStores(page, ["gallery"])).gallery.length === 1
   );
   await page.close();
   await context.close();
 }
 
-// ── A v1 database keeps its session when the gallery store is added ────────
+// ── Reuse parameters puts back the files the run was given ─────────────────
+// Restoring a setup used to keep whatever was attached, or drop it on a model
+// switch, because the inputs were never stored with the result. They are now,
+// once each however many runs use them.
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+  await page.selectOption("#model-select", "p-image-edit");
+  await page.waitForTimeout(200);
+  await page.setInputFiles(".file-input", imgPath);
+  await page.waitForSelector(".thumbs .thumb img");
+  await page.fill(promptSel, "make it snow");
+  await page.waitForTimeout(700);
+  for (let i = 0; i < 2; i++) {
+    await page.locator("#generate-btn").click();
+    await page.waitForSelector("#status.ok");
+    await page.waitForFunction((n) => document.querySelectorAll(".recent-strip .thumb").length === n, i + 1);
+  }
+  const st = await readStores(page, ["gallery", "galleryInputs"]);
+  const refs = st.gallery.map((r) => r.inputs && r.inputs.images);
+  check(
+    "each item records its input by name and hash",
+    refs.every((r) => r && r.length === 1 && r[0].name === "cat.png" && r[0].hash),
+    JSON.stringify(refs)
+  );
+  check("and one image used by two runs is stored once", st.galleryInputs.length === 1, String(st.galleryInputs.length));
+
+  // Somewhere else entirely, with nothing attached.
+  await page.selectOption("#model-select", "flux-dev");
+  await page.waitForTimeout(300);
+  await page.fill(promptSel, "unrelated");
+  await page.waitForTimeout(700);
+  await page.close();
+  page = await open(context);
+  const uploadsBefore = (await (await fetch(BASE + "__uploads")).json()).uploadCount;
+  await page.locator(".recent-strip .thumb").first().click();
+  await page.waitForSelector("#viewer:not(.hidden)");
+  check("the viewer lists the input file", (await page.locator(".viewer-input").first().textContent()).includes("cat.png"));
+  await page.locator("#viewer-reuse").click();
+  await page.waitForFunction(() => (uploads.images || []).length === 1, null, { timeout: 5000 }).catch(() => {});
+  check("Reuse parameters switches back to the model", (await page.inputValue("#model-select")) === "p-image-edit");
+  check("puts the prompt back", (await page.inputValue(promptSel)) === "make it snow");
+  const back = await page.evaluate(() => (uploads.images || []).map((u) => ({ isFile: u.file instanceof File, name: u.file.name, size: u.file.size })));
+  check("and the image it was given", back.length === 1 && back[0].isFile && back[0].name === "cat.png" && back[0].size === 70, JSON.stringify(back));
+  await page.waitForTimeout(400);
+  const uploadsAfter = (await (await fetch(BASE + "__uploads")).json()).uploadCount;
+  check("re-encoded for the provider, since last time's link has expired", uploadsAfter === uploadsBefore + 1, `${uploadsBefore} -> ${uploadsAfter}`);
+  check("and says so", (await page.locator("#status").textContent()).includes("1 input file"), await page.locator("#status").textContent());
+
+  // Deleting the items lets their stored inputs go.
+  await page.locator("#tab-gallery").click();
+  await page.locator("#gallery-select").click();
+  await page.locator("#sel-all").click();
+  page.once("dialog", (d) => d.accept());
+  await page.locator("#sel-delete").click();
+  await page.waitForTimeout(2500);
+  check("inputs no item refers to are dropped", (await readStores(page, ["galleryInputs"])).galleryInputs.length === 0);
+  await page.close();
+  await context.close();
+}
+
+// ── A v1 database keeps its session when the gallery stores are added ──────
 {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -879,7 +1060,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
             "meta"
           );
           tx.oncomplete = () => {
-            db.close(); // so the app's upgrade to v2 is not blocked
+            db.close(); // so the app's upgrade is not blocked
             resolve();
           };
           tx.onerror = () => reject(new Error("could not write the v1 session"));
@@ -899,20 +1080,19 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
       })
   );
   check(
-    "the database is at v3 with all three stores",
-    stores && stores.v === 3 && stores.stores.join(",") === "gallery,galleryBytes,session",
+    "the database is at v4 with all six stores",
+    stores && stores.v === 4 && stores.stores.join(",") === "albums,gallery,galleryBytes,galleryInputs,galleryThumbs,session",
     JSON.stringify(stores)
   );
   await page2.close();
   await context.close();
 }
 
-// ── A v2 gallery item is split across both stores, not dropped ─────────────
+// ── A v2 gallery item is split across the stores, not dropped ──────────────
 {
   const context = await browser.newContext();
   const page = await context.newPage();
-  // Same trick as above: a same-origin page that is not the app, so nothing
-  // holds a connection while the v2 database is built.
+  // Same trick as above: a same-origin page that is not the app.
   await page.goto(BASE + "__not-the-app");
   await page.evaluate(
     () =>
@@ -927,7 +1107,8 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
         r.onsuccess = () => {
           const db = r.result;
           const tx = db.transaction("gallery", "readwrite");
-          // A v2 record: the image sits inline, which is what v3 has to move.
+          // A v2 record: the image and the thumbnail sit inline, which is what
+          // the upgrade has to move.
           tx.objectStore("gallery").put({
             id: "legacy-1",
             createdAt: Date.now(),
@@ -953,43 +1134,27 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
 
   const page2 = await open(context);
   await page2.waitForTimeout(500);
-  const split = await page2.evaluate(
-    () =>
-      new Promise((resolve) => {
-        const r = indexedDB.open("patchbay");
-        r.onsuccess = () => {
-          const tx = r.result.transaction(["gallery", "galleryBytes"], "readonly");
-          const light = tx.objectStore("gallery").get("legacy-1");
-          const heavy = tx.objectStore("galleryBytes").get("legacy-1");
-          tx.oncomplete = () =>
-            resolve({
-              version: r.result.version,
-              lightHasBytes: light.result ? "bytes" in light.result : null,
-              prompt: light.result ? light.result.prompt : null,
-              thumbKept: light.result ? light.result.thumb instanceof ArrayBuffer : null,
-              heavyLen: heavy.result && heavy.result.bytes ? heavy.result.bytes.byteLength : null,
-            });
-          tx.onerror = () => resolve(null);
-        };
-        r.onerror = () => resolve(null);
-      })
-  );
+  const st = await readStores(page2, ["gallery", "galleryBytes", "galleryThumbs"]);
+  const rec = st.gallery.find((x) => x.id === "legacy-1");
   check(
-    "the v2 item's image moved to the bytes store, and nothing was dropped",
-    split && split.version === 3 && split.lightHasBytes === false && split.heavyLen === 8 && split.prompt === "made under v2" && split.thumbKept,
-    JSON.stringify(split)
+    "the v2 item's image and thumbnail moved to their own stores, and nothing was dropped",
+    rec && !("bytes" in rec) && !("thumb" in rec) && rec.prompt === "made under v2" &&
+      st.galleryBytes.some((x) => x.id === "legacy-1" && x.bytes.__buf === 8) &&
+      st.galleryThumbs.some((x) => x.id === "legacy-1" && x.buf.__buf === 4),
+    JSON.stringify(st)
   );
   check("the migrated item still shows in the strip", (await page2.locator(".recent-strip .thumb").count()) === 1);
-  // And it still opens, which is the only thing that proves the two halves
-  // still find each other.
+  // And it still opens, which is the only thing that proves the halves still
+  // find each other.
   await page2.locator(".recent-strip .thumb").first().click();
-  await page2.waitForSelector("#lightbox:not(.hidden)");
-  check("the migrated item still opens", (await page2.locator("#lightbox-prompt").textContent()) === "made under v2");
+  await page2.waitForSelector("#viewer:not(.hidden)");
+  check("the migrated item still opens", (await page2.locator("#viewer-prompt").textContent()) === "made under v2");
+  check("and says it has no recorded settings rather than showing none", (await page2.locator("#viewer-info").textContent()).includes("No settings were recorded"));
   await page2.close();
   await context.close();
 }
 
-// ── The lightbox does not leak its full-size image ─────────────────────────
+// ── The viewer does not leak its full-size image ───────────────────────────
 {
   const context = await browser.newContext();
   // Count object URLs the way PR #33's leak test did: instrument the two calls
@@ -1013,21 +1178,19 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForTimeout(700);
   await page.locator("#generate-btn").click();
   await page.waitForSelector("#status.ok");
-  await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length > 0);
+  await page.waitForFunction(() => !!document.querySelector(".recent-strip .thumb img[src^='blob:']"));
+  await page.waitForTimeout(300);
 
   const before = await page.evaluate(() => window.__liveUrls);
-  // Open and close the same item several times. Each open mints a full-size
-  // url; without the revoke on close they accumulate until the strip is next
-  // rebuilt, which may be a long time.
   for (let i = 0; i < 4; i++) {
     await page.locator(".recent-strip .thumb").first().click();
-    await page.waitForSelector("#lightbox:not(.hidden)");
-    await page.locator("#lightbox-actions button", { hasText: "Close" }).click();
+    await page.waitForSelector("#viewer:not(.hidden)");
+    await page.locator("#viewer-close").click();
     // Not waitForSelector: .hidden is display:none, so it never becomes visible.
-    await page.waitForFunction(() => document.getElementById("lightbox").classList.contains("hidden"));
+    await page.waitForFunction(() => document.getElementById("viewer").classList.contains("hidden"));
   }
   const after = await page.evaluate(() => window.__liveUrls);
-  check("opening and closing the lightbox leaves no url behind", after === before, `${before} -> ${after}`);
+  check("opening and closing the viewer leaves no url behind", after === before, `${before} -> ${after}`);
   await page.close();
   await context.close();
 }
@@ -1088,14 +1251,9 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
 }
 
 // ── Video results are kept too ─────────────────────────────────────────────
-// The expensive half of the catalogue used to be the half that was thrown away:
-// only images were archived, so a clip was gone the moment Generate was pressed
-// again and the provider's link expired behind it.
-//
 // The stub answers a video model with PNG bytes under a video content type (it
-// has no encoder). That is enough for everything under test here — the record,
-// the split across the two stores, the strip, the lightbox — and it puts the
-// poster frame through videoThumb's "will not decode" branch, which has to
+// has no encoder). That is enough for everything under test here, and it puts
+// the poster frame through videoThumb's "will not decode" branch, which has to
 // leave the archive intact rather than fail it.
 {
   const context = await browser.newContext();
@@ -1115,52 +1273,24 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("a video result renders as a player", (await page.locator(".result video").count()) === 1);
   await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length > 0, null, { timeout: 15000 });
 
-  const stored = await page.evaluate(
-    () =>
-      new Promise((resolve) => {
-        const r = indexedDB.open("patchbay");
-        r.onsuccess = () => {
-          const tx = r.result.transaction(["gallery", "galleryBytes"], "readonly");
-          const light = tx.objectStore("gallery").getAll();
-          const heavy = tx.objectStore("galleryBytes").getAll();
-          tx.oncomplete = () =>
-            resolve({
-              light: (light.result || []).map((x) => ({
-                id: x.id,
-                kind: x.kind,
-                prompt: x.prompt,
-                modelId: x.modelId,
-                hasInlineBytes: "bytes" in x,
-                setupFields: x.setup && x.setup.fields ? Object.keys(x.setup.fields).length : 0,
-                setupPrompt: x.setup && x.setup.fields ? x.setup.fields.prompt : null,
-              })),
-              heavy: (heavy.result || []).map((x) => ({ id: x.id, bytesIsBuffer: x.bytes instanceof ArrayBuffer })),
-            });
-          tx.onerror = () => resolve(null);
-        };
-        r.onerror = () => resolve(null);
-      })
-  );
+  const st = await readStores(page, ["gallery", "galleryBytes"]);
+  const v = st.gallery[0] || {};
   check(
-    "the video is archived, tagged as video, with no bytes in the light record",
-    stored &&
-      stored.light.length === 1 &&
-      stored.light[0].kind === "video" &&
-      stored.light[0].modelId === "p-video-edit" &&
-      stored.light[0].prompt === "make it rain" &&
-      stored.light[0].hasInlineBytes === false,
-    JSON.stringify(stored && stored.light)
+    "the video is archived, tagged as video, with no bytes in the metadata record",
+    st.gallery.length === 1 && v.kind === "video" && v.modelId === "p-video-edit" && v.prompt === "make it rain" && !("bytes" in v),
+    JSON.stringify(v)
   );
   check(
     "its bytes are an ArrayBuffer in the other store, under the same id",
-    stored && stored.heavy.length === 1 && stored.heavy[0].bytesIsBuffer && stored.heavy[0].id === stored.light[0].id,
-    JSON.stringify(stored && stored.heavy)
+    st.galleryBytes.length === 1 && st.galleryBytes[0].bytes.__buf > 0 && st.galleryBytes[0].id === v.id,
+    JSON.stringify(st.galleryBytes)
   );
   check(
     "the settings that produced it ride along",
-    stored && stored.light[0].setupFields > 0 && stored.light[0].setupPrompt === "make it rain",
-    JSON.stringify(stored && stored.light[0])
+    v.setup && Object.keys(v.setup.fields).length > 0 && v.setup.fields.prompt === "make it rain",
+    JSON.stringify(v.setup)
   );
+  check("and the source clip it was given", v.inputs && v.inputs.video && v.inputs.video[0].name === "clip.mp4", JSON.stringify(v.inputs));
   check("the strip counts it as a video", (await page.locator("#recent-count").textContent()).includes("1 video"));
   check("and marks the tile", (await page.locator(".recent-strip .thumb-kind").count()) === 1);
 
@@ -1169,85 +1299,38 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   page = await open(context);
   await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length === 1);
   await page.locator(".recent-strip .thumb").first().click();
-  await page.waitForSelector("#lightbox:not(.hidden)");
-  check("the lightbox opens a kept clip as a video", (await page.locator("#lightbox-media video").count()) === 1);
-  check("and not as an image", (await page.locator("#lightbox-media img").count()) === 0);
-  await page.locator("#lightbox-actions button", { hasText: "Close" }).click();
-  await page.waitForFunction(() => document.getElementById("lightbox").classList.contains("hidden"));
+  await page.waitForSelector("#viewer:not(.hidden)");
+  check("the viewer opens a kept clip as a video", (await page.locator("#viewer-media video").count()) === 1);
+  check("and not as an image", (await page.locator("#viewer-media img").count()) === 0);
+  await page.locator("#viewer-close").click();
+  await page.waitForFunction(() => document.getElementById("viewer").classList.contains("hidden"));
   await page.close();
   await context.close();
 }
 
 // ── Each kind is capped on its own ─────────────────────────────────────────
-// One clip outweighs a hundred images, so under a single shared ceiling the
-// clips would evict the stills. Seeded rather than generated, for the same
-// reason the count-eviction test above seeds.
+// One clip outweighs a hundred images, so under a single shared count the
+// clips would evict the stills. Seeded rather than generated.
 {
   const context = await browser.newContext();
   let page = await open(context);
-  await page.evaluate(
-    () =>
-      new Promise((resolve) => {
-        const r = indexedDB.open("patchbay");
-        r.onsuccess = () => {
-          const tx = r.result.transaction(["gallery", "galleryBytes"], "readwrite");
-          const light = tx.objectStore("gallery");
-          const heavy = tx.objectStore("galleryBytes");
-          light.clear();
-          heavy.clear();
-          const now = Date.now();
-          const put = (id, kind, createdAt) => {
-            light.put({
-              id,
-              createdAt,
-              kind,
-              modelId: kind === "video" ? "p-video-edit" : "p-image",
-              prompt: id,
-              type: kind === "video" ? "video/mp4" : "image/png",
-              thumb: new ArrayBuffer(8),
-              thumbType: "image/jpeg",
-              width: 10,
-              height: 10,
-              size: 1024,
-            });
-            heavy.put({ id, bytes: new ArrayBuffer(1024) });
-          };
-          // 40 clips against a cap of 25, and 10 images that must all survive.
-          for (let i = 0; i < 40; i++) put(`vid-${String(i).padStart(3, "0")}`, "video", now - i * 1000);
-          for (let i = 0; i < 10; i++) put(`img-${String(i).padStart(3, "0")}`, "image", now - i * 1000);
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => resolve();
-        };
-      })
-  );
+  await page.evaluate(() => localStorage.setItem("patchbay_gallery_limits", JSON.stringify({ video: 25 })));
+  await seedGallery(page, (i, now) =>
+    i < 40
+      ? { id: `vid-${String(i).padStart(3, "0")}`, createdAt: now - i * 1000, kind: "video", modelId: "p-video-edit", type: "video/mp4" }
+      : { id: `img-${String(i).padStart(3, "0")}`, createdAt: now - i * 1000 }, 50);
   await page.close();
   page = await open(context);
   await page.waitForTimeout(800);
-  const kept = await page.evaluate(
-    () =>
-      new Promise((resolve) => {
-        const r = indexedDB.open("patchbay");
-        r.onsuccess = () => {
-          const tx = r.result.transaction("gallery", "readonly");
-          const all = tx.objectStore("gallery").getAll();
-          tx.oncomplete = () => {
-            const rows = all.result || [];
-            resolve({
-              videos: rows.filter((x) => x.kind === "video").length,
-              images: rows.filter((x) => x.kind !== "video").length,
-            });
-          };
-          tx.onerror = () => resolve(null);
-        };
-      })
-  );
-  check("videos are capped at their own limit", kept && kept.videos === 25, JSON.stringify(kept));
-  check("and evicting them costs the images nothing", kept && kept.images === 10, JSON.stringify(kept));
+  const rows = (await readStores(page, ["gallery"])).gallery;
+  const kept = { videos: rows.filter((x) => x.kind === "video").length, images: rows.filter((x) => x.kind !== "video").length };
+  check("videos are capped at their own limit", kept.videos === 25, JSON.stringify(kept));
+  check("and evicting them costs the images nothing", kept.images === 10, JSON.stringify(kept));
   await page.close();
   await context.close();
 }
 
-// ── Restore setup puts the options back, not just the prompt ───────────────
+// ── Reuse parameters puts the options back, not just the prompt ────────────
 {
   const context = await browser.newContext();
   const page = await open(context);
@@ -1255,7 +1338,6 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForTimeout(200);
   await page.fill(promptSel, "the original run");
   // A non-default option, so there is something to restore beyond the text.
-  // It lives in the Options panel, which starts collapsed.
   await page.locator(".options > summary").click();
   const seedSel = '[data-field="seed"]';
   await page.fill(seedSel, "4242");
@@ -1264,19 +1346,19 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForSelector("#status.ok");
   await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length > 0);
 
-  // Move everything away from what produced it — a different model, a different
-  // prompt, a different seed.
+  // Move everything away from what produced it.
   await page.selectOption("#model-select", "flux-dev");
   await page.waitForTimeout(300);
   await page.fill(promptSel, "something unrelated");
   await page.waitForTimeout(700);
 
   await page.locator(".recent-strip .thumb").first().click();
-  await page.waitForSelector("#lightbox:not(.hidden)");
-  await page.locator("#lightbox-actions button", { hasText: "Restore setup" }).click();
+  await page.waitForSelector("#viewer:not(.hidden)");
+  check("the viewer marks the setting that was changed", await page.locator(".param-row.changed", { hasText: "Seed" }).count() === 1);
+  await page.locator("#viewer-reuse").click();
   await page.waitForTimeout(500);
 
-  check("restoring switches back to the model that made it", (await page.inputValue("#model-select")) === "p-image");
+  check("reusing switches back to the model that made it", (await page.inputValue("#model-select")) === "p-image");
   check("the prompt comes back", (await page.inputValue(promptSel)) === "the original run");
   check("and so does the option that was set", (await page.inputValue(seedSel)) === "4242");
   check(
@@ -1284,18 +1366,21 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     await page.evaluate(() => optionRows.some((r) => r.f.name === "seed" && r.touched))
   );
   // The flag is what decides whether a value equal to the default is still
-  // sent, so a restore that loses it changes the request.
+  // sent, so a reuse that loses it changes the request.
   await page.locator("#generate-btn").click();
   await page.waitForSelector("#status.ok");
   const sent = await (await page.request.get(BASE + "__generate")).json();
-  check("and the restored run sends what the original would have", sent.input && sent.input.seed === 4242, JSON.stringify(sent.input));
+  check("and the reused run sends what the original would have", sent.input && sent.input.seed === 4242, JSON.stringify(sent.input));
   await page.close();
   await context.close();
 }
 
-// ── Stop stops the waiting, not the job ────────────────────────────────────
-// There is no cancel endpoint to call, so this must leave the job record alone:
-// clearing it is what would turn a stop into a loss.
+// ── Jobs run beside each other, and are never given up on ──────────────────
+// A run used to hold Generate until it finished, and "Stop waiting" only left
+// the record behind for the next load — which reopening did anyway. Now a job
+// runs on its own: Generate is free once the provider has it, several can run
+// at once, a failed check is retried rather than ending the run, and the
+// record is kept until the result is.
 {
   const context = await browser.newContext();
   let page = await open(context);
@@ -1303,32 +1388,90 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
 
   await page.selectOption("#model-select", "p-image");
   await page.waitForTimeout(200);
-  await page.fill(promptSel, "a job worth abandoning");
+  await page.fill(promptSel, "a job that runs a while");
   await page.waitForTimeout(700);
-  check("no Stop button before anything is running", await page.locator("#stop-btn").isHidden());
+  check("no jobs chip before anything is running", await page.locator("#jobs-btn").isHidden());
+  check("and no Stop waiting button any more", (await page.locator("#stop-btn").count()) === 0);
 
   await page.locator("#generate-btn").click();
-  await page.waitForSelector("#stop-btn:not(.hidden)", { timeout: 10000 });
-  check("Stop appears once a job is in flight", await page.locator("#stop-btn").isVisible());
-  check("and Generate is held while it runs", await page.locator("#generate-btn").isDisabled());
+  await page.waitForSelector("#jobs-btn:not(.hidden)", { timeout: 10000 });
+  check("the chip says a job is running", (await page.locator("#jobs-btn").textContent()).includes("1 running"));
+  await page.waitForFunction(() => !document.getElementById("generate-btn").disabled, null, { timeout: 5000 });
+  check("Generate is free again once the provider has the job", await page.locator("#generate-btn").isEnabled());
+  const recs = await page.evaluate(() => JSON.parse(localStorage.getItem("patchbay_jobs") || "[]"));
+  check(
+    "the job's record carries its prompt and settings, so a pick-up on load can be reused",
+    recs.length === 1 && recs[0].prompt === "a job that runs a while" && recs[0].setup && recs[0].setup.fields,
+    JSON.stringify(recs)
+  );
 
-  await page.locator("#stop-btn").click();
-  await page.waitForSelector("#status.ok", { timeout: 15000 });
-  check("stopping reports the job as still running", (await page.locator("#status").textContent()).includes("still running"));
-  check("Generate comes back", await page.locator("#generate-btn").isEnabled());
-  check("and Stop goes away", await page.locator("#stop-btn").isHidden());
+  await page.fill(promptSel, "a second one beside it");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForFunction(() => document.getElementById("jobs-btn").textContent.includes("2 running"), null, { timeout: 5000 });
+  check("a second job runs beside the first", true);
 
-  const job = await page.evaluate(() => localStorage.getItem("pruna_inflight_job"));
-  check("the job record is kept, so the run is not lost", Boolean(job) && JSON.parse(job).id === "stub-job-1", String(job));
+  await page.locator("#jobs-btn").click();
+  await page.waitForSelector("#sheet-jobs:not(.hidden)");
+  check("the tray lists both", (await page.locator("#jobs-list .job-row").count()) === 2);
+  check("each with Check now and Forget", (await page.locator("#jobs-list .job-row button", { hasText: "Check now" }).count()) === 2);
+  page.once("dialog", (d) => d.accept());
+  await page.locator("#jobs-list .job-row", { hasText: "a second one beside it" }).locator("button", { hasText: "Forget" }).click();
+  await page.waitForFunction(() => document.getElementById("jobs-btn").textContent.includes("1 running"), null, { timeout: 8000 });
+  check("Forget stops tracking that one", true);
+  check(
+    "and drops its record, so the next load does not pick it up",
+    (await page.evaluate(() => JSON.parse(localStorage.getItem("patchbay_jobs") || "[]"))).length === 1
+  );
+  await page.locator("#sheet-jobs .sheet-close").click();
 
-  // The point of keeping it: the next load collects the result.
+  // The point of keeping the record: the next load collects the result.
   await page.request.get(BASE + "__slow?on=0");
   await page.close();
   page = await open(context);
   await page.waitForSelector("#status.ok", { timeout: 15000 });
-  check("a stopped job is picked up on the next load", (await page.locator("#status").textContent()).includes("Recovered"));
+  check("a job left running is picked up on the next load", (await page.locator("#status").textContent()).includes("Recovered"));
   check("and its result lands in the panel", (await page.locator(".result img").count()) === 1);
-  check("the record is cleared once collected", (await page.evaluate(() => localStorage.getItem("pruna_inflight_job"))) === null);
+  check("the record is cleared once collected", (await page.evaluate(() => localStorage.getItem("patchbay_jobs"))) === null);
+  await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length > 0);
+  await page.locator(".recent-strip .thumb").first().click();
+  await page.waitForSelector("#viewer:not(.hidden)");
+  check("a picked-up job keeps its prompt in the gallery", (await page.locator("#viewer-prompt").textContent()) === "a job that runs a while", await page.locator("#viewer-prompt").textContent());
+  check("and its settings", (await page.locator(".param-row").count()) > 0);
+  await page.locator("#viewer-close").click();
+
+  // A record written by an earlier version is still picked up.
+  await page.request.get(BASE + "__slow?on=1");
+  await page.fill(promptSel, "an old-style record");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForFunction(() => (JSON.parse(localStorage.getItem("patchbay_jobs") || "[]")).length === 1, null, { timeout: 5000 });
+  const id = await page.evaluate(() => JSON.parse(localStorage.getItem("patchbay_jobs"))[0].id);
+  await page.evaluate((id) => {
+    localStorage.removeItem("patchbay_jobs");
+    localStorage.setItem("pruna_inflight_job", JSON.stringify({ id, model: "p-image", kind: "image", startedAt: Date.now() }));
+  }, id);
+  await page.request.get(BASE + "__slow?on=0");
+  await page.close();
+  page = await open(context);
+  await page.waitForSelector("#status.ok", { timeout: 15000 });
+  check("a single record from an earlier version is picked up", (await page.locator("#status").textContent()).includes("Recovered"));
+  check("and moved off the old key", (await page.evaluate(() => localStorage.getItem("pruna_inflight_job"))) === null);
+
+  // Status checks that fail outright no longer end the run: they are retried.
+  await page.request.get(BASE + "__statusfail?n=2");
+  await page.fill(promptSel, "through a bad patch");
+  await page.waitForTimeout(700);
+  const seen = [];
+  await page.locator("#generate-btn").click();
+  const until = Date.now() + 25000;
+  while (Date.now() < until) {
+    seen.push((await page.locator("#status").textContent()).trim());
+    if (await page.locator("#status.ok, #status.err").count()) break;
+    await page.waitForTimeout(300);
+  }
+  check("two failed status checks do not end the run", (await page.locator("#status.ok").count()) === 1, JSON.stringify(seen.slice(-3)));
+  check("the wait says it is checking again", seen.some((s) => s.includes("checking again")), JSON.stringify(seen));
   await page.close();
   await context.close();
 }
@@ -1374,12 +1517,12 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   page.on("request", (r) => {
     if (r.url().includes("/api/describe") && r.method() === "POST") posted.push(JSON.parse(r.postData() || "{}"));
   });
-  await page.locator("#open-more").click();
+  // On the strip itself now: one tap, no sheet in between.
   await page.locator("#prompt-describe").click();
   await page.waitForTimeout(900);
   check("a caption seeds the prompt, which is what captioning is for", (await page.inputValue(promptSel)) === "STUB CAPTION TEXT");
   check("Describe sends no question and no prompt", posted.length === 1 && !("question" in posted[0]) && !("prompt" in posted[0]), JSON.stringify(posted[0] && Object.keys(posted[0])));
-  check("and closes its sheet so the caption is seen landing", await page.locator("#sheet-more").isHidden());
+  check("and no sheet is left over the caption landing", await page.locator("#sheet-more").isHidden());
   const notes = await page.locator(".tool-notes").textContent();
   check("the notes name no files", !notes.includes("cat.png"), notes);
 
@@ -1682,7 +1825,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("a timing line sits under the result", summary.startsWith("⏱ Timing") && /download/.test(summary), summary);
   await page.locator(".timing summary").click();
   const rows = await page.locator(".timing li").allTextContents();
-  for (const want of ["Submit:", "Provider states first seen:", "Status checks:", "Download:", "Visible at", "Saved to Recent at", "App in background:"]) {
+  for (const want of ["Submit:", "Provider states first seen:", "Status checks:", "Download:", "Visible at", "Saved to gallery at", "App in background:"]) {
     check(`the breakdown has "${want}"`, rows.some((r) => r.startsWith(want)), JSON.stringify(rows));
   }
   const rec = await page.evaluate(() => JSON.parse(localStorage.getItem("patchbay_timings")).pop());
@@ -1714,7 +1857,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   let page = await open(context);
   await page.selectOption("#model-select", "p-image");
   await page.waitForTimeout(200);
-  await page.selectOption("#improve-model", "@cf/zai-org/glm-5.3");
+  await pickImprove(page, "@cf/zai-org/glm-5.3");
   await page.locator("#improve-settings").click();
   check("⚙ opens the settings for the picked model", (await page.locator("#tool-settings h3").textContent()).includes("GLM 5.3"));
   check("the instruction starts as the default", (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION");
@@ -1738,6 +1881,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("the ⚙ marks a customised model", await page.locator("#improve-settings").evaluate((el) => el.classList.contains("custom")));
 
   await page.locator("#sheet-tools .sheet-close").click();
+  await closeOptions(page);
   await page.fill(promptSel, "a cat");
   await page.waitForTimeout(700);
   await page.locator("#prompt-improve").click();
@@ -1750,7 +1894,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   );
   check("and the prompt text only", !("kind" in sent) && !("hasImage" in sent), JSON.stringify(Object.keys(sent)));
 
-  await page.selectOption("#improve-model", "@cf/meta/llama-3.2-3b-instruct");
+  await pickImprove(page, "@cf/meta/llama-3.2-3b-instruct");
   await page.waitForTimeout(150);
   await page.locator("#improve-settings").click();
   check("a model without thinking says so", (await page.locator(".settings-thinking").count()) === 0 && (await page.locator("#tool-settings").textContent()).includes("no thinking"));
@@ -1759,7 +1903,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
 
   await page.close();
   page = await open(context);
-  await page.selectOption("#improve-model", "@cf/zai-org/glm-5.3");
+  await pickImprove(page, "@cf/zai-org/glm-5.3");
   await page.locator("#improve-settings").click();
   check("settings survive a reload", (await page.inputValue(".settings-tokens")) === "900");
   await page.locator("#tool-settings button", { hasText: "Reset GLM 5.3 limits" }).click();
@@ -1807,6 +1951,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.fill(".settings-system", "Name the colours only.");
   await page.locator("#tool-settings .instr-save").click();
   await page.locator("#sheet-tools .sheet-close").click();
+  await closeOptions(page);
   await page.setInputFiles("#describe-file", imgPath);
   await page.waitForFunction((s) => document.querySelector(s).value === "STUB CAPTION TEXT", promptSel);
   const described = await (await page.request.get(BASE + "__describe")).json();
@@ -1834,8 +1979,10 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForTimeout(200);
   await page.fill(promptSel, "a lighthouse at dusk");
   await page.waitForTimeout(700);
-  await page.locator("#open-more").click();
+  await openOptions(page);
   await page.selectOption("#translate-to", "fr");
+  await closeOptions(page);
+  check("the strip's note names the languages Translate will use", (await page.locator("#improve-note").textContent()).includes("→ French"), await page.locator("#improve-note").textContent());
   await page.locator("#prompt-translate").click();
   await page.waitForSelector("#status.ok");
   check("Translate replaces the prompt box", (await page.inputValue(promptSel)) === "[fr] a lighthouse at dusk", await page.inputValue(promptSel));
@@ -1990,7 +2137,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   const page = await open(context);
   await page.selectOption("#model-select", "p-image");
   await page.waitForTimeout(200);
-  await page.selectOption("#improve-model", "@cf/meta/llama-3.2-3b-instruct");
+  await pickImprove(page, "@cf/meta/llama-3.2-3b-instruct");
   await page.locator("#improve-settings").click();
   const all = ["temperature", "top_p", "top_k", "seed", "repetition_penalty", "frequency_penalty", "presence_penalty"];
   check("a Llama model offers every sampling setting its schema takes", JSON.stringify(await page.locator(".sampling-name").allTextContents()) === JSON.stringify(all));
@@ -2012,6 +2159,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.fill(".settings-top-p", "7");
   check("a value outside the documented range is flagged", await page.locator(".settings-top-p").evaluate((el) => el.classList.contains("invalid")));
   await page.locator("#sheet-tools .sheet-close").click();
+  await closeOptions(page);
   await page.fill(promptSel, "a cat");
   await page.waitForTimeout(700);
   await page.locator("#prompt-improve").click();
@@ -2022,12 +2170,12 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     sent.settings.temperature === 0.3 && sent.settings.top_k === 12 && !("top_p" in sent.settings),
     JSON.stringify(sent.settings)
   );
-  await page.selectOption("#improve-model", "@cf/zai-org/glm-5.3");
+  await pickImprove(page, "@cf/zai-org/glm-5.3");
   await page.locator("#improve-settings").click();
   const glm = await page.locator(".sampling-name").allTextContents();
   check("GLM 5.3 offers only what its schema takes", !glm.includes("top_k") && !glm.includes("repetition_penalty") && glm.includes("temperature"), JSON.stringify(glm));
   await page.locator("#sheet-tools .sheet-close").click();
-  await page.selectOption("#improve-model", "@cf/meta/llama-3.1-8b-fast-v2");
+  await pickImprove(page, "@cf/meta/llama-3.1-8b-fast-v2");
   await page.locator("#improve-settings").click();
   check("a model with no published schema says so", (await page.locator("#tool-settings").textContent()).includes("no input schema"));
   await page.locator("#sheet-tools .sheet-close").click();
@@ -2067,7 +2215,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
-// ── The lightbox steps through the strip ───────────────────────────────────
+// ── The viewer steps through the list it was opened from ───────────────────
 {
   const context = await browser.newContext();
   const page = await open(context);
@@ -2081,33 +2229,97 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     await page.waitForFunction((n) => document.querySelectorAll(".recent-strip .thumb").length === n, ["first", "second", "third"].indexOf(text) + 1);
   }
   await page.locator(".recent-strip .thumb").first().click();
-  await page.waitForSelector("#lightbox:not(.hidden)");
-  const prompt = () => page.locator("#lightbox-prompt").textContent();
-  check("the newest opens first, and says where it is", (await prompt()) === "third" && (await page.locator("#lightbox-meta").textContent()).startsWith("1 of 3"));
-  check("nothing newer than the newest", await page.locator("#lightbox-prev").isDisabled());
-  await page.locator("#lightbox-next").click();
-  await page.waitForFunction(() => document.querySelector("#lightbox-prompt").textContent === "second");
-  check("› steps to the older one without closing", !(await page.locator("#lightbox").isHidden()));
+  await page.waitForSelector("#viewer:not(.hidden)");
+  const prompt = () => page.locator("#viewer-prompt").textContent();
+  const shows = (t) => page.waitForFunction((t) => (document.querySelector("#viewer-prompt") || {}).textContent === t, t);
+  check("the newest opens first, and says where it is", (await prompt()) === "third" && (await page.locator("#viewer-pos").textContent()) === "1 of 3");
+  check("nothing before the newest", await page.locator("#viewer-prev").isDisabled());
+  await page.locator("#viewer-next").click();
+  await shows("second");
+  check("› steps to the next one without closing", !(await page.locator("#viewer").isHidden()));
   await page.keyboard.press("ArrowRight");
-  await page.waitForFunction(() => document.querySelector("#lightbox-prompt").textContent === "first");
-  check("→ does the same", (await page.locator("#lightbox-meta").textContent()).startsWith("3 of 3"));
-  check("and stops at the oldest", await page.locator("#lightbox-next").isDisabled());
+  await shows("first");
+  check("→ does the same", (await page.locator("#viewer-pos").textContent()) === "3 of 3");
+  check("and stops at the end", await page.locator("#viewer-next").isDisabled());
   await page.keyboard.press("ArrowLeft");
-  await page.waitForFunction(() => document.querySelector("#lightbox-prompt").textContent === "second");
+  await shows("second");
   check("← goes back", true);
-  // A swipe right-to-left moves on to the older item, as the strip runs.
+  // A swipe right-to-left moves on to the next item.
   await page.evaluate(() => {
-    const el = document.querySelector("#lightbox-media");
+    const el = document.querySelector("#viewer-stage");
     const touch = (x) => new Touch({ identifier: 1, target: el, clientX: x, clientY: 200 });
     el.dispatchEvent(new TouchEvent("touchstart", { touches: [touch(300)], changedTouches: [touch(300)], bubbles: true }));
     el.dispatchEvent(new TouchEvent("touchend", { touches: [], changedTouches: [touch(150)], bubbles: true }));
   });
-  await page.waitForFunction(() => document.querySelector("#lightbox-prompt").textContent === "first");
+  await shows("first");
   check("a swipe steps too", true);
-  await page.locator("#lightbox-actions button", { hasText: "Delete" }).click();
-  await page.waitForFunction(() => document.querySelector("#lightbox-prompt").textContent === "second");
-  check("Delete moves on to the neighbour instead of closing", (await page.locator("#lightbox-meta").textContent()).startsWith("2 of 2"));
+  page.once("dialog", (d) => d.accept());
+  await page.locator("#viewer-delete").click();
+  await shows("second");
+  check("Delete moves on to the neighbour instead of closing", (await page.locator("#viewer-pos").textContent()) === "2 of 2");
   check("and the strip follows", (await page.locator(".recent-strip .thumb").count()) === 2);
+  // The phone's own Back closes the viewer rather than leaving the app.
+  await page.goBack();
+  await page.waitForFunction(() => document.getElementById("viewer").classList.contains("hidden"));
+  check("Back closes the viewer and stays in the app", (await page.locator("#app").isVisible()) && page.url().startsWith(BASE));
+  await page.close();
+  await context.close();
+}
+
+// ── Prompt library: folders, the text itself, editing ──────────────────────
+{
+  const context = await browser.newContext();
+  let page = await open(context);
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(200);
+  const long = "a very long prompt about a lighthouse on a cliff at dusk, waves breaking below, gulls overhead, " + "more detail ".repeat(30);
+  await page.fill(promptSel, long);
+  await page.waitForTimeout(700);
+  await page.locator("#open-prompts").click();
+  await page.locator("#prompt-save").click();
+  await page.fill("#lib-edit-name", "Lighthouse");
+  page.once("dialog", (d) => d.accept("Places"));
+  await page.selectOption("#lib-edit-folder", "__new__");
+  await page.waitForTimeout(100);
+  await page.locator("#lib-editor button", { hasText: "Save" }).click();
+  check("a prompt is saved with a name", (await page.locator(".lib-card .lib-name").first().textContent()) === "Lighthouse");
+  check("and its whole text, not a short string", (await page.locator(".lib-card .lib-text").first().textContent()) === long.trim());
+  check("in the folder made for it", (await page.locator(".lib-folder", { hasText: "Places" }).count()) === 1);
+
+  await page.locator("#sheet-prompts .sheet-close").click();
+  await page.fill(promptSel, "a cat in a box");
+  await page.waitForTimeout(700);
+  await page.locator("#open-prompts").click();
+  await page.locator("#prompt-save").click();
+  await page.locator("#lib-editor button", { hasText: "Save" }).click();
+  check("two saved", (await page.locator(".lib-card").count()) === 2);
+
+  await page.locator(".lib-folder", { hasText: "Places" }).click();
+  check("a folder shows only its own", (await page.locator(".lib-card").count()) === 1);
+  await page.locator(".lib-folder", { hasText: "All" }).click();
+  await page.fill("#lib-search", "gulls");
+  check("search reads the text, not only the name", (await page.locator(".lib-card").count()) === 1);
+  await page.fill("#lib-search", "");
+
+  // Edit in place: rename and move.
+  await page.locator(".lib-card", { hasText: "a cat in a box" }).locator("button", { hasText: "Edit" }).click();
+  await page.fill("#lib-edit-name", "Cat");
+  await page.selectOption("#lib-edit-folder", { label: "Places" });
+  await page.locator("#lib-editor button", { hasText: "Save changes" }).click();
+  await page.locator(".lib-folder", { hasText: "Places" }).click();
+  check("edited prompts move between folders", (await page.locator(".lib-card").count()) === 2);
+
+  // Survives a reload; deleting a folder keeps its prompts.
+  await page.close();
+  page = await open(context);
+  await page.locator("#open-prompts").click();
+  check("the library survives a reload", (await page.locator(".lib-card").count()) === 2);
+  await page.locator(".lib-folder", { hasText: "Places" }).click();
+  page.once("dialog", (d) => d.accept());
+  await page.locator("#lib-folder-tools button", { hasText: "Delete folder" }).click();
+  check("deleting a folder keeps its prompts", (await page.locator(".lib-card").count()) === 2 && (await page.locator(".lib-folder", { hasText: "Places" }).count()) === 0);
+  await page.locator(".lib-card", { hasText: "Cat" }).locator(".lib-use").click();
+  check("Use puts it in the prompt box", (await page.inputValue(promptSel)) === "a cat in a box");
   await page.close();
   await context.close();
 }
