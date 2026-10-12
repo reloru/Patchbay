@@ -1255,6 +1255,13 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("undo is a usable tap target", box.height >= 36 && box.width >= 60, JSON.stringify(box));
   const bar = await page.locator("#generate-btn").boundingBox();
   check("Generate is on screen without scrolling", bar && bar.y + bar.height <= 844, JSON.stringify(bar));
+  // iOS draws a black single-letter tile when it cannot fetch the touch icon;
+  // it is served under the tag's path and the conventional root names.
+  const touch = await page.evaluate(() => document.querySelector('link[rel="apple-touch-icon"]').getAttribute("href"));
+  for (const path of [touch, "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"]) {
+    const r = await page.request.get(new URL(path, BASE).href);
+    check(`the touch icon is served at ${path}`, r.ok() && r.headers()["content-type"] === "image/png");
+  }
   await page.close();
   await context.close();
 }
