@@ -361,7 +361,10 @@ The chip beside Generate counts what is running and opens the list: each job's
 state and elapsed time, *Check now*, and *Forget* (stop tracking it — nothing
 can cancel it on the provider, so it may still be billed). Finished jobs stay
 in the list for the visit, with *Open in gallery*. The run started last owns
-the status line; one finishing beside it reports in the list.
+the status line; one finishing beside it reports in the list. Runs that
+overlap share the output panel: each result is added as it lands, captioned
+with its model and prompt, and Judge scores them together. A run started with
+nothing else going clears the panel first.
 
 The poll loop no longer gives up on its own. It used to stop after a fixed 30
 minutes, or after three failed status checks in a row, and say to reopen the

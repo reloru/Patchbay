@@ -2218,11 +2218,9 @@ function jobProgress(job, state, secs) {
 }
 
 function startJob({ model, input, meta, files }) {
-  $("result").innerHTML = "";
-  // The old output is gone from the panel, so it is no longer something Judge
-  // can offer to score.
-  lastResult = { urls: [], kind: null, blobs: [] };
-  clearJudgeResult();
+  // A run started while another is still going joins it on screen: each result
+  // is added as it lands. One started with nothing running replaces the panel.
+  if (!jobs.length) clearResultPanel();
   const job = newJob({ modelId: model.id, kind: model.kind, meta });
   // In memory only, for the cost estimate once it finishes.
   job.input = input;
@@ -4774,6 +4772,16 @@ function releaseResultUrls() {
   resultObjectUrls = [];
 }
 
+function clearResultPanel() {
+  releaseResultUrls();
+  $("result").innerHTML = "";
+  // The old output is gone from the panel, so it is no longer something Judge
+  // can offer to score.
+  lastResult = { urls: [], kind: null, blobs: [] };
+  clearJudgeResult();
+  updateJudgeNote();
+}
+
 // Pulls one finished result into memory. A data: URI is already the bytes and
 // costs no request; anything else comes through /api/result, which answers
 // no-store, so this is the only copy we get without paying for the download
@@ -4807,14 +4815,29 @@ async function fetchResultBlob(prunaUrl, kind, onAttempt) {
 // `timer` records the download, display and save legs of the run; `onDisplayed`
 // fires once every result is on screen, which is where the run's elapsed time
 // stops. The gallery save after that is the app's own bookkeeping.
+//
+// Each run gets its own group, added after whatever the panel already holds:
+// startJob empties the panel unless the run overlapped another.
 async function showResult(prunaUrls, kind, meta, { timer, onDisplayed } = {}) {
-  const box = $("result");
-  releaseResultUrls();
-  box.innerHTML = "";
-  lastResult = { urls: prunaUrls.slice(), kind, blobs: [] };
+  const panel = $("result");
+  const box = document.createElement("div");
+  box.className = "result-run";
+  const info = meta || { modelId: "", prompt: "", setup: null };
+  // Only shown once the panel holds more than one run (styles.css).
+  const caption = document.createElement("p");
+  caption.className = "run-caption";
+  const model = MODELS.find((m) => m.id === info.modelId);
+  caption.textContent = [model ? model.label : info.modelId, info.prompt].filter(Boolean).join(" · ");
+  box.appendChild(caption);
+  panel.appendChild(box);
+  // Judge reads `blobs` by the same index as `urls`. A mix of kinds is not
+  // something it can score as one set.
+  const base = lastResult.urls.length;
+  lastResult.urls.push(...prunaUrls);
+  lastResult.kind = lastResult.kind && lastResult.kind !== kind ? "mixed" : kind;
+  clearJudgeResult();
   updateJudgeNote();
   const archived = [];
-  const info = meta || { modelId: "", prompt: "", setup: null };
 
   const shown = [];
 
@@ -4857,7 +4880,8 @@ async function showResult(prunaUrls, kind, meta, { timer, onDisplayed } = {}) {
         });
       }
     }
-    lastResult.blobs.push(blob);
+    // By slot, not push: an overlapping run can finish its download first.
+    lastResult.blobs[base + i] = blob;
     // Video is kept for the same reason an image is, and more so: it is the
     // most expensive thing this app produces. A trained LoRA .zip is not —
     // it is not previewable, is never fetched into a Blob above, and its link

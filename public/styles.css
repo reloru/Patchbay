@@ -414,6 +414,19 @@ button.secondary:hover { border-color: var(--accent); }
 .result img, .result video { max-width: 100%; border-radius: 10px; display: block; }
 .result .download { display: inline-block; }
 .result-item + .result-item { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 18px; }
+/* Runs that overlapped share the panel. Each says what it was only when there
+   is more than one to tell apart. */
+.result-run + .result-run { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 18px; }
+.run-caption {
+  display: none;
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.result:has(.result-run + .result-run) .run-caption { display: block; }
 /* Save and the reuse action sit on one row and wrap together on a narrow
    screen rather than stacking one per line. */
 .result-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
