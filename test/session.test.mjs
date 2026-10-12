@@ -138,6 +138,18 @@ async function pickImprove(page, id) {
   await openOptions(page);
   await page.selectOption("#improve-model", id);
 }
+// Describe is on each gallery image: open one and caption it into the prompt
+// box.
+// The item is put straight into the gallery: what is under test is Describe,
+// not generating, and the model on screen may need inputs to generate at all.
+async function describeFromGallery(page) {
+  await seedGallery(page, (i, now) => ({ id: "describe-me", createdAt: now, prompt: "an image to describe" }), 1);
+  await page.evaluate(() => renderRecent());
+  await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length > 0);
+  await page.locator(".recent-strip .thumb").first().click();
+  await page.waitForSelector("#viewer:not(.hidden)");
+  await page.locator("#viewer-describe").click();
+}
 async function improveGear(page) {
   await openOptions(page);
   await page.locator("#improve-settings").click();
@@ -154,7 +166,6 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   // model + prompt + options
   await page.selectOption("#model-select", "p-image");
   await page.fill(promptSel, "a cat wearing a tiny hat");
-  await page.locator(".options > summary").click();
   await page.fill('[data-field="width"]', "1536");
   await page.selectOption('[data-field="aspect_ratio"]', "9:16");
   // The real checkbox is visually replaced by the switch track, so the label is
@@ -180,7 +191,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("number option restored", (await page.inputValue('[data-field="width"]')) === "1536");
   check("enum option restored", (await page.inputValue('[data-field="aspect_ratio"]')) === "9:16");
   check("bool option restored", await page.locator('[data-field="prompt_upsampling"]').isChecked());
-  check("options panel reopened", await page.locator(".options").evaluate((d) => d.open));
+  check("settings are in plain view, not behind a tap", await page.locator('[data-field="width"]').isVisible());
   const badgeAfter = await page.locator(".opt-badge").textContent();
   check("changed count restored", badgeBefore === badgeAfter, `${badgeBefore} vs ${badgeAfter}`);
 
@@ -381,15 +392,15 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     (s) => document.querySelector(s).value === "IMPROVED PROMPT TEXT",
     promptSel
   );
-  check("Improve stays Improve rather than becoming its own undo", (await page.locator("#prompt-improve .cap").textContent()) === "Improve");
+  check("Improve stays Improve rather than becoming its own undo", (await page.locator("#prompt-improve").textContent()) === "Improve");
   await undo.click();
   check("Improve is undoable in one press", (await page.inputValue(promptSel)) === "cat on a skateboard");
   await redo.click();
   check("Improve is redoable", (await page.inputValue(promptSel)) === "IMPROVED PROMPT TEXT");
   await undo.click();
 
-  // Describe → Undo (uses the file picker path)
-  await page.setInputFiles("#describe-file", imgPath);
+  // Describe → Undo (from a gallery image)
+  await describeFromGallery(page);
   await page.waitForFunction((s) => document.querySelector(s).value === "STUB CAPTION TEXT", promptSel);
   await undo.click();
   check("Describe is undoable in one press", (await page.inputValue(promptSel)) === "cat on a skateboard");
@@ -567,7 +578,6 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.setInputFiles(".file-input", imgPath);
   await page.waitForSelector(".thumbs .thumb img");
   await page.fill(promptSel, "restored payload prompt");
-  await page.locator(".options > summary").click();
   await page.selectOption('[data-field="aspect_ratio"]', "3:2");
   // seed defaults to "" and its own -1 means "randomise": setting it is only
   // sent because the row is marked deliberately edited, which is the flag the
@@ -620,7 +630,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await generate();
   check(
     "reuse button names the fallback model when there is nowhere to put it",
-    (await page.locator(".reuse").textContent()) === "✏️ Edit in P-Image-Edit",
+    (await page.locator(".reuse").textContent()) === "Edit in P-Image-Edit",
     await page.locator(".reuse").textContent()
   );
   await page.locator(".reuse").click();
@@ -640,7 +650,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   // On an editing model whose image field is its required subject, the label
   // says so rather than calling it a reference.
   await generate();
-  check("label reads Edit this on an editing model", (await page.locator(".reuse").first().textContent()) === "✏️ Edit this");
+  check("label reads Edit this on an editing model", (await page.locator(".reuse").first().textContent()) === "Edit this");
   await page.locator(".reuse").first().click();
   await page.waitForTimeout(300);
   check("adds to the same field rather than switching", (await page.inputValue("#model-select")) === "p-image-edit");
@@ -659,7 +669,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await generate();
   check(
     "label reads Use as reference on a generation model",
-    (await page.locator(".reuse").first().textContent()) === "🖼 Use as reference",
+    (await page.locator(".reuse").first().textContent()) === "Use as reference",
     await page.locator(".reuse").first().textContent()
   );
   await page.locator(".reuse").first().click();
@@ -688,7 +698,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await generate();
   check(
     "a full single-slot field sends it to the editing model instead",
-    (await page.locator(".reuse").first().textContent()) === "✏️ Edit in P-Image-Edit",
+    (await page.locator(".reuse").first().textContent()) === "Edit in P-Image-Edit",
     await page.locator(".reuse").first().textContent()
   );
   await page.close();
@@ -814,7 +824,6 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   // The Gallery screen: search by word, by setting, by album, and sort.
   await page.selectOption("#model-select", "p-image");
   await page.waitForTimeout(200);
-  await page.locator(".options > summary").click();
   await page.fill('[data-field="seed"]', "777");
   await gen("second picture of a boat");
   await page.locator("#tab-gallery").click();
@@ -1338,7 +1347,6 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForTimeout(200);
   await page.fill(promptSel, "the original run");
   // A non-default option, so there is something to restore beyond the text.
-  await page.locator(".options > summary").click();
   const seedSel = '[data-field="seed"]';
   await page.fill(seedSel, "4242");
   await page.waitForTimeout(700);
@@ -1517,14 +1525,15 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   page.on("request", (r) => {
     if (r.url().includes("/api/describe") && r.method() === "POST") posted.push(JSON.parse(r.postData() || "{}"));
   });
-  // On the strip itself now: one tap, no sheet in between.
-  await page.locator("#prompt-describe").click();
+  // On each gallery image now: the caption lands in the prompt box on Create.
+  await page.fill(promptSel, "edit me");
+  await page.waitForTimeout(700);
+  await describeFromGallery(page);
   await page.waitForTimeout(900);
   check("a caption seeds the prompt, which is what captioning is for", (await page.inputValue(promptSel)) === "STUB CAPTION TEXT");
   check("Describe sends no question and no prompt", posted.length === 1 && !("question" in posted[0]) && !("prompt" in posted[0]), JSON.stringify(posted[0] && Object.keys(posted[0])));
-  check("and no sheet is left over the caption landing", await page.locator("#sheet-more").isHidden());
-  const notes = await page.locator(".tool-notes").textContent();
-  check("the notes name no files", !notes.includes("cat.png"), notes);
+  check("and goes back to Create so the caption is seen landing", (await page.locator("#viewer").isHidden()) && (await page.locator("#screen-create").isVisible()));
+  check("the tool row has no Describe of its own any more", (await page.locator("#prompt-tools button", { hasText: "Describe" }).count()) === 0);
 
   // A model with no prompt box used to swallow a tool's tap without a word;
   // now it offers no prompt tools at all.
@@ -1555,7 +1564,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   page.on("request", (r) => {
     if (r.url().includes("/api/generate")) generates++;
   });
-  await page.locator("#open-chat").click();
+  await page.locator("#tab-lab").click();
   check("the attached image has a chip, ticked to start", (await page.locator(".chat-chip.on").count()) === 1);
   await page.click("#chat-input");
   await page.keyboard.type("first line");
@@ -1594,11 +1603,11 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.locator(".chat-use").last().click();
   await page.waitForTimeout(200);
   check("Put in prompt box replaces the prompt with the reply", (await page.inputValue(promptSel)) === "STUB REPLY 2");
-  check("and closes the chat so the prompt is in view", await page.locator("#sheet-chat").isHidden());
+  check("and goes to Create so the prompt is in view", await page.locator("#screen-create").isVisible());
   await page.locator("#prompt-undo").click();
   check("and Undo brings the old prompt back", (await page.inputValue(promptSel)) === "a neon cat on a rooftop");
 
-  await page.locator("#open-chat").click();
+  await page.locator("#tab-lab").click();
   await page.uncheck("#chat-prompt");
   await page.fill("#chat-input", "no context this time");
   await page.locator("#chat-send").click();
@@ -1615,7 +1624,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   page = await open(context);
   check("the thread survives a reload", (await page.locator(".chat-msg").count()) === 6, `${await page.locator(".chat-msg").count()} messages`);
   page.once("dialog", (d) => d.accept());
-  await page.locator("#open-chat").click();
+  await page.locator("#tab-lab").click();
   await page.locator("#chat-new").click();
   await page.waitForTimeout(150);
   check("New chat clears it", (await page.locator(".chat-msg").count()) === 0);
@@ -1822,7 +1831,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
 
   // The breakdown under the result.
   const summary = (await page.locator(".timing summary").textContent()).trim();
-  check("a timing line sits under the result", summary.startsWith("⏱ Timing") && /download/.test(summary), summary);
+  check("a timing line sits under the result", summary.startsWith("Timing") && /download/.test(summary), summary);
   await page.locator(".timing summary").click();
   const rows = await page.locator(".timing li").allTextContents();
   for (const want of ["Submit:", "Provider states first seen:", "Status checks:", "Download:", "Visible at", "Saved to gallery at", "App in background:"]) {
@@ -1952,12 +1961,12 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.locator("#tool-settings .instr-save").click();
   await page.locator("#sheet-tools .sheet-close").click();
   await closeOptions(page);
-  await page.setInputFiles("#describe-file", imgPath);
+  await describeFromGallery(page);
   await page.waitForFunction((s) => document.querySelector(s).value === "STUB CAPTION TEXT", promptSel);
   const described = await (await page.request.get(BASE + "__describe")).json();
   check("and Describe sends it", described.settings && described.settings.system === "Name the colours only.", JSON.stringify(described.settings));
 
-  await page.locator("#open-chat").click();
+  await page.locator("#tab-lab").click();
   await page.locator("#chat-settings").click();
   check("the chat's ⚙ opens its own settings", (await page.inputValue(".settings-system")) === "DEFAULT CHAT INSTRUCTION");
   await page.fill(".settings-tokens", "300");
@@ -1979,13 +1988,13 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForTimeout(200);
   await page.fill(promptSel, "a lighthouse at dusk");
   await page.waitForTimeout(700);
-  await openOptions(page);
+  // Translate is a Lab card now; it rewrites the prompt box on Create.
+  await page.locator("#tab-lab").click();
   await page.selectOption("#translate-to", "fr");
-  await closeOptions(page);
-  check("the strip's note names the languages Translate will use", (await page.locator("#improve-note").textContent()).includes("→ French"), await page.locator("#improve-note").textContent());
   await page.locator("#prompt-translate").click();
   await page.waitForSelector("#status.ok");
   check("Translate replaces the prompt box", (await page.inputValue(promptSel)) === "[fr] a lighthouse at dusk", await page.inputValue(promptSel));
+  await page.locator("#tab-create").click();
   await page.locator("#prompt-undo").click();
   check("and Undo brings the original back", (await page.inputValue(promptSel)) === "a lighthouse at dusk");
 
@@ -1996,7 +2005,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   let sent = await (await page.request.get(BASE + "__tool")).json();
   check("with the default speech model", sent.body.model === "@cf/openai/whisper-large-v3-turbo" && sent.body.mime === "audio/mp4", JSON.stringify(sent.body).slice(0, 120));
 
-  await page.locator("#open-chat").click();
+  await page.locator("#tab-lab").click();
   await page.locator("#chat-settings").click();
   await page.selectOption(".settings-stt", "@cf/deepgram/nova-3");
   await page.setInputFiles("#chat-audio-file", { name: "b.webm", mimeType: "audio/webm", buffer: Buffer.from("x") });
@@ -2005,7 +2014,6 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("the speech model follows the chat's ⚙ setting, and text is appended", sent.body.model === "@cf/deepgram/nova-3");
 
   await page.locator("#sheet-tools .sheet-close").click();
-  await page.locator("#sheet-chat .sheet-close").click();
   await page.locator("#tab-lab").click();
   check("Lab holds what is not part of making a picture", await page.locator("#other").isVisible() && (await page.locator("#generate-btn").isHidden()));
   await page.locator("#other > summary").click();
@@ -2042,7 +2050,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   writeFileSync(second, PNG);
   await page.setInputFiles(".file-input", [imgPath, second]);
   await page.waitForFunction(() => document.querySelectorAll(".section-inputs .thumbs .thumb img").length === 2);
-  await page.locator("#open-chat").click();
+  await page.locator("#tab-lab").click();
   check("one chip per attached image, ticked to start", (await page.locator(".chat-chip").count()) === 2 && (await page.locator(".chat-chip.on").count()) === 2);
 
   await page.fill("#chat-input", "compare these");
@@ -2097,11 +2105,11 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   );
   check("but not LLaVA, which cannot run without an image", !improveIds.includes("@cf/llava-hf/llava-1.5-7b-hf"));
   const chatOpts = await page.locator("#chat-model option").evaluateAll((os) => os.map((o) => o.textContent));
-  check("the chat offers all nine vision models, marked 👁", chatOpts.filter((t) => t.includes("👁")).length === 9, JSON.stringify(chatOpts.filter((t) => t.includes("👁"))));
+  check("the chat offers all nine vision models, marked as such", chatOpts.filter((t) => t.includes("(vision)")).length === 9, JSON.stringify(chatOpts.filter((t) => t.includes("(vision)"))));
 
   await page.selectOption("#model-select", "p-image-edit");
   await page.waitForTimeout(200);
-  await page.locator("#open-chat").click();
+  await page.locator("#tab-lab").click();
   await page.selectOption("#chat-model", "@cf/llava-hf/llava-1.5-7b-hf");
   await page.fill("#chat-input", "what is this?");
   await page.locator("#chat-send").click();
@@ -2111,12 +2119,12 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     (await page.locator("#chat-note").textContent()).includes("needs an image") && (await page.locator(".chat-msg").count()) === 0,
     await page.locator("#chat-note").textContent()
   );
-  await page.locator("#sheet-chat .sheet-close").click();
+  await page.locator("#tab-create").click();
   const other = join(dir, "other.png");
   writeFileSync(other, PNG);
   await page.setInputFiles(".file-input", [imgPath, other]);
   await page.waitForFunction(() => document.querySelectorAll(".section-inputs .thumbs .thumb img").length === 2);
-  await page.locator("#open-chat").click();
+  await page.locator("#tab-lab").click();
   check("two ticked images for a one-image model are to be combined", (await page.locator("#chat-note").textContent()).includes("combined"));
   await page.locator("#chat-send").click();
   await page.waitForSelector(".chat-msg.assistant:not(.pending)");
@@ -2202,7 +2210,6 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.fill(promptSel, "a slow pan");
   await page.setInputFiles(".section-inputs .file-input >> nth=0", imgPath);
   await page.waitForSelector(".section-inputs .thumbs .thumb img");
-  await page.locator(".options > summary").click();
   await page.fill('[data-field="duration"]', "7");
   await page.waitForTimeout(200);
   check("a changed setting is counted", (await page.locator(".opt-badge").textContent()) === "1 changed", await page.locator(".opt-badge").textContent());
@@ -2211,6 +2218,77 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("Reset all settings puts the settings back", (await page.locator(".opt-badge").textContent()) === "");
   check("and leaves the prompt", (await page.inputValue(promptSel)) === "a slow pan");
   check("and the attached image", (await page.locator(".section-inputs .thumbs .thumb").count()) === 1);
+  await page.close();
+  await context.close();
+}
+
+// ── Settings: Turbo and the filter off and out of the way; Reset only when
+//    there is something to reset ────────────────────────────────────────────
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  const models = await page.evaluate(() => MODELS.map((m) => m.id));
+  const bad = [];
+  for (const id of models) {
+    await page.selectOption("#model-select", id);
+    const r = await page.evaluate(() =>
+      optionRows
+        .filter((x) => x.f.advanced)
+        .map((x) => ({
+          name: x.f.name,
+          label: x.f.label,
+          on: x.row.querySelector("[data-field]").checked,
+          hidden: !!x.row.closest("details.advanced") && !x.row.closest("details.advanced").open,
+        }))
+    );
+    for (const x of r) if (x.on || !x.hidden) bad.push(`${id}:${x.name}`);
+  }
+  check("Turbo and the moderation filter are off, and folded under Advanced, on every model", bad.length === 0, bad.join(", "));
+
+  // Off is what is sent, even where the provider's own default is on.
+  await page.selectOption("#model-select", "p-image-edit-text-aware");
+  await page.setInputFiles(".file-input", imgPath);
+  await page.waitForSelector(".thumbs .thumb img");
+  await page.fill(promptSel, "tidy it up");
+  await page.waitForTimeout(700);
+  check("the toggle is called Turbo", (await page.locator(".advanced .opt-name").allTextContents()).includes("Turbo"));
+  check("Reset all is not offered while nothing is changed", await page.locator(".opt-reset-all").isHidden());
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#status.ok");
+  const sent = await (await page.request.get(BASE + "__generate")).json();
+  check("Turbo off is sent where the provider would default it on", sent.input && sent.input.turbo === false, JSON.stringify(sent.input));
+
+  await page.selectOption("#model-select", "p-image-edit");
+  await page.waitForTimeout(200);
+  check("aspect ratio reads Match input", (await page.locator('[data-field="aspect_ratio"] option:checked').textContent()) === "Match input");
+  const ar = await page.locator('[data-field="aspect_ratio"]').boundingBox();
+  const seed = await page.locator('[data-field="seed"]').boundingBox();
+  check("aspect ratio and seed sit side by side", ar && seed && Math.abs(ar.y - seed.y) < 4 && seed.x > ar.x, JSON.stringify({ ar, seed }));
+  const prompt = await page.locator(promptSel).boundingBox();
+  check("the prompt sits below the settings, next to Generate and the output", prompt.y > ar.y);
+  await page.fill('[data-field="seed"]', "9");
+  await page.waitForTimeout(200);
+  check("Reset all appears once something is changed", await page.locator(".opt-reset-all").isVisible());
+  check("and no orange bar or count marks it", (await page.locator(".opt-badge").isHidden()) &&
+    (await page.locator(".opt-row.changed").first().evaluate((el) => getComputedStyle(el).borderLeftStyle === "none" || getComputedStyle(el).borderLeftWidth === "0px")));
+
+  // The viewer closes from the bottom, or with a downward swipe.
+  await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length > 0);
+  await page.locator(".recent-strip .thumb").first().click();
+  await page.waitForSelector("#viewer:not(.hidden)");
+  await page.locator("#viewer-close-bottom").click();
+  await page.waitForFunction(() => document.getElementById("viewer").classList.contains("hidden"));
+  check("the viewer has a Close at the bottom", true);
+  await page.locator(".recent-strip .thumb").first().click();
+  await page.waitForSelector("#viewer:not(.hidden)");
+  await page.evaluate(() => {
+    const el = document.querySelector("#viewer-stage");
+    const touch = (y) => new Touch({ identifier: 1, target: el, clientX: 200, clientY: y });
+    el.dispatchEvent(new TouchEvent("touchstart", { touches: [touch(150)], changedTouches: [touch(150)], bubbles: true }));
+    el.dispatchEvent(new TouchEvent("touchend", { touches: [], changedTouches: [touch(320)], bubbles: true }));
+  });
+  await page.waitForFunction(() => document.getElementById("viewer").classList.contains("hidden"));
+  check("and a downward swipe closes it", true);
   await page.close();
   await context.close();
 }
@@ -2423,7 +2501,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   const sent = await (await page.request.get(BASE + "__generate")).json();
   check("the text goes out under the model's own key", sent.input && sent.input.text === "x".repeat(500), JSON.stringify(sent).slice(0, 200));
   const reuse = page.locator("#result .reuse");
-  check("with nowhere to put it here, reuse offers a model that takes a voice", (await reuse.textContent()).startsWith("🔊 Use in"), await reuse.textContent());
+  check("with nowhere to put it here, reuse offers a model that takes a voice", (await reuse.textContent()).startsWith("Use in"), await reuse.textContent());
   await reuse.click();
   await page.waitForTimeout(500);
   const audioThumbs = await page.locator("#gen-form .thumb.file").count();
@@ -2434,7 +2512,6 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForTimeout(300);
   const panel = page.locator(".tts-panel").first();
   check("an audio field offers to generate a voice", (await panel.count()) === 1);
-  if (await page.locator("details.options").count()) await page.locator("details.options > summary").click();
   await panel.locator("summary").click();
   check("Aura-2 English is the panel's default", (await panel.locator(".tts-model").inputValue()) === "cf-aura-2-en");
   await panel.locator(".tts-model").selectOption("cf-aura-2-es");

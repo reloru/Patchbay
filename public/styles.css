@@ -1,10 +1,10 @@
 :root {
   --bg: #0f1115;
   --panel: #171a21;
-  --panel-2: #1e222b;
-  --border: #2a2f3a;
-  --text: #e7e9ee;
-  --muted: #99a0ae;
+  --panel-2: #232833;
+  --border: #3a4252;
+  --text: #f0f2f6;
+  --muted: #b4bbc8;
   --accent: #ff8a3d;
   --accent-2: #ffb072;
   --danger: #ff6b6b;
@@ -77,7 +77,7 @@ select, input, textarea, button { max-width: 100%; }
   border-bottom: 1px solid var(--border);
   margin-bottom: 14px;
 }
-.brand { margin: 0; font-size: 18px; white-space: nowrap; }
+.brand { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; }
 .tabs {
   flex: 0 0 auto;
   display: flex;
@@ -177,7 +177,7 @@ select, input, textarea, button { max-width: 100%; }
   text-transform: uppercase;
   color: var(--muted);
 }
-.section-inputs .opt-row { margin-left: 0; padding-left: 0; border-left: 0; margin-bottom: 14px; }
+.section-inputs .opt-row { margin-bottom: 14px; }
 .opt-tag {
   font-size: 11px;
   font-weight: 400;
@@ -190,6 +190,7 @@ select, input, textarea, button { max-width: 100%; }
 /* Fields */
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .field-label { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.section-prompt .field { margin-bottom: 0; }
 
 input, select, textarea, button {
   font: inherit;
@@ -202,60 +203,27 @@ input, select, textarea, button {
 }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 textarea { resize: vertical; min-height: 74px; }
+/* The prompt is the main thing typed here; it gets the room. */
+.section-prompt textarea[data-field] { min-height: 180px; font-size: 16px; line-height: 1.45; }
 
-/* Optional parameters: one collapsible panel, every control visible and
-   pre-filled with its default. Anything changed is highlighted and counted. */
-.options {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel-2);
-  margin-bottom: 12px;
-  overflow: hidden;
-}
-.options > summary {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
+/* Settings: in plain view, two to a row; free text and files take the
+   width. Turbo and the moderation filter wait under a collapsed Advanced. */
+.settings-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.settings-head .section-title { margin-bottom: 10px; }
+.opt-reset-all { font-size: 13px; }
+.opt-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; }
+.opt-row { min-width: 0; }
+.opt-row.wide { grid-column: 1 / -1; }
+.opt-row input, .opt-row select { width: 100%; }
+.advanced { margin-top: 14px; }
+.advanced > summary {
   cursor: pointer;
   user-select: none;
-  font-size: 14px;
-  list-style: none;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 4px 0;
 }
-.options > summary::-webkit-details-marker { display: none; }
-/* Disclosure caret, drawn rather than relying on the native marker so it
-   looks the same across browsers. */
-.options > summary::before {
-  content: "";
-  width: 0; height: 0;
-  border-left: 5px solid var(--muted);
-  border-top: 4px solid transparent;
-  border-bottom: 4px solid transparent;
-  transition: transform .15s ease;
-  flex: none;
-}
-.options[open] > summary::before { transform: rotate(90deg); }
-.opt-title { font-weight: 600; }
-.opt-badge:not(:empty) {
-  margin-left: auto;
-  font-size: 11px;
-  color: #1a1206;
-  background: var(--accent);
-  border-radius: 999px;
-  padding: 2px 9px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.opt-list { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 14px; }
-.opt-reset-all { align-self: flex-end; font-size: 12px; }
-.opt-row {
-  border-left: 2px solid transparent;
-  padding-left: 10px;
-  margin-left: -12px;
-  transition: border-color .15s ease;
-}
-.opt-row.changed { border-left-color: var(--accent); }
+.advanced[open] > summary { margin-bottom: 10px; }
 .opt-row-head {
   display: flex;
   align-items: center;
@@ -264,7 +232,7 @@ textarea { resize: vertical; min-height: 74px; }
   margin-bottom: 6px;
 }
 .opt-name { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
-.opt-row.changed .opt-name { color: var(--text); font-weight: 600; }
+.opt-row.changed .opt-name { color: var(--text); }
 .opt-note { font-size: 11px; color: var(--muted); }
 .opt-reset {
   margin-left: auto;
@@ -381,35 +349,27 @@ button.secondary:hover { border-color: var(--accent); }
 
 /* ── Prompt tool strip: directly under the prompt it acts on ───────────── */
 .prompt-tools { margin: -4px 0 4px; }
-/* Four across in two rows on every width the form column takes: even, large
-   tap targets, an icon over a short caption. */
-.tool-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+/* One row of five, text only, even widths. */
+.tool-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
 .strip-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  min-height: 52px;
-  padding: 6px 2px;
+  min-height: 42px;
+  padding: 8px 2px;
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--border);
+  font-size: 14px;
   font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .strip-btn:hover { background: var(--panel-2); border-color: var(--accent); }
-.strip-btn .ico { font-size: 18px; line-height: 1.1; }
-.strip-btn .cap { font-size: 11.5px; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#prompt-improve.running { border-color: var(--accent); }
-#prompt-improve.running .cap { color: var(--accent); }
+#prompt-improve.running { border-color: var(--accent); color: var(--accent); }
 .tool { display: flex; gap: 8px; min-width: 0; }
 .tool select { flex: 1 1 auto; min-width: 0; }
-.gear { padding: 9px 10px; flex: 0 0 auto; }
+.gear { padding: 9px 12px; flex: 0 0 auto; }
 .gear.custom { border-color: var(--accent); color: var(--accent); }
-.tool-notes { margin: 6px 2px 0; font-size: 12px; color: var(--muted); }
-.tool-notes span { display: block; overflow-wrap: anywhere; }
-.tool-notes span:empty { display: none; }
-.tool-notes .describe-note { color: var(--danger); }
+
 
 /* ── Bottom bar: status and Generate, always on screen ─────────────────── */
 .bottombar {
@@ -577,8 +537,8 @@ button.secondary:hover { border-color: var(--accent); }
   place-items: center;
   width: 100%;
   height: 100%;
-  font-size: 24px;
-  opacity: .35;
+  font-size: 11px;
+  color: var(--muted);
 }
 .recent-strip .thumb img, .tile img { position: relative; z-index: 1; }
 /* A clip's tile is a still frame, so without this it is indistinguishable from
@@ -914,6 +874,14 @@ body.viewer-open { overflow: hidden; }
   flex: 0 0 auto;
 }
 .viewer-icon:hover { background: rgba(255, 255, 255, .2); }
+.viewer-bottom {
+  display: flex;
+  justify-content: center;
+  padding: 8px 16px 10px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+.viewer-bottom button { width: min(100%, 420px); padding: 11px; }
 .viewer-pos { flex: 1; text-align: center; font-size: 13px; color: #bbb; }
 /* Phone: the picture on top, its details scrolling under it. Wide: side by
    side, each scrolling on its own. */
@@ -964,12 +932,12 @@ body.viewer-open { overflow: hidden; }
 .album-chip { background: var(--panel-2); color: var(--text); border: 1px solid var(--accent); border-radius: 999px; padding: 5px 12px; font-size: 13px; font-weight: 500; }
 .album-add { border-radius: 999px; padding: 5px 12px; font-size: 13px; }
 .param-table { margin: 0; display: flex; flex-direction: column; }
-.param-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px; gap: 8px; align-items: center; padding: 6px 0 6px 8px; border-bottom: 1px solid var(--border); border-left: 2px solid transparent; }
+.param-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 6px 0 6px 8px; border-bottom: 1px solid var(--border); border-left: 2px solid transparent; }
 .param-row.changed { border-left-color: var(--accent); }
 .param-row dt { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .param-row.changed dt { color: var(--text); font-weight: 600; }
 .param-row dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.param-find { padding: 4px; background: transparent; border: 1px solid var(--border); font-size: 13px; }
+.param-find { padding: 4px 6px; background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 12px; font-weight: 500; }
 .viewer-inputs { display: flex; flex-direction: column; gap: 4px; font-size: 13px; overflow-wrap: anywhere; }
 
 /* ── Prompt library ────────────────────────────────────────────────────── */
@@ -1018,8 +986,10 @@ body.viewer-open { overflow: hidden; }
 .lib-editor textarea { min-height: 120px; }
 
 @media (max-width: 480px) {
-  /* The icon says it; the tabs and the usage need the width. */
-  .brand-name { display: none; }
+  /* The tabs and the usage need the width. */
+  .brand { display: none; }
+  .tabs { margin-left: 0; }
+  .topbar { justify-content: space-between; }
 }
 @media (max-width: 560px) {
   .app { padding: 0 12px calc(var(--bar-h) + 20px); }
