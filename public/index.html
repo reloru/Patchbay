@@ -6,12 +6,12 @@
     <meta name="robots" content="noindex, nofollow" />
     <title>Patchbay</title>
 
-    <!-- Desktop tab icon. iOS ignores SVG favicons for the home screen, which is
-         why it needs the PNG below or it invents a black single-letter tile.
-         The PNG sits at the conventional root names too (apple-touch-icon.png
-         and -precomposed.png), which iOS requests on its own when it does not
-         use the tag. -->
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎛️</text></svg>" />
+    <!-- Every icon is a PNG. An SVG icon cannot become a Home Screen icon, and
+         where iOS cannot get a usable one it invents a black single-letter
+         tile. The touch icon also sits at the conventional root names
+         (apple-touch-icon.png and -precomposed.png), which iOS requests on its
+         own when it does not use the tag. -->
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
     <!-- The preview image a share sheet or a message shows for a link. Without

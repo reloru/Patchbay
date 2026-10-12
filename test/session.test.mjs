@@ -1262,6 +1262,12 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     const r = await page.request.get(new URL(path, BASE).href);
     check(`the touch icon is served at ${path}`, r.ok() && r.headers()["content-type"] === "image/png");
   }
+  // No icon the page declares may be an SVG: one cannot become a Home Screen
+  // icon, and iOS falls back to a letter tile.
+  const icons = await page.evaluate(() =>
+    [...document.querySelectorAll('link[rel~="icon"], link[rel="apple-touch-icon"]')].map((l) => l.getAttribute("href"))
+  );
+  check("every declared icon is a PNG, none an SVG", icons.length >= 2 && icons.every((h) => /\.png$/.test(h)), JSON.stringify(icons));
   // A share sheet fills its tile with the page's og:image, and otherwise puts
   // the touch icon on a white tile.
   const og = await page.evaluate(() => (document.querySelector('meta[property="og:image"]') || {}).content || "");
