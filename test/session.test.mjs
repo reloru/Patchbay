@@ -1257,11 +1257,26 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("Generate is on screen without scrolling", bar && bar.y + bar.height <= 844, JSON.stringify(bar));
   // iOS draws a black single-letter tile when it cannot fetch the touch icon;
   // it is served under the tag's path and the conventional root names.
-  const touch = await page.evaluate(() => document.querySelector('link[rel="apple-touch-icon"]').getAttribute("href"));
-  for (const path of [touch, "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"]) {
+  for (const path of ["/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"]) {
     const r = await page.request.get(new URL(path, BASE).href);
     check(`the touch icon is served at ${path}`, r.ok() && r.headers()["content-type"] === "image/png");
   }
+  // Inline in the page: Safari's Add to Home Screen used the icon only once it
+  // was a data: URI rather than a file.
+  const touch = await page.evaluate(() => document.querySelector('link[rel="apple-touch-icon"]').getAttribute("href"));
+  const file = Buffer.from(await (await page.request.get(new URL("/apple-touch-icon.png", BASE).href)).body());
+  const inline = touch.startsWith("data:image/png;base64,") ? Buffer.from(touch.slice(22), "base64") : Buffer.alloc(0);
+  check("the touch icon is inlined in the page as the same PNG", inline.length > 0 && inline.equals(file), touch.slice(0, 40));
+  // No icon the page declares may be an SVG: one cannot become a Home Screen
+  // icon, and iOS falls back to a letter tile.
+  const icons = await page.evaluate(() =>
+    [...document.querySelectorAll('link[rel~="icon"], link[rel="apple-touch-icon"]')].map((l) => l.getAttribute("href"))
+  );
+  check(
+    "every declared icon is a PNG, none an SVG",
+    icons.length >= 2 && icons.every((h) => /\.png$/.test(h) || h.startsWith("data:image/png;")),
+    JSON.stringify(icons.map((h) => h.slice(0, 40)))
+  );
   // A share sheet fills its tile with the page's og:image, and otherwise puts
   // the touch icon on a white tile.
   const og = await page.evaluate(() => (document.querySelector('meta[property="og:image"]') || {}).content || "");
