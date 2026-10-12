@@ -69,6 +69,14 @@ let lastChat = null;
 let embedCalls = 0;
 let lastImprove = null;
 let lastTool = null;
+let jobCount = 0;
+const jobModels = new Map();
+// Set by the test through /__slowid: these job ids report "processing" while
+// the rest finish, so one job can be held while another completes.
+const slowIds = new Set();
+// Set by the test through /__statusfail: the next N polls answer 503, standing
+// in for a provider or edge that is briefly down.
+let statusFails = 0;
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
   "base64"
@@ -140,7 +148,12 @@ const server = createServer(async (req, res) => {
     if (spec && (spec.provider === "workers-ai" || (spec.provider === "xai" && !spec.xaiAsync))) {
       return json(res, { status: "succeeded", images: ["data:image/png;base64," + PNG.toString("base64")] });
     }
-    return json(res, { id: "stub-job-1" });
+    // A fresh id per job, so several can be in flight at once and each is
+    // polled for its own model's output.
+    jobCount++;
+    const id = `stub-job-${jobCount}`;
+    jobModels.set(id, lastGenerate.model);
+    return json(res, { id });
   }
   if (path === "/api/status") {
     if (statusHangs > 0) {
@@ -148,10 +161,16 @@ const server = createServer(async (req, res) => {
       return; // left open; the browser has to give up on it
     }
     if (statusDelayMs) await new Promise((r) => setTimeout(r, statusDelayMs));
-    if (slowJob) return json(res, { status: "processing" });
+    if (statusFails > 0) {
+      statusFails--;
+      return json(res, { error: "upstream unavailable" }, 503);
+    }
+    const id = url.searchParams.get("id") || "";
+    if (slowJob || slowIds.has(id)) return json(res, { status: "processing" });
     // A video model's job has to deliver something the app will treat as video,
     // or the archive path for the expensive half of the catalogue is untestable.
-    const spec = lastGenerate && MODELS_BY_ID.get(lastGenerate.model);
+    const modelId = jobModels.get(id) || (lastGenerate && lastGenerate.model);
+    const spec = modelId && MODELS_BY_ID.get(modelId);
     const ext = spec && spec.kind === "video" ? "mp4" : "png";
     return json(res, { status: "succeeded", generation_url: `https://files.pruna.ai/stub/out.${ext}` });
   }
@@ -257,12 +276,26 @@ const server = createServer(async (req, res) => {
     return json(res, { slowJob });
   }
   if (path === "/__delay") {
-    generateDelayMs = Number(url.searchParams.get("ms")) || 0;
+    // Capped, so a mistyped value cannot park a request for hours.
+    const ms = Number(url.searchParams.get("ms")) || 0;
+    generateDelayMs = 0;
+    if (ms > 0 && ms <= 60000) generateDelayMs = ms;
     return json(res, { generateDelayMs });
   }
   if (path === "/__neurons") {
     neuronsUsed = url.searchParams.has("used") ? Number(url.searchParams.get("used")) : null;
     return json(res, { neuronsUsed });
+  }
+  if (path === "/__slowid") {
+    const id = url.searchParams.get("id") || "";
+    if (url.searchParams.get("on") === "1") slowIds.add(id);
+    else slowIds.delete(id);
+    return json(res, { slowIds: [...slowIds] });
+  }
+  if (path === "/__jobs") return json(res, { jobCount });
+  if (path === "/__statusfail") {
+    statusFails = Number(url.searchParams.get("n")) || 0;
+    return json(res, { statusFails });
   }
   if (path === "/__statushang") {
     statusHangs = Number(url.searchParams.get("n")) || 0;
@@ -276,7 +309,10 @@ const server = createServer(async (req, res) => {
     return json(res, { resultDelayMs });
   }
   if (path === "/__statusdelay") {
-    statusDelayMs = Number(url.searchParams.get("ms")) || 0;
+    // Capped, so a mistyped value cannot park a request for hours.
+    const ms = Number(url.searchParams.get("ms")) || 0;
+    statusDelayMs = 0;
+    if (ms > 0 && ms <= 60000) statusDelayMs = ms;
     return json(res, { statusDelayMs });
   }
 
