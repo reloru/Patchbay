@@ -675,6 +675,11 @@ screen and launches without browser chrome. Installed instances get their own
 storage context, so the password gate and saved prompts are scoped separately
 from the browser.
 
+The touch icon is inlined in the page as a `data:` URI. Safari's Add to Home
+Screen installed a black letter tile until it was. The full icon, manifest and
+serving configuration, the confirmed fix, and how to change the icon are in
+[`docs/home-screen-icon.md`](docs/home-screen-icon.md).
+
 ## Operational notes
 
 - The app is served `noindex, nofollow`.
