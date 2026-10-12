@@ -43,10 +43,9 @@ what a model costs and which key it needs, and two of them ship FLUX.2 Klein 4B
 under the same name.
 
 **Settings.** Every optional parameter is in plain view and pre-filled, two to
-a row (free text and files take the full width). A changed one gets its own
-Reset, and *Reset all* — shown only when something is changed — puts the
-settings back without touching the inputs or the prompt (*Start over*, beside
-the model, is the one that clears those). Turbo (every fast-mode switch,
+a row (free text and files take the full width). A changed one names its
+default beside it. There is no per-setting reset: *Start over*, beside the
+model, puts every setting back and clears the inputs and the prompt. Turbo (every fast-mode switch,
 whatever the provider calls it) and the content moderation filter are not
 shown at all: both are always off, and off is sent explicitly wherever a
 provider would otherwise turn one on. A

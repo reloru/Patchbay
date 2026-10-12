@@ -172,7 +172,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   // what a user taps.
   await page.locator('label.toggle:has([data-field="prompt_upsampling"])').click();
   await settle(page);
-  const badgeBefore = await page.locator(".opt-badge").textContent();
+  const changedBefore = await page.locator(".options .opt-row.changed").count();
   await page.close();
 
   page = await open(context);
@@ -192,8 +192,8 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("enum option restored", (await page.inputValue('[data-field="aspect_ratio"]')) === "9:16");
   check("bool option restored", await page.locator('[data-field="prompt_upsampling"]').isChecked());
   check("settings are in plain view, not behind a tap", await page.locator('[data-field="width"]').isVisible());
-  const badgeAfter = await page.locator(".opt-badge").textContent();
-  check("changed count restored", badgeBefore === badgeAfter, `${badgeBefore} vs ${badgeAfter}`);
+  const changedAfter = await page.locator(".options .opt-row.changed").count();
+  check("changed settings restored as changed", changedBefore > 0 && changedBefore === changedAfter, `${changedBefore} vs ${changedAfter}`);
 
   // uploads: p-image-edit takes up to 5 images
   await page.selectOption("#model-select", "p-image-edit");
@@ -2227,7 +2227,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
-// ── Settings: Reset all leaves the inputs and the prompt alone ────────────
+// ── Settings: no reset controls; Start over puts the settings back ───────
 {
   const context = await browser.newContext();
   const page = await open(context);
@@ -2243,18 +2243,23 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForSelector(".section-inputs .thumbs .thumb img");
   await page.fill('[data-field="duration"]', "7");
   await page.waitForTimeout(200);
-  check("a changed setting is counted", (await page.locator(".opt-badge").textContent()) === "1 changed", await page.locator(".opt-badge").textContent());
-  await page.locator(".opt-reset-all").click();
+  check("a changed setting is marked and names its default", (await page.locator(".options .opt-row.changed").count()) === 1 &&
+    /^default: /.test(await page.locator(".options .opt-row.changed .opt-note").textContent()));
+  check("no setting has a Reset of its own, and there is no Reset all",
+    (await page.locator(".opt-reset, .opt-reset-all").count()) === 0 &&
+      (await page.locator("#gen-form button", { hasText: /reset/i }).count()) === 0);
+  await page.locator("#reset-btn").click();
   await page.waitForTimeout(200);
-  check("Reset all settings puts the settings back", (await page.locator(".opt-badge").textContent()) === "");
-  check("and leaves the prompt", (await page.inputValue(promptSel)) === "a slow pan");
-  check("and the attached image", (await page.locator(".section-inputs .thumbs .thumb").count()) === 1);
+  check("Start over puts the settings back", (await page.locator(".options .opt-row.changed").count()) === 0 &&
+    (await page.inputValue('[data-field="duration"]')) !== "7");
+  check("and clears the prompt and the attached image", (await page.inputValue(promptSel)) !== "a slow pan" &&
+    (await page.locator(".section-inputs .thumbs .thumb").count()) === 0);
   await page.close();
   await context.close();
 }
 
-// ── Settings: no Turbo or filter switches; Reset only when there is
-//    something to reset ───────────────────────────────────────────────────
+// ── Settings: no Turbo or filter switches; aspect ratio and seed side by
+//    side; no change marker bar ───────────────────────────────────────────
 {
   const context = await browser.newContext();
   const page = await open(context);
@@ -2275,7 +2280,6 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForSelector(".thumbs .thumb img");
   await page.fill(promptSel, "tidy it up");
   await page.waitForTimeout(700);
-  check("Reset all is not offered while nothing is changed", await page.locator(".opt-reset-all").isHidden());
   await page.locator("#generate-btn").click();
   await page.waitForSelector("#status.ok");
   const sent = await (await page.request.get(BASE + "__generate")).json();
@@ -2292,9 +2296,9 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("the prompt sits below the settings, next to Generate and the output", prompt.y > ar.y);
   await page.fill('[data-field="seed"]', "9");
   await page.waitForTimeout(200);
-  check("Reset all appears once something is changed", await page.locator(".opt-reset-all").isVisible());
-  check("and no orange bar or count marks it", (await page.locator(".opt-badge").isHidden()) &&
-    (await page.locator(".opt-row.changed").first().evaluate((el) => getComputedStyle(el).borderLeftStyle === "none" || getComputedStyle(el).borderLeftWidth === "0px")));
+  check("no Reset appears once something is changed", (await page.locator(".opt-reset, .opt-reset-all").count()) === 0);
+  check("and no orange bar marks it",
+    await page.locator(".opt-row.changed").first().evaluate((el) => getComputedStyle(el).borderLeftStyle === "none" || getComputedStyle(el).borderLeftWidth === "0px"));
 
   // The viewer closes from the bottom, or with a downward swipe.
   await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length > 0);
