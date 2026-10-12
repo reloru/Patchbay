@@ -33,8 +33,8 @@ of the screen carries the status line and Generate, so neither a run's
 progress nor the button that starts one is ever scrolled out of reach; a long
 message is clamped to two lines and opens on a tap.
 
-**The prompt tools.** Under the prompt, one row of five text buttons: Undo,
-Redo, Improve, Prompts and Models. *Models* picks the models Improve and
+**The prompt tools.** Under the prompt, one row of five text buttons: Prompts,
+Models, Improve in the middle, then Undo and Redo. *Models* picks the models Improve and
 Describe use. The interface carries no emoji.
 
 **One picker, grouped by task.** Models are filed under Image editing, Image

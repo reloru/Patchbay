@@ -1251,6 +1251,8 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("redo button visible on a phone viewport", await page.locator("#prompt-redo").isVisible());
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   check("no horizontal overflow at 390px", overflow <= 0, `overflow=${overflow}px`);
+  const strip = await page.evaluate(() => [...document.querySelectorAll(".tool-strip button")].map((b) => b.textContent.trim()));
+  check("the tool strip reads Prompts, Models, Improve, Undo, Redo", strip.join(",") === "Prompts,Models,Improve,Undo,Redo", strip.join(","));
   const box = await page.locator("#prompt-undo").boundingBox();
   check("undo is a usable tap target", box.height >= 36 && box.width >= 60, JSON.stringify(box));
   const bar = await page.locator("#generate-btn").boundingBox();
