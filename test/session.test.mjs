@@ -1506,7 +1506,10 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   page.on("request", (r) => {
     if (r.url().includes("/api/result")) fetches.push(r.url());
   });
-  await page.locator("#prompt-judge").click();
+  // The score button under the result is gone; the Lab card scores the image
+  // on screen first.
+  await page.locator("#tab-lab").click();
+  await page.locator("#lab-judge").click();
   await page.waitForTimeout(1500);
   check("scoring re-reads nothing through /api/result", fetches.length === 0, fetches.join(", "));
   await page.close();

@@ -439,7 +439,6 @@ button.secondary:hover { border-color: var(--accent); }
 .timing-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .timing-actions button { flex: 1 1 auto; font-size: 13px; }
 .timing-copy { width: 100%; min-height: 80px; margin-top: 8px; font-size: 12px; }
-.judge-btn { width: 100%; margin-top: 10px; }
 
 .file-result {
   display: flex;

@@ -7161,9 +7161,6 @@ function judgeTarget() {
 }
 
 function updateJudgeNote() {
-  // Score sits under a generated image, and only while one is on screen.
-  const scoreBtn = $("prompt-judge");
-  if (scoreBtn) scoreBtn.classList.toggle("hidden", !(lastResult.urls.length && lastResult.kind === "image"));
   const noteEl = $("judge-note");
   if (!noteEl) return; // called before the toolbar exists
   noteEl.innerHTML = "";
@@ -7186,9 +7183,8 @@ function updateJudgeNote() {
 }
 
 function clearJudgeResult() {
-  for (const id of ["judge-result", "lab-judge-result"]) {
-    const box = $(id);
-    if (!box) continue;
+  const box = $("lab-judge-result");
+  if (box) {
     box.innerHTML = "";
     box.classList.add("hidden");
   }
@@ -7250,15 +7246,12 @@ async function attachedImageUrls() {
   return out;
 }
 
-// Two ways in: Score under a generated image, which scores what is on screen,
-// and the Lab card, which scores whatever judgeTarget() names or files picked
-// there — batch mode included. Each shows its score where it was asked for.
+// The Lab card scores whatever judgeTarget() names — the generated image on
+// screen first — or files picked there, batch mode included.
 function initJudge() {
-  const btn = $("prompt-judge");
   const labBtn = $("lab-judge");
   const picker = $("judge-file");
 
-  btn.addEventListener("click", () => runJudge(null, btn, "judge-result"));
   labBtn.addEventListener("click", () => {
     if (judgeTarget()) runJudge(null, labBtn, "lab-judge-result");
     else picker.click();
@@ -7326,7 +7319,7 @@ function initJudge() {
 // means any of those appearing later is visible without a code change, rather
 // than silently dropped. The scale is undocumented, so the number is shown as
 // a number — never a percentage or a bar.
-function renderJudge(scores, raw, boxId = "judge-result") {
+function renderJudge(scores, raw, boxId = "lab-judge-result") {
   const box = $(boxId);
   box.innerHTML = "";
 

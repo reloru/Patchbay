@@ -192,9 +192,8 @@ models, as Cloudflare recommends. A measurement costs about a tenth of a
 neuron.
 
 **Prompt-match scoring.** Judge runs Pruna's `p-judger` over an image and
-returns how well it matches the prompt. *⚖️ Score against prompt* appears under
-a generated image and scores it, with the score beneath. The Lab card scores
-the image on screen or, failing that, the attached ones, and its note always
+returns how well it matches the prompt, from the *Score images* card in Lab. It
+scores the generated image on screen or, failing that, the attached ones, and its note always
 says which — with an inline link to a file picker for anything else, which also
 reaches batch mode (up to 10 images against a shared prompt).
 
