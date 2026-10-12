@@ -417,7 +417,7 @@ async function startApp() {
     "edit — files, prompt, model and settings — the gallery with the settings and input files that " +
     "made each item, your saved prompts, and running jobs' ids are kept in this browser only, so a " +
     "closed tab picks up where it left off. The gallery keeps everything until you delete it, unless " +
-    "you set limits in its ⚙ settings.";
+    "you set limits in its settings.";
   // Puts the last session's files, prompt, model and settings back before any
   // of the listeners below can overwrite the saved snapshot.
   await restoreSession();
@@ -540,9 +540,8 @@ function selectModel(id) {
     if (!el || priorText[f.name] === undefined) continue;
     el.value = priorText[f.name];
   }
-  // Carried-over text can leave an option non-default, so recount and reveal.
+  // Carried-over text can leave an option non-default, so recount.
   refreshOptionState();
-  if (optionsPanel && optionsBadge && optionsBadge.textContent) optionsPanel.open = true;
   const primaryNow = primaryPromptEl();
   if (primaryNow && !primaryNow.value.trim() && priorText.__primary) {
     primaryNow.value = priorText.__primary;
@@ -784,8 +783,9 @@ function fieldSection(title, cls) {
 
 // The form reads top to bottom in the order the work is done: the mode, when a
 // model has one, since it decides which inputs apply; every file the model
-// takes, required or not, so none of them hides among the tuning; the prompt
-// with its tools under it; any other required value; then the settings.
+// takes, required or not, so none of them hides among the tuning; any other
+// required value; the settings; and last the prompt with its tools, where it
+// sits right above Generate and the output it produces.
 function renderFields() {
   const wrap = $("fields");
   // Out of the way first, so clearing the fields does not take it with them.
@@ -830,6 +830,12 @@ function renderFields() {
     for (const f of inputs) (f.required ? addRequired : addOptional)(s, f);
     wrap.appendChild(s);
   }
+  if (rest.length) {
+    const s = fieldSection("", "section-more");
+    for (const f of rest) addRequired(s, f);
+    wrap.appendChild(s);
+  }
+  if (optional.length) wrap.appendChild(renderOptionsPanel(optional));
   if (primary) {
     const s = fieldSection("", "section-prompt");
     (primary.required ? addRequired : addOptional)(s, primary);
@@ -841,12 +847,6 @@ function renderFields() {
   // The tools need a prompt box to read and write, so a model without one
   // offers none of them rather than buttons that can only say so.
   PROMPT_TOOLS.classList.toggle("hidden", !primary);
-  if (rest.length) {
-    const s = fieldSection("", "section-more");
-    for (const f of rest) addRequired(s, f);
-    wrap.appendChild(s);
-  }
-  if (optional.length) wrap.appendChild(renderOptionsPanel(optional));
 
   // Re-evaluate conditional fields whenever the field they depend on changes.
   for (const name of new Set(currentModel.fields.filter((f) => f.showWhen).map((f) => f.showWhen.field))) {
@@ -855,9 +855,6 @@ function renderFields() {
   }
   applyVisibility();
   refreshOptionState();
-  // Open the panel when something is already non-default — otherwise a value
-  // carried over from the previous model would be invisible.
-  if (optionsPanel && optionsBadge && optionsBadge.textContent) optionsPanel.open = true;
   // The prompt element has been replaced, so the buttons' enabled state has to
   // be recomputed against the new box — the history itself carries over, and
   // every caller settles the new text and commits it afterwards.
@@ -1092,7 +1089,7 @@ function imageControl(f) {
         img.src = u.preview || "";
         t.appendChild(img);
       } else {
-        t.textContent = "📎";
+        t.textContent = "File";
       }
       const rm = document.createElement("button");
       rm.className = "rm";
@@ -1195,7 +1192,7 @@ function voicePanel(f, redraw) {
   const det = document.createElement("details");
   det.className = "tts-panel";
   const sum = document.createElement("summary");
-  sum.textContent = "🔊 Generate voice";
+  sum.textContent = "Generate voice";
   det.appendChild(sum);
   if (!speech.length) return det;
 
@@ -1357,42 +1354,74 @@ function defaultText(f) {
 
 // Optional parameters used to hide behind a per-field "override" checkbox,
 // which meant two interactions to change anything and a default label that
-// didn't necessarily match what was sent. They now sit in one collapsible
-// panel, each control visible and pre-filled with its default; anything you
-// actually change is highlighted and counted in the header.
+// didn't necessarily match what was sent. They now sit in plain view, two to a
+// row, each pre-filled with its default; a changed one gets its own Reset. The
+// few nobody needs day to day (Turbo, the moderation filter: `advanced` in
+// models.js) wait under a collapsed Advanced.
 let optionRows = [];
+let optionsResetAll = null;
+let optionsAdvanced = null;
+
+// Free text, a LoRA URL with its presets, or a file needs the whole width; a
+// number, a choice or a switch fits half of it.
+const wideOption = (f) => f.type === "text" || f.type === "textarea" || f.type === "image" || Boolean(f.presets);
 
 function renderOptionsPanel(fields) {
-  const det = document.createElement("details");
-  det.className = "options";
+  const sec = document.createElement("section");
+  sec.className = "form-section options";
 
-  const sum = document.createElement("summary");
-  const title = document.createElement("span");
-  title.className = "opt-title";
+  const head = document.createElement("div");
+  head.className = "settings-head";
+  const title = document.createElement("h2");
+  title.className = "section-title";
   title.textContent = "Settings";
+  head.appendChild(title);
+  // Counts what is changed; drives whether there is anything to reset.
   const badge = document.createElement("span");
   badge.className = "opt-badge";
-  sum.appendChild(title);
-  sum.appendChild(badge);
-  det.appendChild(sum);
-
-  const list = document.createElement("div");
-  list.className = "opt-list";
-  // Resets what is in this panel and nothing else: the inputs and the prompt
-  // above are left as they are. "Start over" is the one that clears those.
+  badge.hidden = true;
+  head.appendChild(badge);
+  // Resets what is in Settings and nothing else: the inputs and the prompt
+  // are left as they are. "Start over" is the one that clears those. Shown
+  // only when there is something to reset.
   const resetAll = document.createElement("button");
   resetAll.type = "button";
   resetAll.className = "linkish opt-reset-all";
-  resetAll.textContent = "Reset all settings";
+  resetAll.textContent = "Reset all";
+  resetAll.hidden = true;
   resetAll.addEventListener("click", resetAllSettings);
-  list.appendChild(resetAll);
-  for (const f of fields) list.appendChild(buildOptionRow(f));
-  det.appendChild(list);
+  head.appendChild(resetAll);
+  sec.appendChild(head);
 
-  det.dataset.badge = "";
-  optionsPanel = det;
+  const grid = (list) => {
+    const g = document.createElement("div");
+    g.className = "opt-list";
+    for (const f of list) {
+      const row = buildOptionRow(f);
+      if (wideOption(f)) row.classList.add("wide");
+      g.appendChild(row);
+    }
+    return g;
+  };
+  const main = fields.filter((f) => !f.advanced);
+  const advanced = fields.filter((f) => f.advanced);
+  if (main.length) sec.appendChild(grid(main));
+  optionsAdvanced = null;
+  if (advanced.length) {
+    const det = document.createElement("details");
+    det.className = "advanced";
+    const sum = document.createElement("summary");
+    sum.textContent = "Advanced";
+    det.appendChild(sum);
+    det.appendChild(grid(advanced));
+    sec.appendChild(det);
+    optionsAdvanced = det;
+  }
+
+  optionsPanel = sec;
   optionsBadge = badge;
-  return det;
+  optionsResetAll = resetAll;
+  return sec;
 }
 
 function resetAllSettings() {
@@ -1543,6 +1572,9 @@ function refreshOptionState() {
     r.note.textContent = resettable && dflt != null ? `default: ${dflt}` : "";
   }
   if (optionsBadge) optionsBadge.textContent = changed ? `${changed} changed` : "";
+  if (optionsResetAll) optionsResetAll.hidden = !changed;
+  // A changed Turbo or filter must not sit out of sight under Advanced.
+  if (optionsAdvanced && optionRows.some((r) => r.f.advanced && r.row.classList.contains("changed"))) optionsAdvanced.open = true;
 }
 
 function resetField(f, row) {
@@ -2041,7 +2073,7 @@ function timingBlock(rec) {
   const d = document.createElement("details");
   d.className = "timing";
   const sum = document.createElement("summary");
-  sum.textContent = "⏱ Timing · " + timingSummary(rec);
+  sum.textContent = "Timing · " + timingSummary(rec);
   d.appendChild(sum);
   const list = document.createElement("ul");
   for (const r of timingRows(rec)) {
@@ -2601,10 +2633,10 @@ function renderJobs() {
   let text = "";
   if (jobs.length) {
     const lead = jobs[jobs.length - 1];
-    text = `⏳ ${jobs.length} running` + (jobs.length === 1 ? ` · ${lead.secs}s` : "");
+    text = `${jobs.length} running` + (jobs.length === 1 ? ` · ${lead.secs}s` : "");
   } else if (unseen.length) {
     const failed = unseen.filter((f) => !f.ok).length;
-    text = failed ? `⚠ ${failed} failed` : `✓ ${unseen.length} finished`;
+    text = failed ? `${failed} failed` : `${unseen.length} finished`;
   }
   btn.textContent = text;
   btn.classList.toggle("hidden", !text);
@@ -2684,7 +2716,7 @@ function finishedRow(f) {
   row.className = "job-row finished" + (f.ok ? "" : " failed");
   const title = document.createElement("div");
   title.className = "job-title";
-  title.textContent = `${f.ok ? "✓" : "⚠"} ${f.label} · ${new Date(f.at).toLocaleTimeString()}`;
+  title.textContent = `${f.ok ? "Done" : "Failed"} · ${f.label} · ${new Date(f.at).toLocaleTimeString()}`;
   row.appendChild(title);
   const st = document.createElement("div");
   st.className = "job-state";
@@ -2919,7 +2951,7 @@ function snapshotFieldValues() {
 }
 
 // The form as it currently stands: its own values, plus which options were
-// deliberately set, plus whether the panel was open. Shared by the session
+// deliberately set. Shared by the session
 // snapshot and by each gallery record, because both have to put the form back
 // exactly as it was — and buildInput()'s payload cannot, since it inverts
 // bools, omits defaults and wraps singles in arrays.
@@ -2928,7 +2960,6 @@ function currentSetupSnapshot() {
   return {
     fields: snapshotFieldValues(),
     touched: optionRows.filter((r) => r.touched).map((r) => r.f.name),
-    optionsOpen: Boolean(optionsPanel && optionsPanel.open),
   };
 }
 
@@ -3125,7 +3156,6 @@ function applyRestoredFields(meta) {
   for (const r of optionRows) r.touched = touched.has(r.f.name);
   applyVisibility();
   refreshOptionState();
-  if (optionsPanel && (meta.optionsOpen || (optionsBadge && optionsBadge.textContent))) optionsPanel.open = true;
 }
 
 function initSessionPersistence() {
@@ -3662,7 +3692,7 @@ function thumbTile(rec, cls) {
   watchThumb(img, rec.id);
   const blank = document.createElement("span");
   blank.className = "thumb-blank";
-  blank.textContent = kind === "video" ? "🎬" : "🖼";
+  blank.textContent = kind === "video" ? "Video" : "Image";
   btn.appendChild(blank);
   // Otherwise a clip and a still are the same tile, and which one opens a
   // player is a surprise.
@@ -4298,7 +4328,7 @@ function renderViewerInfo(rec) {
   // The actions first: on a phone they are what the thumb reaches for.
   const actions = document.createElement("div");
   actions.className = "viewer-actions";
-  const reuse = button("♻ Reuse parameters", "", () => reuseParameters(rec));
+  const reuse = button("Reuse parameters", "", () => reuseParameters(rec));
   reuse.id = "viewer-reuse";
   reuse.title = rec.setup
     ? `Put ${model ? model.label : rec.modelId} back with the settings${rec.inputs ? " and files" : ""} that made this`
@@ -4316,10 +4346,22 @@ function renderViewerInfo(rec) {
     use.id = "viewer-use";
     actions.appendChild(use);
   }
-  const save = button("⬇ Save", "secondary download", () =>
+  const save = button("Save", "secondary download", () =>
     saveBlob(viewer.blob, `${safeFileName(rec.name) || "generated-" + rec.createdAt}.${extFromType(rec.type, kind)}`)
   );
   actions.appendChild(save);
+  if (kind === "image") {
+    // Captions this picture into the prompt box on Create.
+    const describe = button("Describe", "secondary", () => {
+      const file = new File([viewer.blob], `gallery-${rec.createdAt}.${extFromType(rec.type, kind)}`, { type: viewer.blob.type });
+      closeViewer();
+      showScreen("create");
+      describeImage(file);
+    });
+    describe.id = "viewer-describe";
+    describe.title = "Caption this image into the prompt box";
+    actions.appendChild(describe);
+  }
   box.appendChild(actions);
 
   // Name
@@ -4429,7 +4471,7 @@ function renderViewerInfo(rec) {
       const find = document.createElement("button");
       find.type = "button";
       find.className = "param-find";
-      find.textContent = "🔍";
+      find.textContent = "Find";
       find.title = `Find items with ${prm.label} ${prm.display}`;
       find.setAttribute("aria-label", find.title);
       find.addEventListener("click", () => {
@@ -4705,6 +4747,7 @@ function initGallery() {
 
   // The viewer.
   $("viewer-close").addEventListener("click", () => closeViewer());
+  $("viewer-close-bottom").addEventListener("click", () => closeViewer());
   $("viewer-prev").addEventListener("click", () => stepViewer(-1));
   $("viewer-next").addEventListener("click", () => stepViewer(1));
   $("viewer-zoom").addEventListener("click", () => {
@@ -4722,8 +4765,8 @@ function initGallery() {
     else if (e.key === "ArrowRight") stepViewer(1);
   });
   // A sideways swipe across the picture steps: left for the next item in the
-  // list, right for the previous. Mostly-sideways only, and not while zoomed,
-  // where a drag pans the picture instead.
+  // list, right for the previous; a downward one closes it. Mostly one
+  // direction only, and not while zoomed, where a drag pans the picture.
   let touchX = null;
   let touchY = null;
   const stage = $("viewer-stage");
@@ -4739,6 +4782,7 @@ function initGallery() {
     const dy = t.clientY - touchY;
     touchX = null;
     if (Math.abs(dx) >= 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) stepViewer(dx < 0 ? 1 : -1);
+    else if (dy >= 80 && dy > 1.5 * Math.abs(dx)) closeViewer();
   }, { passive: true });
 }
 
@@ -4926,7 +4970,7 @@ async function showResult(prunaUrls, kind, meta, { timer, onDisplayed } = {}) {
       // Not previewable media (e.g. a trained LoRA .zip) — just a plain link.
       const box2 = document.createElement("div");
       box2.className = "file-result";
-      box2.textContent = "📦 File ready";
+      box2.textContent = "File ready";
       item.appendChild(box2);
     } else {
       const img = document.createElement("img");
@@ -5027,14 +5071,14 @@ function reuseLabel(f, kind = "image") {
     const fallback = REUSE_FALLBACK_MODEL[kind];
     const m = MODELS.find((x) => x.id === fallback);
     if (!m) return "";
-    if (kind === "audio") return `🔊 Use in ${m.label}`;
-    return kind === "video" ? `🎬 Edit in ${m.label}` : `✏️ Edit in ${m.label}`;
+    if (kind === "audio") return `Use in ${m.label}`;
+    return `Edit in ${m.label}`;
   }
-  if (kind === "audio") return "🔊 Use as audio track";
+  if (kind === "audio") return "Use as audio track";
   if (kind === "video") {
-    return currentModel.group === "Video" && f.required ? "🎬 Edit this clip" : "🎬 Use as source";
+    return currentModel.group === "Video" && f.required ? "Edit this clip" : "Use as source";
   }
-  return (currentModel.group === "Image editing" || currentModel.edits) && f.required ? "✏️ Edit this" : "🖼 Use as reference";
+  return (currentModel.group === "Image editing" || currentModel.edits) && f.required ? "Edit this" : "Use as reference";
 }
 
 // Every reuse button on screen, so their labels can follow the current target.
@@ -5081,10 +5125,6 @@ function useGeneratedAsInput(blob, index, kind = "image") {
     if (!ui) return;
     adoptFiles(f, [file], ui.redraw, `Could not use that ${noun}`);
     ui.redraw();
-    // An optional field lives inside the collapsed Options panel, so without
-    // this the file lands somewhere the user cannot see and the tap reads as
-    // having done nothing.
-    if (optionsPanel && optionsPanel.contains(ui.box)) optionsPanel.open = true;
     ui.box.scrollIntoView({ behavior: "smooth", block: "center" });
     setStatus(`Added the generated ${noun} to ${f.label} on ${currentModel.label}.`, "ok");
     return;
@@ -5108,10 +5148,7 @@ function useGeneratedAsInput(blob, index, kind = "image") {
   const landed = Object.values(uploads).some((list) => list.some((u) => u.file === file));
   if (landed) {
     const ui = Object.values(fieldUI)[0];
-    if (ui) {
-      if (optionsPanel && optionsPanel.contains(ui.box)) optionsPanel.open = true;
-      ui.box.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
+    if (ui) ui.box.scrollIntoView({ behavior: "smooth", block: "center" });
     setStatus(`Switched to ${target.label} with the generated ${noun} attached.`, "ok");
   } else {
     setStatus(`Switched to ${target.label}, but its ${noun} field was already full.`, "err");
@@ -5144,7 +5181,7 @@ function downloadButton(prunaUrl, kind, index, total, blob) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "download";
-  const idle = total > 1 ? `⬇ Save #${index + 1}` : "⬇ Save";
+  const idle = total > 1 ? `Save #${index + 1}` : "Save";
   btn.textContent = idle;
 
   btn.addEventListener("click", async () => {
@@ -5279,7 +5316,7 @@ function renderLibrary() {
   };
   chip("all", "All");
   chip("none", "No folder");
-  for (const f of library.folders.slice().sort((a, b) => a.name.localeCompare(b.name))) chip(f.id, `📁 ${f.name}`);
+  for (const f of library.folders.slice().sort((a, b) => a.name.localeCompare(b.name))) chip(f.id, f.name);
   const add = document.createElement("button");
   add.type = "button";
   add.className = "lib-folder lib-folder-add";
@@ -5361,7 +5398,7 @@ function renderLibrary() {
     if (p.folder && libView.folder === "all") {
       const tag = document.createElement("span");
       tag.className = "lib-tag";
-      tag.textContent = `📁 ${folderName(p.folder)}`;
+      tag.textContent = folderName(p.folder);
       head.appendChild(tag);
     }
     card.appendChild(head);
@@ -5542,39 +5579,16 @@ function fillGroupedSelect(sel, list, optionLabel) {
   for (const m of list) if (!m.family) sel.appendChild(mkOption(m));
 }
 
-// A tool-strip button is an icon over a caption; a running tool swaps both.
-function setStripLabel(btn, icon, caption) {
-  const i = btn.querySelector(".ico");
-  const c = btn.querySelector(".cap");
-  if (i && c) {
-    i.textContent = icon;
-    c.textContent = caption;
-  } else btn.textContent = `${icon} ${caption}`;
-}
-
 function improveNoteFor(m) {
   if (!m) return "";
   // The cost is the one thing here the picker does not already say.
   return `~${m.neurons} neurons per rewrite`;
 }
 
-// One muted line under the strip saying which models its buttons will use,
-// since the pickers themselves live in ⚙ Options rather than crowding the row.
 function updateImproveNote() {
   const im = improveModels.find((m) => m.id === ($("improve-model") || {}).value);
-  const dm = describeModels.find((m) => m.id === ($("describe-model") || {}).value);
-  const lang = (id) => {
-    const sel = $(id);
-    const o = sel && sel.selectedOptions && sel.selectedOptions[0];
-    return o ? o.textContent : "";
-  };
-  const parts = [];
-  if (im) parts.push(`✨ ${im.label} (${improveNoteFor(im)})`);
-  if (dm) parts.push(`🔍 ${dm.label}`);
-  if (lang("translate-from")) parts.push(`🌐 ${lang("translate-from")} → ${lang("translate-to")}`);
-  $("improve-note").textContent = parts.join(" · ");
-  const sheetNote = $("improve-cost");
-  if (sheetNote) sheetNote.textContent = im ? `✨ ${improveNoteFor(im)}` : "";
+  const note = $("improve-cost");
+  if (note) note.textContent = im ? improveNoteFor(im) : "";
 }
 
 function initImproveModelPicker() {
@@ -5612,9 +5626,8 @@ function attachedImageFile() {
 
 function initDescribe() {
   const sel = $("describe-model");
-  // Bare names here too; the per-model caveat lives in the note below.
   fillGroupedSelect(sel, describeModels);
-  // Remembered, since its picker now sits in ⚙ Options out of sight.
+  // Remembered, since its picker sits under Models out of sight.
   let savedDescribe = null;
   try {
     savedDescribe = localStorage.getItem(DESCRIBE_MODEL_KEY);
@@ -5628,84 +5641,52 @@ function initDescribe() {
     } catch {
       /* this visit only */
     }
-    updateImproveNote();
-  });
-
-  const btn = $("prompt-describe");
-  const file = $("describe-file");
-
-  sel.addEventListener("change", () => {
     refreshGears();
     if (settingsOpenFor === "describe") renderToolSettings();
   });
+}
 
-  // Prefer whatever is already attached; only fall back to the file picker
-  // when nothing is.
-  btn.addEventListener("click", () => {
-    const attached = attachedImageFile();
-    if (attached) describeFile(attached);
-    else file.click();
-  });
+let describing = null;
 
-  file.addEventListener("change", () => {
-    const f = file.files && file.files[0];
-    file.value = "";
-    if (f) describeFile(f);
-  });
-
-  const note = (msg) => ($("describe-note").textContent = msg ? `🔍 ${msg}` : "");
-  let running = null;
-
-  async function describeFile(f) {
-    note("");
-    const el = primaryPromptEl();
-    if (!el) {
-      note("This model has no prompt box for the caption to go in — pick one that does.");
-      return;
-    }
-    if (running) return;
-
-    // The caption lands in the prompt box, so the sheet gets out of its way;
-    // progress and Cancel are on the status line meanwhile.
-    closeSheet("sheet-more");
-    running = new AbortController();
-    const cancel = () => running && running.abort();
-    btn.disabled = true;
-    setStatus("Describing the image…", "load", { cancel });
-    try {
-      const image = await toolImage(f);
-      if (!image) throw new Error("Could not read that image.");
-      const data = await streamTool(
-        "/api/describe",
-        { image_b64: image.b64, mime: image.mime, model: sel.value, settings: toolSettingsFor("describe", sel.value) },
-        {
-          controller: running,
-          onEvent: (name, d) => {
-            if (name === "progress") {
-              setStatus(d.chars ? `Describing the image… ${d.chars} characters` : "Describing the image… thinking", "load", { cancel });
-            }
-          },
-        }
-      );
-      if (!data.description) throw new Error("The model returned no description.");
-      el.value = data.description;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      commitPromptHistory(); // the caption is one entry, so Undo puts back what you had
-      setStatus("Prompt filled from the image — press Undo to get yours back.", "ok");
-      if (typeof data.neurons === "number") sessionNeurons += data.neurons;
-      updateSpendBar();
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-      setTimeout(refreshNeurons, 4000);
-    } catch (e) {
-      if (e.message === TOOL_CANCELLED) setStatus("Describe cancelled. The prompt is unchanged.", "ok");
-      else {
-        setStatus("Describe failed: " + e.message, "err");
-        note("Describe failed: " + e.message);
+// Captions an image into the prompt box on Create, as one Undo step. Reached
+// from Describe on a gallery image; the model is the one picked under Models.
+async function describeImage(file) {
+  const el = primaryPromptEl();
+  if (!el) return void setStatus("This model has no prompt box for the caption to go in — pick one that does.", "err");
+  if (describing) return;
+  const modelId = $("describe-model").value;
+  describing = new AbortController();
+  const cancel = () => describing && describing.abort();
+  setStatus("Describing the image…", "load", { cancel });
+  try {
+    const image = await toolImage(file);
+    if (!image) throw new Error("Could not read that image.");
+    const data = await streamTool(
+      "/api/describe",
+      { image_b64: image.b64, mime: image.mime, model: modelId, settings: toolSettingsFor("describe", modelId) },
+      {
+        controller: describing,
+        onEvent: (name, d) => {
+          if (name === "progress") {
+            setStatus(d.chars ? `Describing the image… ${d.chars} characters` : "Describing the image… thinking", "load", { cancel });
+          }
+        },
       }
-    } finally {
-      running = null;
-      btn.disabled = false;
-    }
+    );
+    if (!data.description) throw new Error("The model returned no description.");
+    el.value = data.description;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    commitPromptHistory(); // the caption is one entry, so Undo puts back what you had
+    setStatus("Prompt filled from the image — press Undo to get yours back.", "ok");
+    if (typeof data.neurons === "number") sessionNeurons += data.neurons;
+    updateSpendBar();
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setTimeout(refreshNeurons, 4000);
+  } catch (e) {
+    if (e.message === TOOL_CANCELLED) setStatus("Describe cancelled. The prompt is unchanged.", "ok");
+    else setStatus("Describe failed: " + e.message, "err");
+  } finally {
+    describing = null;
   }
 }
 
@@ -5817,7 +5798,7 @@ function updateChatNote() {
   const m = chatModel();
   const list = chatImageList();
   if (list.length && m && !m.vision) {
-    parts.push("This model can't see images — pick one marked 👁 to send them");
+    parts.push("This model can't see images — pick a vision model to send them");
   } else if (list.length) {
     const n = list.filter((x) => chatTicks.get(x.file)).length;
     if (!n && m && m.needsImage) parts.push(`${m.label} needs an image with every message — tap one to send it`);
@@ -5836,7 +5817,8 @@ function putInPromptBox(text) {
   el.value = text;
   el.dispatchEvent(new Event("input", { bubbles: true }));
   commitPromptHistory(); // one entry, so Undo puts back what you had
-  closeSheet("sheet-chat");
+  showScreen("create");
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
   setStatus("Put in the prompt box — press Undo to get the old prompt back.", "ok");
 }
 
@@ -5866,7 +5848,7 @@ function renderChat({ pending = false } = {}) {
     if (m.role === "user" && Array.isArray(m.images) && m.images.length) {
       const tag = document.createElement("div");
       tag.className = "chat-sent-images";
-      tag.textContent = `🖼 ${m.images.join(", ")}`;
+      tag.textContent = `Images ${m.images.join(", ")}`;
       b.appendChild(tag);
     }
     if (m.role === "assistant") {
@@ -5994,7 +5976,7 @@ function initChat() {
   const sel = $("chat-model");
   if (!sel) return;
   // 👁 marks a model that can be shown the attached images.
-  fillGroupedSelect(sel, chatModels.map((m) => ({ ...m, label: m.vision ? `${m.label} 👁` : m.label })));
+  fillGroupedSelect(sel, chatModels.map((m) => ({ ...m, label: m.vision ? `${m.label} (vision)` : m.label })));
   let saved = null;
   try {
     saved = localStorage.getItem(CHAT_MODEL_KEY);
@@ -6076,19 +6058,19 @@ let settingsOpenFor = null;
 const instructionDrafts = {};
 
 const TOOL_TABS = [
-  ["improve", "✨ Improve"],
-  ["chat", "💬 Chat"],
-  ["describe", "🔍 Describe"],
-  ["translate", "🌐 Translate"],
-  ["judge", "⚖️ Judge"],
+  ["improve", "Improve"],
+  ["chat", "Chat"],
+  ["describe", "Describe"],
+  ["translate", "Translate"],
+  ["judge", "Judge"],
   ["embed", "Embeddings"],
   ["other", "Other"],
-  ["stt", "🎤 Speech to text"],
+  ["stt", "Speech to text"],
 ];
 
 const TOOL_INFO = {
   improve: {
-    where: "Picked in ⚙ Options under the prompt.",
+    where: "Picked under Models, below the prompt.",
     reads: "The prompt box text, and nothing else: it is a copy edit.",
     scope: "all Improve models",
     writes: "Replaces the prompt box, as one Undo step.",
@@ -6096,19 +6078,19 @@ const TOOL_INFO = {
   chat: {
     where: "Picked at the top of the chat.",
     reads:
-      "The whole thread, so it remembers the conversation; the prompt box text while “Prompt box” is ticked; and each attached image whose chip is ticked, for a model marked 👁. The chips untick after every Send — tick one again when a follow-up needs it.",
+      "The whole thread, so it remembers the conversation; the prompt box text while “Prompt box” is ticked; and each attached image whose chip is ticked, for a vision model. The chips untick after every Send — tick one again when a follow-up needs it.",
     scope: "all chat models",
     writes: "The thread. “Put in prompt box” replaces the prompt, as one Undo step.",
   },
   describe: {
-    where: "Picked in ⚙ Options under the prompt.",
+    where: "Picked under Models, below the prompt.",
     reads: "The first attached image, or one you pick when none is attached. Not the prompt.",
     scope: "all Describe models",
     writes: "Replaces the prompt box, as one Undo step.",
   },
   translate: {
     model: "m2m100 1.2B · @cf/meta/m2m100-1.2b — the one translation model in the catalogue.",
-    reads: "The prompt box text, and the two languages picked in ⚙ Options.",
+    reads: "The prompt box text, and the two languages picked on the Translate card in Lab.",
     instruction: "None. m2m100 translates: its input is the text and two language codes, and nothing else (Cloudflare's model schema).",
     limits: "None in its schema.",
     writes: "Replaces the prompt box, as one Undo step.",
@@ -6135,7 +6117,7 @@ const TOOL_INFO = {
     writes: "The Other panel in Lab.",
   },
   stt: {
-    reads: "A recording from 🎤 in the chat, or an audio file where the browser cannot record.",
+    reads: "A recording from Mic in the chat, or an audio file where the browser cannot record.",
     instruction: "None. Audio in, text out: none of the four models takes an instruction.",
     limits: "None.",
     writes: "Adds the words to the chat box — not sent, so they can be corrected first.",
@@ -6334,7 +6316,7 @@ function renderFixedTool(box, tool) {
     wrap.appendChild(sttPicker());
     const p = document.createElement("p");
     p.className = "hint";
-    p.textContent = "Used by 🎤 in the chat.";
+    p.textContent = "Used by Mic in the chat.";
     wrap.appendChild(p);
     toolRow(box, "Model", wrap);
   } else {
@@ -6366,7 +6348,7 @@ function renderInstructableTool(box, tool) {
   if (tool === "describe" && m.id.includes("moondream")) {
     where += " Moondream's caption mode takes no text, so with your own instruction it answers it as a question instead.";
   }
-  if (tool === "chat") where += m.vision ? " This one can see images (👁)." : " This one cannot see images.";
+  if (tool === "chat") where += m.vision ? " This one can see images." : " This one cannot see images.";
   if (tool === "chat" && (m.format === "question" || m.format === "prompt")) {
     where += " It answers one question at a time, so the conversation goes to it as a transcript.";
   }
@@ -6383,7 +6365,7 @@ function renderInstructableTool(box, tool) {
   if (tool === "chat" && sttModels.length) {
     const wrap = document.createElement("div");
     wrap.appendChild(sttPicker());
-    toolRow(box, "Speech to text (🎤)", wrap);
+    toolRow(box, "Speech to text", wrap);
   }
 }
 
@@ -6715,11 +6697,9 @@ function initTranslate() {
     } catch {
       /* this visit only */
     }
-    updateImproveNote();
   };
   from.addEventListener("change", remember);
   to.addEventListener("change", remember);
-  updateImproveNote();
 
   const btn = $("prompt-translate");
   btn.addEventListener("click", async () => {
@@ -6728,7 +6708,6 @@ function initTranslate() {
     if (!text) return void setStatus("Nothing to translate — write a prompt first.", "err");
     if (from.value === to.value) return void setStatus("Pick two different languages.", "err");
     btn.disabled = true;
-    closeSheet("sheet-more");
     setStatus("Translating…", "load");
     try {
       const { res, data } = await apiWithin("/api/translate", {
@@ -6740,7 +6719,7 @@ function initTranslate() {
       el.value = data.text;
       el.dispatchEvent(new Event("input", { bubbles: true }));
       commitPromptHistory(); // Undo puts the original back
-      setStatus("Translated — press Undo to get the original back.", "ok");
+      setStatus("Translated the prompt on Create — Undo there brings the original back.", "ok");
       setTimeout(refreshNeurons, 4000);
     } catch (e) {
       setStatus("Translate failed: " + e.message, "err");
@@ -6816,13 +6795,13 @@ function initMic() {
       const type = micRecorder.mimeType || (chunks[0] && chunks[0].type) || "audio/mp4";
       micRecorder = null;
       btn.classList.remove("recording");
-      btn.textContent = "🎤";
+      btn.textContent = "Mic";
       if (chunks.length) transcribeBlob(new Blob(chunks, { type }));
     });
     micRecorder.start();
     btn.classList.add("recording");
-    btn.textContent = "■";
-    setStatus("Recording — tap ■ to stop.", "load");
+    btn.textContent = "Stop";
+    setStatus("Recording — tap Stop to stop.", "load");
   });
 }
 
@@ -7204,7 +7183,7 @@ function updateJudgeNote() {
   noteEl.innerHTML = "";
   const t = judgeTarget();
   const text = document.createElement("span");
-  text.textContent = t ? `⚖️ Scores ${t.label} against your prompt` : "⚖️ Pick image(s) to score against your prompt";
+  text.textContent = t ? `Scores ${t.label} against your prompt` : "Pick image(s) to score against your prompt";
   noteEl.appendChild(text);
   // The button always scores the disclosed target, so without this there would
   // be no way to reach the file picker — or batch mode — while an image is
@@ -7604,7 +7583,7 @@ function initPromptLibrary() {
 
     improving = new AbortController();
     const cancel = () => improving && improving.abort();
-    setStripLabel(improveBtn, "✕", "Cancel");
+    improveBtn.textContent = "Cancel";
     improveBtn.classList.add("running");
     setStatus("Improving the prompt…", "load", { cancel });
     const modelId = $("improve-model").value;
@@ -7639,7 +7618,7 @@ function initPromptLibrary() {
     } finally {
       improving = null;
       improveBtn.classList.remove("running");
-      setStripLabel(improveBtn, "✨", "Improve");
+      improveBtn.textContent = "Improve";
     }
   });
 
@@ -7904,14 +7883,14 @@ function updateSpendBar() {
       level = "over";
       const over = used - limit;
       parts.push(
-        `⚠ Workers AI past the free ${limit.toLocaleString()} neurons today: ` +
+        `Workers AI past the free ${limit.toLocaleString()} neurons today: ` +
         `${Math.round(used).toLocaleString()} used, ${Math.round(over).toLocaleString()} over ` +
         `≈ ${fmtUsd(over * CF_USD_PER_NEURON)} billed so far`
       );
     } else {
       if (used >= limit * CF_NEURON_WARN_AT) level = "warn";
       parts.push(
-        `${level ? "⚠ " : ""}Workers AI ${Math.round(used).toLocaleString()} of ` +
+        `Workers AI ${Math.round(used).toLocaleString()} of ` +
         `${limit.toLocaleString()} neurons used today (${pct}%, ` +
         `${Math.round(actualNeurons.remaining).toLocaleString()} left` +
         `${level ? `, then ${fmtUsd(1000 * CF_USD_PER_NEURON)} per 1,000` : ""})`
@@ -7922,7 +7901,7 @@ function updateSpendBar() {
     if (sessionNeurons >= CF_FREE_NEURONS) level = "over";
     else if (sessionNeurons >= CF_FREE_NEURONS * CF_NEURON_WARN_AT) level = "warn";
     parts.push(
-      `${level ? "⚠ " : ""}Workers AI ~${Math.round(sessionNeurons).toLocaleString()} neurons this session (est.)` +
+      `Workers AI ~${Math.round(sessionNeurons).toLocaleString()} neurons this session (est.)` +
       (level === "over" ? ` — past the free ${CF_FREE_NEURONS.toLocaleString()}, now billed` : "")
     );
   }
@@ -7947,7 +7926,7 @@ function updateSpendBar() {
       short = `~${Math.round(sessionNeurons).toLocaleString()} neurons`;
     }
     if (sessionSpend > 0) short += `${short ? " · " : ""}${fmtUsd(sessionSpend)}`;
-    pill.textContent = `⚡ ${short || "Usage"}`;
+    pill.textContent = short || "Usage";
     pill.dataset.level = level;
   }
 }
@@ -7997,6 +7976,13 @@ function showScreen(which) {
   }
   refreshActionRow();
   if (which === "gallery") renderGallery();
+  if (which === "lab") {
+    // The chat's image chips follow what is attached on Create.
+    renderChatImages();
+    updateChatNote();
+    const box = $("chat-thread");
+    box.scrollTop = box.scrollHeight;
+  }
   else if (gallery.selecting) setSelecting(false);
   try {
     localStorage.setItem(SCREEN_KEY, which);
@@ -8027,13 +8013,6 @@ function initShell() {
     if (e.key !== "Escape") return;
     const open = [...document.querySelectorAll(".sheet:not(.hidden)")].pop();
     if (open) closeSheet(open.id);
-  });
-  $("open-chat").addEventListener("click", () => {
-    openSheet("sheet-chat");
-    renderChatImages();
-    updateChatNote();
-    const box = $("chat-thread");
-    box.scrollTop = box.scrollHeight;
   });
   $("open-prompts").addEventListener("click", () => openPromptLibrary());
   $("open-more").addEventListener("click", () => openSheet("sheet-more"));

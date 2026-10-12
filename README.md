@@ -23,31 +23,33 @@ prompt.
 
 **Three screens.** *Create* holds what making a picture needs, top to bottom: the model; the mode, where a model has one, since
 it decides which inputs apply; every file the model takes, required or not,
-under *Inputs*; the prompt with its tools directly under it; then *Settings*.
+under *Inputs*; *Settings*; and last the prompt with its tools under it, right
+above Generate and the output.
 The output follows the form on a phone and sits beside it on a wide screen, and
 a finished result is scrolled into view. *Gallery* holds everything made so
-far (below). *Lab* holds the tools that work on
-their own text or images — scoring images, Embeddings and Other — so they no
-longer sit between the prompt tools and the prompt. A bar fixed to the bottom
+far (below). *Lab* holds the tools that are not part of making a picture —
+the chat, Translate, scoring images, Embeddings and Other. A bar fixed to the bottom
 of the screen carries the status line and Generate, so neither a run's
 progress nor the button that starts one is ever scrolled out of reach; a long
 message is clamped to two lines and opens on a tap.
 
-**The prompt tool strip.** Under the prompt, eight buttons in two rows of
-four, each an icon over a caption: Undo, Redo, Improve, Describe, Translate,
-Chat, Prompts and Options. Each acts on one tap. The models and languages they
-use are picked in *⚙ Options* and named on one muted line under the strip, so
-the row itself carries no pickers.
+**The prompt tools.** Under the prompt, one row of five text buttons: Undo,
+Redo, Improve, Prompts and Models. *Models* picks the models Improve and
+Describe use. The interface carries no emoji.
 
 **One picker, grouped by task.** Models are filed under Image editing, Image
 generation, Video, Audio and LoRA training, each split by provider — provider decides
 what a model costs and which key it needs, and two of them ship FLUX.2 Klein 4B
 under the same name.
 
-**Settings panel.** Every optional parameter is visible and pre-filled. Modified
-rows get an accent bar and their own Reset, and the header counts what has
-changed; *Reset all settings* puts the panel back without touching the inputs
-or the prompt (*Start over*, beside the model, is the one that clears those). A
+**Settings.** Every optional parameter is in plain view and pre-filled, two to
+a row (free text and files take the full width). A changed one gets its own
+Reset, and *Reset all* — shown only when something is changed — puts the
+settings back without touching the inputs or the prompt (*Start over*, beside
+the model, is the one that clears those). Turbo (every fast-mode switch,
+whatever the provider calls it) and the content moderation filter are off on
+every model and folded under a collapsed *Advanced*; where a provider would
+turn Turbo on if left unspecified, off is sent explicitly. A
 parameter is sent only when it differs from the provider's default, so what you
 see is what the provider would do anyway. Optional *files* — start and end
 frames, audio tracks, reference images, a pose — are not settings: they sit
@@ -61,35 +63,34 @@ belonging to another mode are never sent.
 models as a copy edit: grammar, phrasing and punctuation only. It adds nothing,
 drops nothing, keeps your pronouns and your grammatical mood, and avoids commas,
 which image models read as tag separators rather than punctuation. It reads the
-prompt text and nothing else. Its model is picked in ⚙ Options. While it runs
+prompt text and nothing else. Its model is picked under Models. While it runs
 the button is its Cancel. Reverting a
 rewrite is the prompt Undo button's job, so the button stays Improve rather than
 turning into a one-shot undo of its own.
 
-**Image description.** Describe, on the tool strip, captions whatever image is
-already attached, with one of 9 Workers AI vision models, and drops the caption
-into the prompt box as a starting prompt (one Undo step). It only opens a file
-picker when nothing is attached. Its instruction is editable like Improve's and
+**Image description.** Describe, on each image in the gallery's viewer,
+captions that image with one of 9 Workers AI vision models and drops the
+caption into the prompt box on Create as a starting prompt (one Undo step). Its
+model is picked under Models. Its instruction is editable like Improve's and
 the chat's. Moondream's caption mode takes no text, so with an instruction of
 your own it is asked as a question through its `query` mode instead.
 
-**Chat.** A conversation about the prompt, in a sheet opened from 💬 under the
-prompt: a thread, a multi-line box where Enter adds a line, and a Send button.
+**Chat.** A conversation about the prompt, on its own card in Lab: a thread, a multi-line box where Enter adds a line, and a Send button.
 Every message sends the whole thread, so the model remembers the conversation,
 and the thread stays on this device until *New chat*. What else the next
 message carries is set by two separate controls. *Prompt box* adds the prompt
 text, and stays as set. Each attached image has a chip of its own, numbered as
 the Inputs show them; a ticked chip sends that image with the next message, to
-a model marked 👁. Every Send unticks all the chips — Workers AI keeps nothing
+a vision model (marked "(vision)" in the picker). Every Send unticks all the chips — Workers AI keeps nothing
 between calls, so a follow-up about a picture has to carry the picture, and a
 tap ticks it again. All six vision chat models were checked with two images in
 one message and named each correctly, so several go at once, each as its own
 part. The thread notes which images each message carried. The reply streams in
 as it is written; while it does, Send is Cancel, and a cancelled or failed
 message goes back into the box with its images ticked again. Any reply can be
-put in the prompt box as one Undo step, and each shows the neurons it actually
+put in the prompt box on Create as one Undo step, and each shows the neurons it actually
 used, as reported by Cloudflare. It talks to Improve's 32 models plus LLaVA —
-every vision model the app has, each marked 👁. Three of them take the
+every vision model the app has. Three of them take the
 conversation differently, per their schemas: Llama 3.2 Vision holds a real
 thread but takes one image beside it; Moondream (through its `query` mode) and
 LLaVA answer one question at a time, so the conversation goes to them as a
@@ -100,7 +101,7 @@ and it will not send without one ticked. Images sent to any tool are scaled to 1
 long edge first: a phone photo is several megabytes as base64, which was the
 slow part of every message on a mobile connection.
 
-**⚙ Tools: the same rows for every tool.** Each tool is described on the same
+**How the tools work: the same rows for every tool.** Each tool is described on the same
 five rows — *Model*, *Reads*, *Instruction*, *Limits*, *Writes to* — so where
 two tools differ, the sheet says how and why. Improve, the chat and Describe
 run instruction-following models and take an instruction, shared by all of
@@ -134,7 +135,7 @@ versions. Closing over an unsaved draft asks first. *Reset … limits* names
 the model it resets and leaves the instruction alone. Nothing is stored
 server-side: the settings live in this browser and ride along with each
 request, and the Worker caps them (instruction 4,000 characters, token limit
-16–8,000). An orange ⚙ means the picked model has something set.
+16–8,000). An orange *Tune* means the picked model has something set.
 
 **Deadlines and streaming.** Improve, Describe and the chat answer as
 server-sent events, following Cloudflare's guidance to stream "especially for
@@ -156,16 +157,16 @@ prompt in its full `<s>[INST] <<SYS>>` template, streamed or not — and with
 does the same in Cloudflare's playground. `src/models.js` keeps the entry it
 would take if that is fixed.
 
-**Translate.** 🌐 Translate on the strip rewrites the prompt box from one
-language into the other, both picked in ⚙ Options, with Meta's m2m100 (English, Spanish, French, German,
+**Translate.** The Translate card in Lab rewrites the prompt box on Create
+from one language into the other with Meta's m2m100 (English, Spanish, French, German,
 Portuguese, Russian, Arabic, Hindi, Chinese, Japanese — the languages
 Cloudflare lists for it). Undo brings the original back.
 
-**Speaking to the chat.** 🎤 beside Send records a message and transcribes it
-into the chat box — added, not sent, so it can be corrected first. Tap ■ to
-stop. Where a browser cannot record, it opens a picker for a recording
-instead. The model is chosen in ⚙ Tools, from the chat's ⚙ or the *Speech to
-text* tab: Whisper Large v3 Turbo (the
+**Speaking to the chat.** *Mic* beside Send records a message and transcribes
+it into the chat box — added, not sent, so it can be corrected first. Tap
+*Stop* to stop. Where a browser cannot record, it opens a picker for a recording
+instead. The model is chosen in *How the tools work*, from the chat's *Tune* or
+the *Speech to text* tab: Whisper Large v3 Turbo (the
 default), Whisper, Whisper Tiny EN or Deepgram Nova-3, each sent the audio in
 the form its schema documents. All four transcribed both an iPhone-style
 AAC/MP4 clip and a WebM/Opus clip in testing. Deepgram Flux is not offered:
@@ -264,7 +265,7 @@ that has one. History is in memory only. `Cmd`/`Ctrl`+`Z` and
 the buttons exist because iOS offers no undo gesture that reaches a web
 textarea.
 
-**Prompt library.** *📚 Prompts* lists every saved prompt with its text — four
+**Prompt library.** *Prompts* lists every saved prompt with its text — four
 lines of it, all of it on a tap — not just a name. Prompts are filed in
 folders, searched by name, text or folder, sorted by date or name, and edited
 in place (name, text, folder); deleting a folder keeps its prompts. *Save
@@ -327,8 +328,8 @@ from the viewer or for a selection. Deleting an album keeps its items.
 **Nothing expires by default.** The gallery used to drop everything after seven
 days and cap images at 200 and clips at 25. Now the caps — per kind, so clips
 cannot evict stills — default to 2,000 images and 300 videos with no age
-limit, and are settings under the gallery's ⚙ (up to no limit at all). A named
-item or one in an album is never removed by them, only by Delete. The same ⚙
+limit, and are settings under the gallery's *Settings* (up to no limit at all). A named
+item or one in an album is never removed by them, only by Delete. The same sheet
 shows how much storage the app uses against what the browser allows, and
 whether the browser has made it persistent. The binding limit is the browser's
 own quota — on a Home Screen web app a large share of the disk — and the app
@@ -422,7 +423,7 @@ Browser (public/)  ──►  Cloudflare Worker (src/worker.js)  ──┬──
    /api/chat            the chat thread, via Workers AI        (event stream)
    /api/embed           embeds text for the Embeddings panel
    /api/translate       translates the prompt via m2m100
-   /api/transcribe      speech to text for the chat's 🎤
+   /api/transcribe      speech to text for the chat's Mic
    /api/other           the Other section's tools
    /api/judge           scores an image against a prompt via Pruna p-judger
    /api/neurons         current-day Workers AI neuron spend
@@ -471,9 +472,9 @@ the browser reads its duration and prices from that instead of the Length box.
 — no options at all. `p-image-edit-text-aware` routes to whichever edit model
 suits the input, which changes the price: $0.01 per output, or $0.03 when it
 detects text in the image. That decision happens during the run, so the app
-shows the range up front and no per-run estimate. Its `turbo` is left at Pruna's
-documented default of on, unlike `p-image-edit`, where this repo deliberately
-forces it off.
+shows the range up front and no per-run estimate. Pruna documents its `turbo`
+as on by default; like every Turbo switch here it is shown off, and off is
+sent.
 
 **`p-image-pro` is documented but not included.** As of 2026-09-08 every call to
 it — including a bare prompt — is refused before input validation with
@@ -542,7 +543,7 @@ computed from list rates, because the reasoning tokens bill as output.
 
 ### Workers AI model identity
 
-Labels are readable but keep every version detail; the ⚙ panel shows each
+Labels are readable but keep every version detail; the *How the tools work* sheet shows each
 model's exact Cloudflare id. Cloudflare's pricing page and its model catalogue
 (the 65 models its model-search API returns for this account) do not agree,
 and some ids resolve to a different model than their name says — a chat reply
@@ -651,7 +652,7 @@ normally.
 
 `npm test` runs the Worker's own tests, then drives the browser features in real
 browsers — Chromium and WebKit — against a stub of the Worker, so no API keys
-are needed and nothing is billed. 44 Worker tests, then 391 assertions per
+are needed and nothing is billed. 44 Worker tests, then 401 assertions per
 engine.
 
 The Worker tests need no browser and take under a second, so they run first: a
