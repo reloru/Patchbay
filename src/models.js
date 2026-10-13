@@ -2207,47 +2207,71 @@ const OUT_NEURONS_PER_M = {
   "@cf/qwen/qwq-32b": 90909,
   "@cf/aisingapore/gemma-sea-lion-v4-27b-it": 50488,
 };
-// The sampling parameters each model's schema takes, as [minimum, maximum,
-// default] — null where the schema gives none. From Cloudflare's
-// models/schema API, 2026-09-28, using the input form this app sends (the
-// `messages` form where a model has one). Llama 3.1 8B Fast v2 has no schema
-// there (6002), so it takes the token limit only. max_tokens is the separate
-// token limit and is not repeated here.
+// The sampling parameters each model takes, as [minimum, maximum, default] —
+// null where Cloudflare documents no default (its models/schema API, probed
+// again 2026-10-13). The ranges are what the service accepts, not what the
+// schema says: on 2026-10-13 every model was sent each end of every range
+// (600 calls), and the schema's own ends were refused in places —
+//   top_p          0 and 2 refused by every model, 0.001 and 1 accepted
+//   repetition     0 refused by every model (400, or 500 on four), 0.05 accepted
+//   temperature    eight models answer "temperature must be in [0, 2]" (Llama
+//                  3.2 3B, 3.3 70B, 4 Scout, Mistral 7B, Qwen3 30B, GPT-OSS
+//                  120B, GLM 5.2, Qwen3.8); the newer chat models take 2.5 but
+//                  are held to 2, as in Thread
+//   penalties      below 0 refused on the five whose schema starts at 0
+// GPT-OSS's temperature and repetition limits, and which newer models offer no
+// seed, are Thread's (reloru/Thread, src/models.js): there replies came back
+// empty or garbled past those limits, and a repeated seed did not repeat the
+// reply. Llama 3.1 8B Fast v2 has no schema (6002), so it takes the token
+// limit only. max_tokens is the separate token limit and is not repeated here.
 export const SAMPLING_PARAMS = ["temperature", "top_p", "top_k", "seed", "repetition_penalty", "frequency_penalty", "presence_penalty"];
 const SAMPLING = {
-  "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
-  "@cf/deepseek-ai/deepseek-v4-flash-0731": { temperature: [null, null, 1], top_p: [null, null, 1], seed: [null, null, null], frequency_penalty: [null, null, 0], presence_penalty: [null, null, 0] },
-  "@cf/deepseek-ai/deepseek-v4-pro-0813": { temperature: [null, null, 1], top_p: [null, null, 1], seed: [null, null, null], frequency_penalty: [null, null, 0], presence_penalty: [null, null, 0] },
-  "@cf/google/gemma-4-26b-a4b-it": { temperature: [null, null, 1], top_p: [null, null, 1], seed: [null, null, null], frequency_penalty: [null, null, 0], presence_penalty: [null, null, 0] },
-  "@cf/zai-org/glm-4.7-flash": { temperature: [null, null, 1], top_p: [null, null, 1], seed: [null, null, null], frequency_penalty: [null, null, 0], presence_penalty: [null, null, 0] },
-  "@cf/zai-org/glm-5.3-flash": { temperature: [null, null, 1], top_p: [null, null, 1], seed: [null, null, null], frequency_penalty: [null, null, 0], presence_penalty: [null, null, 0] },
-  "@cf/zai-org/glm-5.2": { temperature: [null, null, 1], top_p: [null, null, 1], seed: [null, null, null], frequency_penalty: [null, null, 0], presence_penalty: [null, null, 0] },
-  "@cf/zai-org/glm-5.3": { temperature: [null, null, 1], top_p: [null, null, 1], seed: [null, null, null], frequency_penalty: [null, null, 0], presence_penalty: [null, null, 0] },
-  "@cf/openai/gpt-oss-20b": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
-  "@cf/openai/gpt-oss-120b": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
-  "@cf/ibm-granite/granite-4.0-h-micro": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
-  "@cf/moonshotai/kimi-k2.6": { temperature: [null, null, 1], top_p: [null, null, 1], seed: [null, null, null], frequency_penalty: [null, null, 0], presence_penalty: [null, null, 0] },
-  "@cf/moonshotai/kimi-k2.7-code": { temperature: [null, null, 1], top_p: [null, null, 1], seed: [null, null, null], frequency_penalty: [null, null, 0], presence_penalty: [null, null, 0] },
-  "@cf/meta/llama-3.2-1b-instruct": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
-  "@cf/meta/llama-3.2-11b-vision-instruct": { temperature: [0, 5, 0.6], top_p: [0, 2, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [0, 2, null], presence_penalty: [0, 2, null] },
-  "@cf/meta/llama-3.2-3b-instruct": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
-  "@cf/meta/llama-3.1-8b-instruct-fp8": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
-  "@cf/meta/llama-4-scout-17b-16e-instruct": { temperature: [0, 5, 0.15], top_p: [0, 2, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [0, 2, null], presence_penalty: [0, 2, null] },
-  "@cf/meta/llama-3.1-70b-instruct-fp8-fast": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
-  "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
-  "@cf/mistral/mistral-7b-instruct-v0.2-lora": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
-  "@cf/mistralai/mistral-small-3.1-24b-instruct": { temperature: [0, 5, 0.15], top_p: [0, 2, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [0, 2, null], presence_penalty: [0, 2, null] },
-  "@cf/moondream/moondream3.1-9B-A2B": { temperature: [0, 2, 0.2], top_p: [0, 1, 0.9] },
-  "@cf/nvidia/nemotron-3-120b-a12b": { temperature: [null, null, 1], top_p: [null, null, 1], seed: [null, null, null], frequency_penalty: [null, null, 0], presence_penalty: [null, null, 0] },
-  "@cf/qwen/qwen3-30b-a3b-fp8": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
-  "@cf/qwen/qwen2.5-coder-32b-instruct": { temperature: [0, 5, 0.6], top_p: [0, 2, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [0, 2, null], presence_penalty: [0, 2, null] },
-  "@cf/qwen/qwen3.8-27b": { temperature: [null, null, 1], top_p: [null, null, 1], seed: [null, null, null], frequency_penalty: [null, null, 0], presence_penalty: [null, null, 0] },
-  "@cf/qwen/qwq-32b": { temperature: [0, 5, 0.15], top_p: [0, 2, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [0, 2, null], presence_penalty: [0, 2, null] },
-  "@cf/google/gemma-2b-it-lora": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
-  "@cf/google/gemma-7b-it-lora": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
-  "@cf/aisingapore/gemma-sea-lion-v4-27b-it": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/deepseek-ai/deepseek-v4-flash-0731": { temperature: [0, 2, 1], top_p: [0.001, 1, 1], frequency_penalty: [-2, 2, 0], presence_penalty: [-2, 2, 0] },
+  "@cf/deepseek-ai/deepseek-v4-pro-0813": { temperature: [0, 2, 1], top_p: [0.001, 1, 1], frequency_penalty: [-2, 2, 0], presence_penalty: [-2, 2, 0] },
+  "@cf/google/gemma-4-26b-a4b-it": { temperature: [0, 2, 1], top_p: [0.001, 1, 1], frequency_penalty: [-2, 2, 0], presence_penalty: [-2, 2, 0] },
+  "@cf/zai-org/glm-4.7-flash": { temperature: [0, 2, 1], top_p: [0.001, 1, 1], seed: [1, 9999999999, null], frequency_penalty: [-2, 2, 0], presence_penalty: [-2, 2, 0] },
+  "@cf/zai-org/glm-5.3-flash": { temperature: [0, 2, 1], top_p: [0.001, 1, 1], frequency_penalty: [-2, 2, 0], presence_penalty: [-2, 2, 0] },
+  "@cf/zai-org/glm-5.2": { temperature: [0, 2, 1], top_p: [0.001, 1, 1], seed: [1, 9999999999, null], frequency_penalty: [-2, 2, 0], presence_penalty: [-2, 2, 0] },
+  "@cf/zai-org/glm-5.3": { temperature: [0, 2, 1], top_p: [0.001, 1, 1], frequency_penalty: [-2, 2, 0], presence_penalty: [-2, 2, 0] },
+  "@cf/openai/gpt-oss-20b": { temperature: [0, 1, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.7, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/openai/gpt-oss-120b": { temperature: [0, 1.2, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.7, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/ibm-granite/granite-4.0-h-micro": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/moonshotai/kimi-k2.6": { temperature: [0, 2, 1], top_p: [0.001, 1, 1], frequency_penalty: [-2, 2, 0], presence_penalty: [-2, 2, 0] },
+  "@cf/moonshotai/kimi-k2.7-code": { temperature: [0, 2, 1], top_p: [0.001, 1, 1], frequency_penalty: [-2, 2, 0], presence_penalty: [-2, 2, 0] },
+  "@cf/meta/llama-3.2-1b-instruct": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/meta/llama-3.2-11b-vision-instruct": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [0, 2, null], presence_penalty: [0, 2, null] },
+  "@cf/meta/llama-3.2-3b-instruct": { temperature: [0, 2, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/meta/llama-3.1-8b-instruct-fp8": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/meta/llama-4-scout-17b-16e-instruct": { temperature: [0, 2, 0.15], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [0, 2, null], presence_penalty: [0, 2, null] },
+  "@cf/meta/llama-3.1-70b-instruct-fp8-fast": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { temperature: [0, 2, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/mistral/mistral-7b-instruct-v0.2-lora": { temperature: [0, 2, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/mistralai/mistral-small-3.1-24b-instruct": { temperature: [0, 5, 0.15], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [0, 2, null], presence_penalty: [0, 2, null] },
+  "@cf/moondream/moondream3.1-9B-A2B": { temperature: [0, 2, 0.2], top_p: [0.001, 1, 0.9] },
+  "@cf/nvidia/nemotron-3-120b-a12b": { temperature: [0, 2, 1], top_p: [0.001, 1, 1], seed: [1, 9999999999, null], frequency_penalty: [-2, 2, 0], presence_penalty: [-2, 2, 0] },
+  "@cf/qwen/qwen3-30b-a3b-fp8": { temperature: [0, 2, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/qwen/qwen2.5-coder-32b-instruct": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [0, 2, null], presence_penalty: [0, 2, null] },
+  "@cf/qwen/qwen3.8-27b": { temperature: [0, 2, 1], top_p: [0.001, 1, 1], seed: [1, 9999999999, null], frequency_penalty: [-2, 2, 0], presence_penalty: [-2, 2, 0] },
+  "@cf/qwen/qwq-32b": { temperature: [0, 5, 0.15], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [0, 2, null], presence_penalty: [0, 2, null] },
+  "@cf/google/gemma-2b-it-lora": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/google/gemma-7b-it-lora": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+  "@cf/aisingapore/gemma-sea-lion-v4-27b-it": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0.05, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
   "@cf/llava-hf/llava-1.5-7b-hf": { temperature: [null, null, null], top_p: [null, null, null], top_k: [null, null, null], seed: [null, null, null], repetition_penalty: [null, null, null], frequency_penalty: [null, null, null], presence_penalty: [null, null, null] },
   "@cf/meta-llama/llama-2-7b-chat-hf-lora": { temperature: [0, 5, 0.6], top_p: [0.001, 1, null], top_k: [1, 50, null], seed: [1, 9999999999, null], repetition_penalty: [0, 2, null], frequency_penalty: [-2, 2, null], presence_penalty: [-2, 2, null] },
+};
+// A line under a field, where testing found more than the range says.
+const SAMPLING_NOTES = {
+  "@cf/ibm-granite/granite-4.0-h-micro": { temperature: "Above about 2, replies turned to nonsense in testing." },
+  "@cf/mistralai/mistral-small-3.1-24b-instruct": { temperature: "Above about 2, replies turned to nonsense in testing." },
+  "@cf/openai/gpt-oss-20b": {
+    temperature: "The service allows up to 5; above 1, replies came back empty or garbled in testing.",
+    repetition_penalty: "Below 0.7, replies came back garbled in testing.",
+  },
+  "@cf/openai/gpt-oss-120b": {
+    temperature: "The service allows up to 2; above 1.2, replies came back empty or garbled in testing.",
+    repetition_penalty: "Below 0.7, replies came back garbled in testing.",
+  },
 };
 
 // Chat only. LLaVA's schema requires an image on every call and takes a single
@@ -2263,6 +2287,7 @@ for (const m of [...IMPROVE_MODELS, ...CHAT_ONLY_MODELS, ...DESCRIBE_MODELS]) {
   m.effortDefault = EFFORT_DEFAULTS[m.id] || null;
   m.outPerM = OUT_NEURONS_PER_M[m.id] || null;
   m.sampling = SAMPLING[m.id] || null;
+  m.samplingNotes = SAMPLING_NOTES[m.id] || null;
 }
 // Answer in one piece rather than as a stream. LLaVA ignores `stream: true`
 // and returns an empty result (tested 2026-09-26). Moondream does stream, but

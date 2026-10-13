@@ -302,10 +302,25 @@
           <p class="chat-note">A copy edit of the prompt box: grammar, phrasing and punctuation only.</p>
           <div class="tool">
             <select id="improve-model" aria-label="Model used by Improve" title="Which model rewrites the prompt"></select>
-            <button id="improve-settings" type="button" class="secondary gear" title="Improve settings" aria-label="Improve settings">Tune</button>
+            <button id="improve-settings" type="button" class="secondary gear" title="Improve settings for this model" aria-label="Improve settings">Tune</button>
           </div>
           <p id="improve-cost" class="chat-note"></p>
         </section>
+      </div>
+    </div>
+
+    <!-- Improve's settings, for the model picked under Models: its own
+         instruction and request settings. Over the Models sheet. -->
+    <div id="sheet-improve" class="sheet sheet-over hidden" role="dialog" aria-modal="true" aria-labelledby="improve-model-name">
+      <div class="sheet-card settings-card">
+        <div class="sheet-head">
+          <div class="settings-title">
+            <h2 id="improve-model-name"></h2>
+            <p id="improve-model-id" class="model-id"></p>
+          </div>
+          <button type="button" class="secondary sheet-close">Close</button>
+        </div>
+        <div id="improve-settings-body" class="tool-settings"></div>
       </div>
     </div>
 
