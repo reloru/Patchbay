@@ -25,8 +25,9 @@ prompt.
 it decides which inputs apply; every file the model takes, required or not,
 under *Inputs*; *Settings*; and last the prompt with its tools under it, right
 above Generate and the output.
-The output follows the form on a phone and sits beside it on a wide screen, and
-a finished result is scrolled into view. *Gallery* holds everything made so
+The output follows the form on a phone and sits beside it on a wide screen. A
+finished result does not move the page: it lands in the output panel wherever
+that is. *Start over* clears the panel along with the form. *Gallery* holds everything made so
 far (below). *Lab* holds the tools that are not part of making a picture —
 the chat, Translate, scoring images, Embeddings and Other. A bar fixed to the bottom
 of the screen carries the status line and Generate, so neither a run's
@@ -34,8 +35,8 @@ progress nor the button that starts one is ever scrolled out of reach; a long
 message is clamped to two lines and opens on a tap.
 
 **The prompt tools.** Under the prompt, one row of five text buttons: Prompts,
-Models, Improve in the middle, then Undo and Redo. *Models* picks the models Improve and
-Describe use. The interface carries no emoji.
+Models, Improve in the middle, then Undo and Redo. *Models* picks the model Improve uses;
+Describe's model is in the gallery's *Settings*, beside Describe itself. The interface carries no emoji.
 
 **One picker, grouped by task.** Models are filed under Image editing, Image
 generation, Video, Audio and LoRA training, each split by provider — provider decides

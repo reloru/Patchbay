@@ -1700,7 +1700,9 @@ $("reset-btn").addEventListener("click", () => {
   commitPromptHistory();
   clearUploads();
   renderFields();
-  clearJudgeResult();
+  // The output goes too. A run still going lands in the empty panel; the
+  // gallery keeps everything regardless.
+  clearResultPanel();
   setStatus("", "hide");
   // Reset puts every field back to its default, the prompt included. That is a
   // change to the prompt like any other, so it becomes an undo entry — Undo
@@ -4932,13 +4934,8 @@ async function showResult(prunaUrls, kind, meta, { timer, onDisplayed } = {}) {
   await Promise.all(shown);
   if (timer) timer.rec.visible = timer.at();
   if (onDisplayed) onDisplayed();
-
-  // On a phone the output sits below the whole form, so a finished result would
-  // land out of sight of the Generate button that asked for it.
-  if (window.matchMedia("(max-width: 899px)").matches && !$("screen-create").classList.contains("hidden")) {
-    const r = box.getBoundingClientRect();
-    if (r.top > window.innerHeight * 0.6 || r.bottom < 0) box.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
+  // Deliberately no scroll to the result: a run finishing in the background
+  // must not move the page out from under whatever is being done.
 
   // The strip follows the archive, and only once every result has been stored.
   let ids = [];

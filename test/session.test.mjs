@@ -947,6 +947,19 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.locator("#tab-gallery").click();
   await page.locator("#gallery-settings").click();
   check("the settings say how much storage is used", (await page.locator("#storage-note").textContent()).length > 0);
+  check(
+    "Describe's model is picked in the gallery's settings, not under Models",
+    (await page.locator("#sheet-gallery-settings #describe-model").isVisible()) && (await page.locator("#sheet-more #describe-model").count()) === 0
+  );
+  await page.locator("#describe-settings").click();
+  await page.waitForSelector("#sheet-tools:not(.hidden)");
+  check(
+    "and its Tune opens Describe's settings over the sheet",
+    (await page.locator(".tool-tab[aria-selected=\"true\"]").textContent()).includes("Describe"),
+    await page.locator(".tool-tab[aria-selected=\"true\"]").textContent()
+  );
+  await page.locator("#sheet-tools .sheet-close").click();
+  check("closing it goes back to the gallery's settings", await page.locator("#sheet-gallery-settings").isVisible());
   page.once("dialog", (d) => d.accept());
   await page.locator("#gallery-clear").click();
   await page.waitForTimeout(400);
@@ -1559,6 +1572,32 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("a run started with nothing else running replaces them", (await page.locator("#result .result-run").count()) === 1);
   check("and a lone run shows no caption", await page.locator("#result .run-caption").isHidden());
   check("Judge then holds only that run", await page.evaluate(() => lastResult.urls.length === 1));
+  await page.locator("#reset-btn").click();
+  await page.waitForTimeout(200);
+  check("Start over clears the output too", (await page.locator("#result .result-run").count()) === 0 && (await page.evaluate(() => lastResult.urls.length === 0)));
+  await page.close();
+  await context.close();
+}
+
+// ── A finished run does not move the page ────────────────────────────────
+// On a phone the output is below the form, and a result landing used to
+// scroll the page down to it — mid-typing, or while reading something else.
+{
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await open(context);
+  await page.request.get(BASE + "__resultdelay?ms=1500");
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(200);
+  await page.fill(promptSel, "lands below the fold");
+  await page.waitForTimeout(700);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const below = await page.locator("#result").evaluate((el) => el.getBoundingClientRect().top > window.innerHeight * 0.6);
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#result .result-run img", { timeout: 20000 });
+  await page.waitForTimeout(800);
+  check("the output is below the fold for this check to mean anything", below);
+  check("a result landing leaves the scroll where it was", (await page.evaluate(() => window.scrollY)) === 0, String(await page.evaluate(() => window.scrollY)));
+  await page.request.get(BASE + "__resultdelay?ms=0");
   await page.close();
   await context.close();
 }
