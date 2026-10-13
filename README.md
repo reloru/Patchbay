@@ -71,8 +71,8 @@ turning into a one-shot undo of its own.
 **Image description.** Describe, on each image in the gallery's viewer,
 captions that image with one of 9 Workers AI vision models and drops the
 caption into the prompt box on Create as a starting prompt (one Undo step). Its
-model is picked under Models. Its instruction is editable like Improve's and
-the chat's. Moondream's caption mode takes no text, so with an instruction of
+model and its own settings are in the gallery's *Settings*. Its instruction
+is editable like Improve's and the chat's. Moondream's caption mode takes no text, so with an instruction of
 your own it is asked as a question through its `query` mode instead.
 
 **Chat.** A conversation about the prompt, on its own card in Lab: a thread, a multi-line box where Enter adds a line, and a Send button.
@@ -101,41 +101,60 @@ and it will not send without one ticked. Images sent to any tool are scaled to 1
 long edge first: a phone photo is several megabytes as base64, which was the
 slow part of every message on a mobile connection.
 
-**How the tools work: the same rows for every tool.** Each tool is described on the same
-five rows — *Model*, *Reads*, *Instruction*, *Limits*, *Writes to* — so where
-two tools differ, the sheet says how and why. Improve, the chat and Describe
-run instruction-following models and take an instruction, shared by all of
-that tool's models, and per-model limits: a token limit with the most a reply
-can cost at it, plus Thinking and Reasoning effort where the model's schema
-takes them — DeepSeek V4, Gemma 4, GLM 4.7 Flash and 5.x, Kimi and Qwen 3.8
-take both, Nemotron takes thinking only, the rest take neither — and each
-sampling parameter its schema takes, within the range the schema documents:
-`temperature`, `top_p`, `top_k`, `seed`, `repetition_penalty`,
-`frequency_penalty`, `presence_penalty`. The Llama, Gemma LoRA, GPT-OSS,
-Granite, Qwen3 30B, DeepSeek R1 and SEA-LION models take all seven; DeepSeek
-V4, GLM, Kimi, Nemotron, Gemma 4 and Qwen 3.8 take five (no `top_k` or
-`repetition_penalty`); Moondream takes `temperature` and `top_p`. Which
-parameters, their ranges and their defaults come from Cloudflare's
-models/schema API; Llama 3.1 8B Fast v2 has no schema there and takes the
-token limit only. Cloudflare publishes no default for `top_p`, `top_k`,
-`seed`, `repetition_penalty` or the two penalties, so those fields read
-"default not published" rather than a value; Reasoning effort shows the default
-marked on each model's Cloudflare page (DeepSeek V4 high, GLM 5.x max, GPT-OSS
-medium, Kimi K2.6 high, Qwen 3.8 xhigh). A value outside a range is marked and not sent, and the
-Worker drops anything a model's schema does not list. The other
-tools' rows name the input their model has instead of an instruction:
-m2m100 takes text and two language codes; p-judger a prompt and images, and
-refuses any other key; Llama Guard, DistilBERT, ResNet-50 and the reranker
-have no instruction input in their schemas; the embedding models measure text
-as a document. An instruction is a draft until saved: typing changes nothing
-that is sent, ↶ and ↷ step through the draft, *Revert to saved* puts the saved
-text back, *Load default* puts the app's own text in the draft (still
-undoable), and every Save keeps the text it replaced among the last ten
-versions. Closing over an unsaved draft asks first. *Reset … limits* names
-the model it resets and leaves the instruction alone. Nothing is stored
-server-side: the settings live in this browser and ride along with each
-request, and the Worker caps them (instruction 4,000 characters, token limit
-16–8,000). An orange *Tune* means the picked model has something set.
+**Model settings are per model.** Every setting belongs to the model it was
+set on: the instruction and its earlier versions, the token limit, Thinking and
+Reasoning effort, and each sampling parameter. Nothing is shared between a
+tool's models. A device that saved an instruction back when it was shared has
+it copied into each of that tool's models once, so what they send is
+unchanged.
+
+**Improve's settings.** *Tune*, beside the Improve model under *Models*, opens
+a sheet for the picked model alone, headed by its name and its Cloudflare id:
+the instruction, then `max_tokens` and, where the model takes them,
+`enable_thinking`, `reasoning_effort` and its sampling parameters
+(`temperature`, `top_p`, `top_k`, `seed`, `repetition_penalty`,
+`frequency_penalty`, `presence_penalty`). An empty field is not sent: it shows
+the model's own default greyed out, or a dash where Cloudflare documents none
+(its models/schema API, probed again 2026-10-13: the older Workers AI models
+publish none for `top_p`, `top_k`, `seed` or the penalties). A choice shows
+the value that is sent when nothing is picked. Each field says what it does
+and its range, and a model whose penalties can go below the neutral point
+says that doing so makes repetition more likely. The sheet does not zoom: its
+fields are 16px so iOS does not zoom into one, and the page's zoom is locked
+while it is open.
+
+The ranges are what the service accepts, found by sending each end of every
+range to every Improve model (600 calls, 2026-10-13), not what the schemas
+say. Every model refuses `top_p` 0 and 2 and `repetition_penalty` 0; eight
+refuse `temperature` above 2 ("temperature must be in [0, 2]"); five refuse
+negative penalties. The newer chat models (DeepSeek V4, Gemma 4, GLM, Kimi,
+Nemotron, Qwen 3.8) take `temperature` 0–2, `top_p` 0.001–1 and penalties
+−2–2, as in Thread. From Thread's own testing (reloru/Thread): GPT-OSS 20B and
+120B are held to `temperature` 1 and 1.2 and `repetition_penalty` 0.7 and up,
+past which replies came back empty or garbled; Granite and Mistral Small say
+that above about 2 replies turned to nonsense; and GLM 5.3, GLM 5.3 Flash,
+Gemma 4, DeepSeek V4 and Kimi offer no `seed`, which did not repeat a reply
+there. Llama 3.1 8B Fast v2 has no schema and takes the token limit only.
+The Worker drops a value outside a model's range rather than send it to be
+refused.
+
+**How the tools work.** The guide in Lab describes every tool on the same
+five rows — *Model*, *Reads*, *Instruction*, *Limits*, *Writes to* — except
+Improve, whose tab is the same settings as its sheet; the chat's and
+Describe's *Tune* open it at their tab. The other tools' rows name the input
+their model has instead of an instruction: m2m100 takes text and two language
+codes; p-judger a prompt and images, and refuses any other key; Llama Guard,
+DistilBERT, ResNet-50 and the reranker have no instruction input in their
+schemas; the embedding models measure text as a document.
+
+An instruction is a draft until saved: typing changes nothing that is sent, ↶
+and ↷ step through the draft, *Revert to saved* puts the saved text back,
+*Load default* puts the app's own text in the draft (still undoable), and
+every Save keeps the text it replaced among that model's last ten versions.
+Closing over an unsaved draft asks first. Nothing is stored server-side: the
+settings live in this browser and ride along with each request, and the
+Worker caps them (instruction 4,000 characters, token limit 16–8,000). An
+orange *Tune* means the picked model has something set.
 
 **Deadlines and streaming.** Improve, Describe and the chat answer as
 server-sent events, following Cloudflare's guidance to stream "especially for

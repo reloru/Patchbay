@@ -5989,10 +5989,10 @@ const INSTRUCTABLE = ["improve", "chat", "describe"];
 const INSTRUCTION_VERSIONS = 10;
 const INSTRUCTION_COMMIT_MS = 500;
 let toolSettings = {};
-for (const t of INSTRUCTABLE) toolSettings[t] = { system: "", models: {}, versions: [] };
+for (const t of INSTRUCTABLE) toolSettings[t] = { stt: "", models: {} };
 let settingsOpenFor = null;
-// Unsaved instruction drafts, per tool, for as long as the page is open:
-// { text, past: [texts], at }.
+// Unsaved instruction drafts, per tool and model ("tool|model id"), for as long
+// as the page is open: { text, past: [texts], at }.
 const instructionDrafts = {};
 
 const TOOL_TABS = [
@@ -6010,20 +6010,17 @@ const TOOL_INFO = {
   improve: {
     where: "Picked under Models, below the prompt.",
     reads: "The prompt box text, and nothing else: it is a copy edit.",
-    scope: "all Improve models",
     writes: "Replaces the prompt box, as one Undo step.",
   },
   chat: {
     where: "Picked at the top of the chat.",
     reads:
       "The whole thread, so it remembers the conversation; the prompt box text while “Prompt box” is ticked; and each attached image whose chip is ticked, for a vision model. The chips untick after every Send — tick one again when a follow-up needs it.",
-    scope: "all chat models",
     writes: "The thread. “Put in prompt box” replaces the prompt, as one Undo step.",
   },
   describe: {
     where: "Picked under Models, below the prompt.",
     reads: "The first attached image, or one you pick when none is attached. Not the prompt.",
-    scope: "all Describe models",
     writes: "Replaces the prompt box, as one Undo step.",
   },
   translate: {
@@ -6062,23 +6059,37 @@ const TOOL_INFO = {
   },
 };
 
+const toolModels = (tool) => (tool === "describe" ? describeModels : tool === "chat" ? chatModels : improveModels);
+
+// Everything here is per model: the instruction, its earlier versions, and
+// every request setting. An instruction used to be shared by all of a tool's
+// models; a device that saved one gets it copied into each of them once, so
+// what they send does not change, and it is shared no longer.
 function loadToolSettings() {
+  let saved = null;
   try {
-    const saved = JSON.parse(localStorage.getItem(TOOL_SETTINGS_KEY) || "null");
-    if (saved && typeof saved === "object") {
-      for (const t of INSTRUCTABLE) {
-        if (!saved[t]) continue;
-        toolSettings[t] = {
-          system: saved[t].system || "",
-          stt: saved[t].stt || "",
-          models: saved[t].models || {},
-          versions: Array.isArray(saved[t].versions) ? saved[t].versions.filter((v) => v && typeof v.text === "string") : [],
-        };
-      }
-    }
+    saved = JSON.parse(localStorage.getItem(TOOL_SETTINGS_KEY) || "null");
   } catch {
     /* defaults */
   }
+  if (!saved || typeof saved !== "object") return;
+  let migrated = false;
+  for (const t of INSTRUCTABLE) {
+    const s = saved[t];
+    if (!s || typeof s !== "object") continue;
+    const models = s.models && typeof s.models === "object" ? s.models : {};
+    toolSettings[t] = { stt: s.stt || "", models };
+    const shared = typeof s.system === "string" ? s.system : "";
+    const versions = Array.isArray(s.versions) ? s.versions.filter((v) => v && typeof v.text === "string") : [];
+    if (!shared && !versions.length) continue;
+    for (const m of toolModels(t)) {
+      const e = (models[m.id] = models[m.id] || {});
+      if (shared && !e.system) e.system = shared;
+      if (versions.length && !e.versions) e.versions = versions.slice();
+    }
+    migrated = true;
+  }
+  if (migrated) saveToolSettings();
 }
 
 function saveToolSettings() {
@@ -6090,26 +6101,34 @@ function saveToolSettings() {
   refreshGears();
 }
 
-// The sampling parameters, in the order the settings show them, with what
-// each does. Which ones a model takes, and their ranges, come from its schema
-// (`sampling` on each model in models.js).
+// What each sampling parameter does, in the order the settings show them.
+// Which ones a model takes, and their ranges, are per model (`sampling` in
+// models.js, each end tested against the live service).
 const SAMPLING_HELP = {
-  temperature: "Controls the randomness of the output; higher values produce more random results.",
-  top_p: "How many possible words it considers. Lower is more predictable; higher allows more varied and creative responses.",
-  top_k: "Chooses from the top k most probable words. Lower is more focused; higher adds variety and surprises.",
-  seed: "Random seed, for reproducible generations.",
-  repetition_penalty: "Penalty for repeated tokens; higher values discourage repetition.",
-  frequency_penalty: "Decreases the likelihood of repeating the same lines verbatim.",
-  presence_penalty: "Increases the likelihood of introducing new topics.",
+  temperature: "How predictable the rewrite is. Lower keeps closer to the obvious wording; higher tries more varied wording.",
+  top_p: "Limits the model to its most likely next words. At 1 it can use any of them; lower keeps it to the safest choices. Usually change this or temperature, not both.",
+  top_k: "Limits the model to this many of its most likely next words at each step. Lower is more focused; higher allows more variety.",
+  seed: "Rewrites normally differ every time. A whole number here makes them repeatable: the same text, settings and number should give the same rewrite again, though not always exactly.",
+  repetition_penalty: "Makes the model less likely to repeat words. Higher pushes harder against repetition.",
+  frequency_penalty: "Makes a word less likely the more often it has already been used.",
+  presence_penalty: "Makes a word less likely once it has appeared at all, which pushes toward new wording.",
 };
 
-// What goes out with a request: only what differs from the defaults. A draft
-// is never sent — only what was saved.
+const modelEntry = (tool, modelId) => (toolSettings[tool].models || {})[modelId] || {};
+
+function storeModelEntry(tool, modelId, entry) {
+  const models = toolSettings[tool].models;
+  if (Object.keys(entry).length) models[modelId] = entry;
+  else delete models[modelId];
+  saveToolSettings();
+}
+
+// What goes out with a request: only what this model has set. A draft is
+// never sent — only what was saved.
 function toolSettingsFor(tool, modelId) {
-  const t = toolSettings[tool];
-  const m = (t.models || {})[modelId] || {};
+  const m = modelEntry(tool, modelId);
   const out = {};
-  if (t.system && t.system.trim()) out.system = t.system;
+  if (m.system && m.system.trim()) out.system = m.system;
   if (m.maxTokens) out.maxTokens = m.maxTokens;
   if (typeof m.thinking === "boolean") out.thinking = m.thinking;
   if (m.effort) out.effort = m.effort;
@@ -6143,18 +6162,24 @@ function refreshGears() {
   }
 }
 
-const savedInstruction = (tool) => toolSettings[tool].system || defaultInstructions[tool] || "";
+const savedInstruction = (tool, modelId) => modelEntry(tool, modelId).system || defaultInstructions[tool] || "";
+const draftKey = (tool, modelId) => `${tool}|${modelId}`;
 
-function instructionDraft(tool) {
-  if (!instructionDrafts[tool]) {
-    const text = savedInstruction(tool);
-    instructionDrafts[tool] = { text, past: [text], at: 0, timer: null };
+function instructionDraft(tool, modelId) {
+  const key = draftKey(tool, modelId);
+  if (!instructionDrafts[key]) {
+    const text = savedInstruction(tool, modelId);
+    instructionDrafts[key] = { text, past: [text], at: 0, timer: null };
   }
-  return instructionDrafts[tool];
+  return instructionDrafts[key];
 }
 
-const draftDirty = (tool) => Boolean(instructionDrafts[tool]) && instructionDrafts[tool].text !== savedInstruction(tool);
-const anyDraftDirty = () => INSTRUCTABLE.filter(draftDirty);
+function draftDirty(key) {
+  const d = instructionDrafts[key];
+  const [tool, modelId] = key.split("|");
+  return Boolean(d) && d.text !== savedInstruction(tool, modelId);
+}
+const anyDraftDirty = () => Object.keys(instructionDrafts).filter(draftDirty);
 
 // One history entry per burst of typing, the prompt box's own rule.
 function commitDraft(d) {
@@ -6266,22 +6291,28 @@ function renderFixedTool(box, tool) {
   toolRow(box, "Writes to", info.writes);
 }
 
+// The Improve settings: the instruction and every request setting, for the
+// model picked. The Improve sheet shows this; so does the Improve tab here.
+function renderImprovePanel(box, m) {
+  box.appendChild(instructionEditor("improve", m));
+  box.appendChild(paramsEditor("improve", m));
+}
+
 function renderInstructableTool(box, tool) {
   const m = toolModel(tool);
   if (!m) return;
-  const info = TOOL_INFO[tool];
-  const t = toolSettings[tool];
-  const mine = t.models[m.id] || {};
-  const label = TOOL_TABS.find(([id]) => id === tool)[1].replace(/^\S+\s/, "");
-
   const h = document.createElement("h3");
-  h.textContent = `${label} settings · ${m.label}`;
+  h.textContent = m.label;
   box.appendChild(h);
   const exact = document.createElement("p");
   exact.className = "hint model-id";
   exact.textContent = m.id;
   box.appendChild(exact);
-
+  if (tool === "improve") {
+    renderImprovePanel(box, m);
+    return;
+  }
+  const info = TOOL_INFO[tool];
   let where = info.where;
   if (tool === "describe" && m.id.includes("moondream")) {
     where += " Moondream's caption mode takes no text, so with your own instruction it answers it as a question instead.";
@@ -6292,13 +6323,10 @@ function renderInstructableTool(box, tool) {
   }
   if (tool === "chat" && m.maxImages === 1) where += " It takes one image per message: several ticked images go combined into one numbered picture.";
   if (tool === "chat" && m.needsImage) where += " It needs an image with every message.";
-  if (tool === "improve" && m.format === "question") {
-    where += " Moondream answers one question, so the instruction and your text go to its query mode together.";
-  }
   toolRow(box, "Model", `${m.label} — ${where}`);
   toolRow(box, "Reads", info.reads);
-  toolRow(box, "Instruction", instructionEditor(tool, info.scope));
-  toolRow(box, "Limits", limitsEditor(tool, m, mine));
+  toolRow(box, "Instruction", instructionEditor(tool, m));
+  toolRow(box, "Limits", paramsEditor(tool, m));
   toolRow(box, "Writes to", info.writes);
   if (tool === "chat" && sttModels.length) {
     const wrap = document.createElement("div");
@@ -6307,14 +6335,17 @@ function renderInstructableTool(box, tool) {
   }
 }
 
-function instructionEditor(tool, scope) {
-  const d = instructionDraft(tool);
+function instructionEditor(tool, m) {
+  const d = instructionDraft(tool, m.id);
   const def = defaultInstructions[tool] || "";
   const wrap = document.createElement("div");
   wrap.className = "instruction";
 
   const lab = document.createElement("label");
-  lab.textContent = `Shared by ${scope}`;
+  const title = document.createElement("span");
+  title.className = "settings-section";
+  title.textContent = "Instruction";
+  lab.appendChild(title);
   const ta = document.createElement("textarea");
   ta.className = "settings-system";
   ta.value = d.text;
@@ -6335,28 +6366,25 @@ function instructionEditor(tool, scope) {
   redo.setAttribute("aria-label", "Redo in the instruction");
   const save = button("Save", "instr-save", () => {
     commitDraft(d);
-    const before = savedInstruction(tool);
+    const before = savedInstruction(tool, m.id);
     if (d.text === before) return;
-    const t = toolSettings[tool];
+    const e = { ...modelEntry(tool, m.id) };
     // The text being replaced is kept, so a save made in error is one pick away.
-    t.versions = [{ text: before, at: Date.now() }, ...t.versions.filter((v) => v.text !== before && v.text !== d.text)].slice(0, INSTRUCTION_VERSIONS);
+    e.versions = [{ text: before, at: Date.now() }, ...(e.versions || []).filter((v) => v.text !== before && v.text !== d.text)].slice(0, INSTRUCTION_VERSIONS);
     // Saving the default text verbatim would pin it, so a later change to the
     // app's default would never reach this device. Equal to default = unset.
-    t.system = d.text.trim() === def.trim() ? "" : d.text;
-    saveToolSettings();
-    delete instructionDrafts[tool];
-    renderToolSettings();
+    if (d.text.trim() === def.trim()) delete e.system;
+    else e.system = d.text;
+    storeModelEntry(tool, m.id, e);
+    delete instructionDrafts[draftKey(tool, m.id)];
+    rerenderSettings();
   });
-  const revert = button("Revert to saved", "secondary instr-revert", () => setDraft(savedInstruction(tool), true));
+  const revert = button("Revert to saved", "secondary instr-revert", () => setDraft(savedInstruction(tool, m.id), true));
   const loadDefault = button("Load default", "secondary instr-default", () => setDraft(def, true));
 
   const refresh = () => {
-    const dirty = d.text !== savedInstruction(tool);
-    state.textContent = dirty
-      ? "Not saved yet — the saved instruction is still the one sent."
-      : toolSettings[tool].system
-        ? "Saved. Your own instruction is sent."
-        : "The app's default is sent.";
+    const dirty = d.text !== savedInstruction(tool, m.id);
+    state.textContent = dirty ? "Not saved yet." : "";
     state.classList.toggle("dirty", dirty);
     save.disabled = !dirty;
     revert.disabled = !dirty;
@@ -6388,7 +6416,7 @@ function instructionEditor(tool, scope) {
   wrap.appendChild(row);
   wrap.appendChild(state);
 
-  const versions = toolSettings[tool].versions;
+  const versions = modelEntry(tool, m.id).versions || [];
   if (versions.length) {
     const sel = document.createElement("select");
     sel.className = "settings-versions";
@@ -6416,168 +6444,197 @@ function instructionEditor(tool, scope) {
   return wrap;
 }
 
-function limitsEditor(tool, m, mine) {
-  const t = toolSettings[tool];
-  const wrap = document.createElement("div");
-  wrap.className = "limits";
-  const store = () => {
-    t.models[m.id] = mine;
-    if (!Object.keys(mine).length) delete t.models[m.id];
-    saveToolSettings();
-  };
+const PENALTIES = ["repetition_penalty", "frequency_penalty", "presence_penalty"];
+
+// One setting: its request name, the control, what it does, and its range.
+function paramField(name, control, help, extra) {
+  const lab = document.createElement("label");
+  lab.className = "sampling-field";
+  const title = document.createElement("span");
+  title.className = "sampling-name";
+  title.textContent = name;
+  lab.appendChild(title);
+  lab.appendChild(control);
+  if (help) {
+    const h = document.createElement("span");
+    h.className = "hint";
+    h.textContent = help;
+    lab.appendChild(h);
+  }
+  if (extra) {
+    const n = document.createElement("span");
+    n.className = "hint sampling-note";
+    n.textContent = extra;
+    lab.appendChild(n);
+  }
+  return lab;
+}
+
+const rangeText = (min, max) => (min != null && max != null ? ` Range ${min}–${max}.` : "");
+
+// Every request setting this model takes, each kept for this model alone. An
+// empty field is not sent: the model uses its own default, shown greyed out,
+// or a dash where Cloudflare documents none.
+function paramsEditor(tool, m) {
+  const mine = { ...modelEntry(tool, m.id) };
+  const store = () => storeModelEntry(tool, m.id, mine);
+  const grid = document.createElement("div");
+  grid.className = "sampling";
 
   const def = defaultMaxTokens(tool, m);
-  const tok = document.createElement("label");
-  tok.textContent = `Token limit — ${m.label} only`;
   const num = document.createElement("input");
   num.type = "number";
   num.min = "16";
   num.max = "8000";
   num.className = "settings-tokens";
-  num.placeholder = `default ${def}`;
+  num.inputMode = "numeric";
+  num.placeholder = String(def);
   num.value = mine.maxTokens || "";
-  const cost = document.createElement("p");
-  cost.className = "hint settings-cost";
-  const showCost = () => {
-    const n = Number(num.value) || def;
-    cost.textContent = m.outPerM
-      ? `At most ~${Math.round((n * m.outPerM) / 1e6).toLocaleString()} neurons of reply at ${n.toLocaleString()} tokens.`
-      : "";
-  };
   num.addEventListener("input", () => {
     const n = Math.floor(Number(num.value));
-    if (n >= 16) mine.maxTokens = Math.min(n, 8000);
+    const ok = num.value.trim() !== "" && n >= 16 && n <= 8000;
+    num.classList.toggle("invalid", num.value.trim() !== "" && !ok);
+    if (ok) mine.maxTokens = n;
     else delete mine.maxTokens;
     store();
-    showCost();
   });
-  tok.appendChild(num);
-  wrap.appendChild(tok);
-  wrap.appendChild(cost);
-  showCost();
+  const thinks = m.reasoning || m.canThink;
+  const tokHelp =
+    "The longest the reply can be, counted in tokens, which are short pieces of text, often part of a word. A reply that reaches it stops partway." +
+    (thinks ? " Thinking counts toward it, so a model that thinks for long can use it up before it answers." : "");
+  const tokField = paramField("max_tokens", num, tokHelp + rangeText(16, 8000));
+  tokField.classList.add("wide");
+  grid.appendChild(tokField);
 
-  const row = document.createElement("div");
-  row.className = "row";
+  // A choice shows the value that is sent when nothing is picked; picking that
+  // same value sends nothing.
   if (m.canThink) {
-    const lab = document.createElement("label");
-    lab.textContent = "Thinking";
     const sel = document.createElement("select");
     sel.className = "settings-thinking";
-    const dflt = m.thinking === false ? "off" : "on";
-    for (const [v, text] of [["", `Default (${dflt})`], ["on", "On"], ["off", "Off"]]) {
+    for (const [v, text] of [["on", "On"], ["off", "Off"]]) {
       const o = document.createElement("option");
       o.value = v;
       o.textContent = text;
       sel.appendChild(o);
     }
-    sel.value = typeof mine.thinking === "boolean" ? (mine.thinking ? "on" : "off") : "";
+    const base = m.thinking === false ? "off" : "on";
+    sel.value = typeof mine.thinking === "boolean" ? (mine.thinking ? "on" : "off") : base;
     sel.addEventListener("change", () => {
-      if (sel.value === "") delete mine.thinking;
+      if (sel.value === base) delete mine.thinking;
       else mine.thinking = sel.value === "on";
       store();
     });
-    lab.appendChild(sel);
-    row.appendChild(lab);
+    grid.appendChild(paramField("enable_thinking", sel, "Lets the model think before it answers. Off is faster and uses fewer tokens."));
   }
   if (Array.isArray(m.efforts) && m.efforts.length) {
-    const lab = document.createElement("label");
-    lab.textContent = "Reasoning effort";
     const sel = document.createElement("select");
     sel.className = "settings-effort";
     // Only the values Cloudflare lists for this model: anything else is
     // silently rewritten on its side, sometimes to the priciest setting.
-    const shown = m.effort || m.effortDefault;
-    const opts = [["", `Default${shown ? ` (${shown})` : ""}`], ...m.efforts.map((e) => [e, e[0].toUpperCase() + e.slice(1)])];
+    const base = m.effort || m.effortDefault || "";
+    const opts = (base ? [] : [["", "—"]]).concat(m.efforts.map((e) => [e, e[0].toUpperCase() + e.slice(1)]));
     for (const [v, text] of opts) {
       const o = document.createElement("option");
       o.value = v;
       o.textContent = text;
       sel.appendChild(o);
     }
-    sel.value = mine.effort || "";
+    sel.value = mine.effort || base;
     sel.addEventListener("change", () => {
-      if (sel.value) mine.effort = sel.value;
-      else delete mine.effort;
+      if (!sel.value || sel.value === base) delete mine.effort;
+      else mine.effort = sel.value;
       store();
     });
-    lab.appendChild(sel);
-    row.appendChild(lab);
-  }
-  if (row.children.length) {
-    wrap.appendChild(row);
-    if (m.effort && m.effortDefault && m.effort !== m.effortDefault) {
-      const p = document.createElement("p");
-      p.className = "hint";
-      p.textContent = `Patchbay sends ${m.effort} unless you choose another; Cloudflare's own default for this model is ${m.effortDefault}.`;
-      wrap.appendChild(p);
-    }
-  } else {
-    const p = document.createElement("p");
-    p.className = "hint";
-    p.textContent = "This model takes no thinking or effort setting.";
-    wrap.appendChild(p);
+    const why =
+      m.effort && m.effortDefault && m.effort !== m.effortDefault
+        ? `Cloudflare's own default for this model is ${m.effortDefault}; Patchbay sends ${m.effort}, which keeps a rewrite short.`
+        : "";
+    grid.appendChild(paramField("reasoning_effort", sel, "How long the model thinks before it answers. Higher thinks longer and uses more tokens.", why));
   }
 
-  // Every sampling parameter this model's schema takes, within the range it
-  // documents; blank means the model's own default. One the schema does not
-  // list is not offered at all.
   const sampling = Object.entries(m.sampling || {});
-  if (sampling.length) {
-    const grid = document.createElement("div");
-    grid.className = "sampling";
-    for (const [name, [min, max, dflt]] of sampling) {
-      const lab = document.createElement("label");
-      lab.className = "sampling-field";
-      const title = document.createElement("span");
-      title.className = "sampling-name";
-      title.textContent = name;
-      lab.appendChild(title);
-      const input = document.createElement("input");
-      input.type = "number";
-      input.className = `settings-${name.replace(/_/g, "-")}`;
-      input.step = name === "top_k" || name === "seed" ? "1" : "0.01";
-      if (min != null) input.min = String(min);
-      if (max != null) input.max = String(max);
-      input.placeholder = dflt != null ? `default ${dflt}` : "default not published";
-      input.value = typeof mine[name] === "number" ? String(mine[name]) : "";
-      const help = document.createElement("span");
-      help.className = "hint";
-      const range = min != null && max != null ? ` Range ${min}–${max}.` : "";
-      help.textContent = SAMPLING_HELP[name] + range;
-      input.addEventListener("input", () => {
-        const v = input.value.trim() === "" ? NaN : Number(input.value);
-        const inRange = Number.isFinite(v) && (min == null || v >= min) && (max == null || v <= max);
-        input.classList.toggle("invalid", input.value.trim() !== "" && !inRange);
-        if (inRange) mine[name] = name === "top_k" || name === "seed" ? Math.round(v) : v;
-        else delete mine[name];
-        store();
-      });
-      lab.appendChild(input);
-      lab.appendChild(help);
-      grid.appendChild(lab);
-    }
-    wrap.appendChild(grid);
-  } else {
+  const notes = m.samplingNotes || {};
+  for (const [name, [min, max, dflt]] of sampling) {
+    const whole = name === "top_k" || name === "seed";
+    const input = document.createElement("input");
+    input.type = "number";
+    input.className = `settings-${name.replace(/_/g, "-")}`;
+    input.step = whole ? "1" : "0.01";
+    input.inputMode = whole ? "numeric" : "decimal";
+    if (min != null) input.min = String(min);
+    if (max != null) input.max = String(max);
+    input.placeholder = name === "seed" ? "Random" : dflt != null ? String(dflt) : "—";
+    input.value = typeof mine[name] === "number" ? String(mine[name]) : "";
+    input.addEventListener("input", () => {
+      const v = input.value.trim() === "" ? NaN : Number(input.value);
+      const inRange = Number.isFinite(v) && (min == null || v >= min) && (max == null || v <= max);
+      input.classList.toggle("invalid", input.value.trim() !== "" && !inRange);
+      if (inRange) mine[name] = whole ? Math.round(v) : v;
+      else delete mine[name];
+      store();
+    });
+    grid.appendChild(paramField(name, input, SAMPLING_HELP[name] + rangeText(min, max), notes[name]));
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "limits";
+  wrap.appendChild(grid);
+  // Only the penalties this model can actually be set below the neutral point.
+  const low = [];
+  const sp = m.sampling || {};
+  const below = (n, at) => sp[n] && sp[n][0] != null && sp[n][0] < at;
+  const fp = below("frequency_penalty", 0);
+  const pp = below("presence_penalty", 0);
+  if (fp && pp) low.push("frequency or presence penalty below 0");
+  else if (fp) low.push("frequency penalty below 0");
+  else if (pp) low.push("presence penalty below 0");
+  if (below("repetition_penalty", 1)) low.push("repetition penalty below 1");
+  if (low.length) {
     const p = document.createElement("p");
-    p.className = "hint";
-    p.textContent = "Cloudflare publishes no input schema for this model, so only the token limit is offered.";
+    p.className = "hint penalty-note";
+    p.textContent = `Setting ${low.join(", or ")}${low.length > 1 ? "," : ""} is not recommended: it makes repeated words more likely, not less.`;
     wrap.appendChild(p);
   }
-  // Scoped to the model in its own label, so it cannot be mistaken for
-  // resetting the instruction as well.
-  wrap.appendChild(
-    button(`Reset ${m.label} limits`, "secondary reset-limits", () => {
-      delete t.models[m.id];
-      saveToolSettings();
-      renderToolSettings();
-    })
-  );
   return wrap;
+}
+
+// The settings on screen are redrawn after a save, wherever they are shown.
+function rerenderSettings() {
+  if (!$("sheet-improve").classList.contains("hidden")) renderImproveSheet();
+  if (!$("sheet-tools").classList.contains("hidden")) renderToolSettings();
+}
+
+// The settings sheets do not zoom: iOS zooms into a focused field otherwise,
+// and pinching inside a form this dense only loses the place.
+const VIEWPORT = document.querySelector('meta[name="viewport"]');
+const VIEWPORT_FREE = VIEWPORT ? VIEWPORT.content : "";
+function lockZoom(on) {
+  if (VIEWPORT) VIEWPORT.content = on ? `${VIEWPORT_FREE}, maximum-scale=1, user-scalable=no` : VIEWPORT_FREE;
+}
+function unlockZoomIfDone() {
+  if ($("sheet-improve").classList.contains("hidden") && $("sheet-tools").classList.contains("hidden")) lockZoom(false);
+}
+
+function renderImproveSheet() {
+  const m = toolModel("improve");
+  const box = $("improve-settings-body");
+  box.innerHTML = "";
+  if (!m) return;
+  $("improve-model-name").textContent = m.label;
+  $("improve-model-id").textContent = m.id;
+  renderImprovePanel(box, m);
+}
+
+function openImproveSettings() {
+  renderImproveSheet();
+  lockZoom(true);
+  openSheet("sheet-improve");
 }
 
 function openTools(tool) {
   settingsOpenFor = tool;
   renderToolSettings();
+  lockZoom(true);
   openSheet("sheet-tools");
 }
 
@@ -6585,21 +6642,35 @@ function initToolSettings() {
   loadToolSettings();
   for (const tool of INSTRUCTABLE) {
     const btn = $(`${tool}-settings`);
-    if (btn) btn.addEventListener("click", () => openTools(tool));
+    if (btn) btn.addEventListener("click", () => (tool === "improve" ? openImproveSettings() : openTools(tool)));
     $(TOOL_MODEL_SELECT[tool]).addEventListener("change", () => {
       refreshGears();
+      if (tool === "improve" && !$("sheet-improve").classList.contains("hidden")) renderImproveSheet();
       if (settingsOpenFor === tool) renderToolSettings();
     });
   }
   $("open-tools").addEventListener("click", () => openTools("judge"));
   // An unsaved instruction is asked about rather than lost, or kept by accident.
-  sheetGuards["sheet-tools"] = () => {
+  const guard = () => {
     const dirty = anyDraftDirty();
     if (!dirty.length) return true;
-    const names = dirty.map((t) => TOOL_TABS.find(([id]) => id === t)[1]).join(", ");
+    const names = dirty
+      .map((key) => {
+        const [tool, id] = key.split("|");
+        const m = toolModels(tool).find((x) => x.id === id);
+        return `${TOOL_TABS.find(([t]) => t === tool)[1]}: ${m ? m.label : id}`;
+      })
+      .join(", ");
     if (!window.confirm(`Discard the unsaved instruction changes (${names})?`)) return false;
-    for (const t of dirty) delete instructionDrafts[t];
+    for (const key of dirty) delete instructionDrafts[key];
     return true;
+  };
+  sheetGuards["sheet-tools"] = guard;
+  sheetGuards["sheet-improve"] = guard;
+  sheetAfterClose["sheet-tools"] = unlockZoomIfDone;
+  sheetAfterClose["sheet-improve"] = () => {
+    $("improve-settings-body").innerHTML = "";
+    unlockZoomIfDone();
   };
   refreshGears();
 }

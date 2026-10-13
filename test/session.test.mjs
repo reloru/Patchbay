@@ -40,13 +40,13 @@ function check(name, cond, extra = "") {
 
 const promptSel = '[data-field="prompt"]';
 
-async function open(context, init) {
+async function open(context, init, initArg) {
   const page = await context.newPage();
   page.on("pageerror", (e) => {
     fails.push("pageerror: " + e.message);
     console.log("  FAIL pageerror: " + e.message);
   });
-  if (init) await page.addInitScript(init);
+  if (init) await page.addInitScript(init, initArg);
   await page.goto(BASE);
   await page.waitForSelector("#app:not(.hidden)");
   await page.waitForFunction(() => document.querySelector("#footer-note").textContent.length > 0);
@@ -1981,36 +1981,53 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
-// ── ⚙ settings for Improve and the chat ────────────────────────────────────
+// ── Improve settings: its own sheet, everything per model ──────────────────
 {
-  const context = await browser.newContext();
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   let page = await open(context);
   await page.selectOption("#model-select", "p-image");
   await page.waitForTimeout(200);
   await pickImprove(page, "@cf/zai-org/glm-5.3");
   await page.locator("#improve-settings").click();
-  check("⚙ opens the settings for the picked model", (await page.locator("#tool-settings h3").textContent()).includes("GLM 5.3"));
+  await page.waitForSelector("#sheet-improve:not(.hidden)");
+  check("Tune opens Improve's own sheet, not the tools guide", await page.locator("#sheet-tools").isHidden());
+  check("headed by the model's name", (await page.locator("#improve-model-name").textContent()) === "GLM 5.3");
+  check("with its Cloudflare id under it", (await page.locator("#improve-model-id").textContent()) === "@cf/zai-org/glm-5.3");
+  const sheetText = await page.locator("#sheet-improve").textContent();
+  check(
+    "no tool tabs, Reads, Writes to, cost line or Reset",
+    (await page.locator("#sheet-improve .tool-tab, #sheet-improve .tool-row, #sheet-improve .reset-limits, #sheet-improve .settings-cost").count()) === 0 &&
+      !/Shared by|Reset|neurons of reply|Writes to|app's default is sent/.test(sheetText),
+    sheetText.slice(0, 200)
+  );
+  const placeholders = await page.locator("#sheet-improve input").evaluateAll((els) => els.map((e) => e.placeholder));
+  check("no field says “default”", placeholders.every((p) => !/default/i.test(p)), JSON.stringify(placeholders));
+  check(
+    "the token limit is called max_tokens, with the limit sent greyed in",
+    (await page.locator("#sheet-improve .sampling-name").first().textContent()) === "max_tokens" && (await page.getAttribute(".settings-tokens", "placeholder")) === "1500"
+  );
   check("the instruction starts as the default", (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION");
   check("a model with thinking offers the switch", (await page.locator(".settings-thinking").count()) === 1 && (await page.locator(".settings-effort").count()) === 1);
-  check("and effort shows its built-in default", (await page.locator(".settings-effort option").first().textContent()).includes("low"));
+  check("which shows what is sent", (await page.inputValue(".settings-thinking")) === "on");
   check(
-    "effort offers only the values Cloudflare lists for the model",
-    JSON.stringify(await page.locator(".settings-effort option").allTextContents()) === JSON.stringify(["Default (low)", "Low", "High", "Max"]),
+    "effort offers only the values Cloudflare lists, with the one sent picked",
+    JSON.stringify(await page.locator(".settings-effort option").allTextContents()) === JSON.stringify(["Low", "High", "Max"]) && (await page.inputValue(".settings-effort")) === "low",
     JSON.stringify(await page.locator(".settings-effort option").allTextContents())
   );
-  check("the exact model id is shown", (await page.locator("#tool-settings .model-id").textContent()) === "@cf/zai-org/glm-5.3");
+  check("the sheet cannot be zoomed", await page.evaluate(() => document.querySelector('meta[name="viewport"]').content.includes("maximum-scale=1")));
+  check("and its fields are 16px, so iOS does not zoom into one", (await page.locator(".settings-system").evaluate((el) => getComputedStyle(el).fontSize)) === "16px");
 
   await page.fill(".settings-system", "Rewrite it as a haiku.");
   check("an edited instruction is a draft until saved", (await page.locator(".settings-dirty").textContent()).includes("Not saved"));
-  await page.locator("#tool-settings .instr-save").click();
-  check("Save makes it the one sent", (await page.locator(".settings-dirty").textContent()).includes("Saved"));
+  await page.locator("#sheet-improve .instr-save").click();
+  check("once saved, nothing more is said", (await page.locator(".settings-dirty").textContent()) === "");
   await page.fill(".settings-tokens", "900");
   await page.selectOption(".settings-thinking", "off");
   await page.selectOption(".settings-effort", "high");
-  check("the cost of the limit is shown", (await page.locator("#tool-settings .settings-cost").textContent()).includes("360"));
   check("the ⚙ marks a customised model", await page.locator("#improve-settings").evaluate((el) => el.classList.contains("custom")));
 
-  await page.locator("#sheet-tools .sheet-close").click();
+  await page.locator("#sheet-improve .sheet-close").click();
+  check("closing it lets the page zoom again", !(await page.evaluate(() => document.querySelector('meta[name="viewport"]').content.includes("maximum-scale"))));
   await closeOptions(page);
   await page.fill(promptSel, "a cat");
   await page.waitForTimeout(700);
@@ -2027,61 +2044,73 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await pickImprove(page, "@cf/meta/llama-3.2-3b-instruct");
   await page.waitForTimeout(150);
   await page.locator("#improve-settings").click();
-  check("a model without thinking says so", (await page.locator(".settings-thinking").count()) === 0 && (await page.locator("#tool-settings").textContent()).includes("no thinking"));
-  check("the instruction is shared by the tool's models", (await page.inputValue(".settings-system")) === "Rewrite it as a haiku.");
-  check("the token limit belongs to the other model", (await page.inputValue(".settings-tokens")) === "");
+  check("a model without thinking has no switch for it", (await page.locator(".settings-thinking").count()) === 0 && (await page.locator(".settings-effort").count()) === 0);
+  check("the instruction belongs to the model it was saved for", (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION");
+  check("and so does the token limit", (await page.inputValue(".settings-tokens")) === "");
+  await page.selectOption("#improve-model", "@cf/zai-org/glm-5.3");
+  await page.waitForTimeout(150);
+  check("switching model under the open sheet shows that model's settings", (await page.locator("#improve-model-name").textContent()) === "GLM 5.3" && (await page.inputValue(".settings-tokens")) === "900");
+  await page.locator("#sheet-improve .sheet-close").click();
 
   await page.close();
   page = await open(context);
   await pickImprove(page, "@cf/zai-org/glm-5.3");
   await page.locator("#improve-settings").click();
-  check("settings survive a reload", (await page.inputValue(".settings-tokens")) === "900");
-  await page.locator("#tool-settings button", { hasText: "Reset GLM 5.3 limits" }).click();
-  check("resetting the model's limits leaves the instruction alone", (await page.inputValue(".settings-tokens")) === "" && (await page.inputValue(".settings-system")) === "Rewrite it as a haiku.");
+  check("settings survive a reload", (await page.inputValue(".settings-tokens")) === "900" && (await page.inputValue(".settings-system")) === "Rewrite it as a haiku.");
 
   // Undo inside the instruction, then Revert, then Load default.
   await page.locator(".settings-system").pressSequentially(" Short.", { delay: 10 });
   await page.waitForTimeout(700);
-  await page.locator("#tool-settings .instr-undo").click();
+  await page.locator("#sheet-improve .instr-undo").click();
   check("the instruction has its own Undo", (await page.inputValue(".settings-system")) === "Rewrite it as a haiku.");
-  await page.locator("#tool-settings .instr-default").click();
+  await page.locator("#sheet-improve .instr-default").click();
   check("Load default only fills the draft", (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION" && (await page.locator(".settings-dirty").textContent()).includes("Not saved"));
-  await page.locator("#tool-settings .instr-revert").click();
+  await page.locator("#sheet-improve .instr-revert").click();
   check("Revert puts the saved text back", (await page.inputValue(".settings-system")) === "Rewrite it as a haiku.");
-  await page.locator("#tool-settings .instr-default").click();
-  await page.locator("#tool-settings .instr-save").click();
-  check("saving the default puts the defaults back", (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION");
-  check("and the ⚙ is plain again", !(await page.locator("#improve-settings").evaluate((el) => el.classList.contains("custom"))));
+  await page.locator("#sheet-improve .instr-default").click();
+  await page.locator("#sheet-improve .instr-save").click();
+  check("saving the default puts the default back", (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION");
   await page.selectOption(".settings-versions", { index: 1 });
   check("the replaced instruction is one pick away", (await page.inputValue(".settings-system")) === "Rewrite it as a haiku.");
 
   // Closing over an unsaved draft asks first.
   page.once("dialog", (d) => d.dismiss());
-  await page.locator("#sheet-tools .sheet-close").click();
-  check("an unsaved draft keeps the sheet open when the question is declined", await page.locator("#sheet-tools").isVisible());
+  await page.locator("#sheet-improve .sheet-close").click();
+  check("an unsaved draft keeps the sheet open when the question is declined", await page.locator("#sheet-improve").isVisible());
   page.once("dialog", (d) => d.accept());
-  await page.locator("#sheet-tools .sheet-close").click();
-  check("and is discarded when it is accepted", await page.locator("#sheet-tools").isHidden());
+  await page.locator("#sheet-improve .sheet-close").click();
+  check("and is discarded when it is accepted", await page.locator("#sheet-improve").isHidden());
   await page.locator("#improve-settings").click();
   check("so the saved instruction is what shows next time", (await page.inputValue(".settings-system")) === "DEFAULT IMPROVE INSTRUCTION");
+  await page.locator("#sheet-improve .sheet-close").click();
+  await closeOptions(page);
 
-  // Every tool on the same rows.
+  // The tools guide, in Lab, shows the same Improve settings; the other tools
+  // keep their rows until it is redone.
+  await page.locator("#tab-lab").click();
+  await page.locator("#open-tools").click();
+  await page.locator(".tool-tab", { hasText: "Improve" }).click();
+  check(
+    "the tools guide's Improve tab is the same settings",
+    (await page.locator("#tool-settings .tool-row").count()) === 0 && (await page.inputValue("#tool-settings .settings-tokens")) === "900"
+  );
   const rows = [];
   for (const tab of await page.locator(".tool-tab").all()) {
+    if ((await tab.textContent()) === "Improve") continue;
     await tab.click();
     rows.push((await page.locator(".tool-row-name").allTextContents()).slice(0, 5).join("|"));
   }
   check(
-    "every tool is described on the same five rows",
-    rows.length === 8 && rows.every((r) => r.toLowerCase() === "model|reads|instruction|limits|writes to"),
+    "every other tool is described on the same five rows",
+    rows.length === 7 && rows.every((r) => r.toLowerCase() === "model|reads|instruction|limits|writes to"),
     JSON.stringify(rows)
   );
   await page.locator(".tool-tab", { hasText: "Describe" }).click();
-  check("Describe's instruction is editable now, from its own default", (await page.inputValue(".settings-system")) === "DEFAULT DESCRIBE INSTRUCTION");
+  check("Describe's instruction is editable, from its own default", (await page.inputValue(".settings-system")) === "DEFAULT DESCRIBE INSTRUCTION");
   await page.fill(".settings-system", "Name the colours only.");
   await page.locator("#tool-settings .instr-save").click();
   await page.locator("#sheet-tools .sheet-close").click();
-  await closeOptions(page);
+  await page.locator("#tab-create").click();
   await describeFromGallery(page);
   await page.waitForFunction((s) => document.querySelector(s).value === "STUB CAPTION TEXT", promptSel);
   const described = await (await page.request.get(BASE + "__describe")).json();
@@ -2097,6 +2126,36 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForSelector(".chat-msg.assistant:not(.pending)");
   const chatSent = await (await page.request.get(BASE + "__chat")).json();
   check("the chat sends its settings", chatSent.settings && chatSent.settings.maxTokens === 300, JSON.stringify(chatSent.settings));
+  await page.close();
+  await context.close();
+}
+
+// ── An instruction once shared by all of a tool's models is copied into each
+//    of them, and is shared no longer ─────────────────────────────────────
+{
+  const context = await browser.newContext();
+  const legacy = {
+    improve: { system: "Old shared instruction.", versions: [{ text: "Older still.", at: 1 }], models: { "@cf/zai-org/glm-5.3": { maxTokens: 700 } } },
+  };
+  let page = await open(context, (v) => {
+    if (!localStorage.getItem("patchbay_tool_settings")) localStorage.setItem("patchbay_tool_settings", v);
+  }, JSON.stringify(legacy));
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("patchbay_tool_settings")).improve);
+  const ids = await page.evaluate(() => improveModels.map((m) => m.id));
+  check("the shared instruction is no longer stored as shared", !("system" in stored) && !("versions" in stored), JSON.stringify(Object.keys(stored)));
+  check(
+    "every Improve model got it, with its earlier versions",
+    ids.every((id) => stored.models[id] && stored.models[id].system === "Old shared instruction." && stored.models[id].versions.length === 1),
+    String(ids.filter((id) => !(stored.models[id] && stored.models[id].system)).length)
+  );
+  check("and a model's own settings were kept", stored.models["@cf/zai-org/glm-5.3"].maxTokens === 700);
+  await pickImprove(page, "@cf/meta/llama-3.2-3b-instruct");
+  await page.locator("#improve-settings").click();
+  await page.fill(".settings-system", "Only for Llama 3B.");
+  await page.locator("#sheet-improve .instr-save").click();
+  await page.selectOption("#improve-model", "@cf/zai-org/glm-5.3");
+  await page.waitForTimeout(150);
+  check("changing one model's instruction leaves the others alone", (await page.inputValue(".settings-system")) === "Old shared instruction.");
   await page.close();
   await context.close();
 }
@@ -2260,7 +2319,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
-// ── Sampling settings follow each model's schema ───────────────────────────
+// ── Each model offers what it takes, in the ranges the service accepts ─────
 {
   const context = await browser.newContext();
   const page = await open(context);
@@ -2268,26 +2327,46 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.waitForTimeout(200);
   await pickImprove(page, "@cf/meta/llama-3.2-3b-instruct");
   await page.locator("#improve-settings").click();
-  const all = ["temperature", "top_p", "top_k", "seed", "repetition_penalty", "frequency_penalty", "presence_penalty"];
-  check("a Llama model offers every sampling setting its schema takes", JSON.stringify(await page.locator(".sampling-name").allTextContents()) === JSON.stringify(all));
-  check("with the schema's default as the placeholder", (await page.getAttribute(".settings-temperature", "placeholder")) === "default 0.6");
-  check("and a parameter whose default Cloudflare does not publish says so", (await page.getAttribute(".settings-top-p", "placeholder")) === "default not published");
+  const all = ["max_tokens", "temperature", "top_p", "top_k", "seed", "repetition_penalty", "frequency_penalty", "presence_penalty"];
+  check("a Llama model offers every setting it takes", JSON.stringify(await page.locator("#sheet-improve .sampling-name").allTextContents()) === JSON.stringify(all));
+  check("with Cloudflare's default greyed in", (await page.getAttribute(".settings-temperature", "placeholder")) === "0.6");
+  check("a dash where Cloudflare documents none", (await page.getAttribute(".settings-top-p", "placeholder")) === "—" && (await page.getAttribute(".settings-top-k", "placeholder")) === "—");
+  check("and Random for the seed", (await page.getAttribute(".settings-seed", "placeholder")) === "Random");
+  check(
+    "ranges are what the service accepts, not the schema's",
+    (await page.getAttribute(".settings-temperature", "max")) === "2" &&
+      (await page.getAttribute(".settings-top-p", "min")) === "0.001" &&
+      (await page.getAttribute(".settings-repetition-penalty", "min")) === "0.05"
+  );
+  check(
+    "penalties that would encourage repetition are warned against",
+    (await page.locator("#sheet-improve .penalty-note").textContent()).includes("frequency or presence penalty below 0, or repetition penalty below 1")
+  );
   await page.selectOption("#improve-model", "@cf/openai/gpt-oss-20b");
   await page.waitForTimeout(150);
-  check("effort shows the default Cloudflare documents for the model", (await page.locator(".settings-effort option").first().textContent()) === "Default (medium)");
+  check("effort shows the default Cloudflare documents for the model", (await page.inputValue(".settings-effort")) === "medium");
+  check(
+    "a limit set below the service's is explained",
+    (await page.getAttribute(".settings-temperature", "max")) === "1" && (await page.locator("#sheet-improve .sampling-note").first().textContent()).includes("garbled")
+  );
   await page.selectOption("#improve-model", "@cf/zai-org/glm-5.3");
   await page.waitForTimeout(150);
+  const glmText = await page.locator("#sheet-improve").textContent();
+  check("and where Patchbay sends another effort, says both", glmText.includes("Patchbay sends low") && glmText.includes("own default for this model is max"));
+  await page.selectOption("#improve-model", "@cf/qwen/qwen2.5-coder-32b-instruct");
+  await page.waitForTimeout(150);
   check(
-    "and where Patchbay sends another effort, says both",
-    (await page.locator("#tool-settings").textContent()).includes("Patchbay sends low") && (await page.locator("#tool-settings").textContent()).includes("own default for this model is max")
+    "a model that refuses negative penalties starts them at 0, and is not warned about them",
+    (await page.getAttribute(".settings-frequency-penalty", "min")) === "0" &&
+      !(await page.locator("#sheet-improve .penalty-note").textContent()).includes("frequency")
   );
   await page.selectOption("#improve-model", "@cf/meta/llama-3.2-3b-instruct");
   await page.waitForTimeout(150);
   await page.fill(".settings-temperature", "0.3");
   await page.fill(".settings-top-k", "12");
   await page.fill(".settings-top-p", "7");
-  check("a value outside the documented range is flagged", await page.locator(".settings-top-p").evaluate((el) => el.classList.contains("invalid")));
-  await page.locator("#sheet-tools .sheet-close").click();
+  check("a value outside the range is flagged", await page.locator(".settings-top-p").evaluate((el) => el.classList.contains("invalid")));
+  await page.locator("#sheet-improve .sheet-close").click();
   await closeOptions(page);
   await page.fill(promptSel, "a cat");
   await page.waitForTimeout(700);
@@ -2301,13 +2380,17 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   );
   await pickImprove(page, "@cf/zai-org/glm-5.3");
   await page.locator("#improve-settings").click();
-  const glm = await page.locator(".sampling-name").allTextContents();
-  check("GLM 5.3 offers only what its schema takes", !glm.includes("top_k") && !glm.includes("repetition_penalty") && glm.includes("temperature"), JSON.stringify(glm));
-  await page.locator("#sheet-tools .sheet-close").click();
+  const glm = await page.locator("#sheet-improve .sampling-name").allTextContents();
+  check("GLM 5.3 offers only what it takes", !glm.includes("top_k") && !glm.includes("repetition_penalty") && glm.includes("temperature"), JSON.stringify(glm));
+  check("and no seed, which did not repeat a reply in Thread's testing", !glm.includes("seed"));
+  await page.locator("#sheet-improve .sheet-close").click();
   await pickImprove(page, "@cf/meta/llama-3.1-8b-fast-v2");
   await page.locator("#improve-settings").click();
-  check("a model with no published schema says so", (await page.locator("#tool-settings").textContent()).includes("no input schema"));
-  await page.locator("#sheet-tools .sheet-close").click();
+  check(
+    "a model with no published schema offers the token limit only",
+    JSON.stringify(await page.locator("#sheet-improve .sampling-name").allTextContents()) === JSON.stringify(["max_tokens"])
+  );
+  await page.locator("#sheet-improve .sheet-close").click();
   const llama2 = "@cf/meta-llama/llama-2-7b-chat-hf-lora";
   check(
     "Llama 2 7B Chat LoRA, which produces no language, is not offered",
