@@ -84,12 +84,12 @@
             <!-- Moved under the prompt box whenever the fields are built; hidden
                  for a model that has no prompt. -->
             <div id="prompt-tools" class="prompt-tools">
-              <!-- One row under the prompt. Chat and Translate are in Lab,
-                   Describe is on each gallery image, and the models these use
-                   are picked under Models. -->
+              <!-- One row under the prompt. Chat and Translate are in Lab;
+                   Describe is on each gallery image, with its model in the
+                   gallery's Settings. -->
               <div class="tool-strip">
                 <button id="open-prompts" type="button" class="strip-btn" title="Saved prompts">Prompts</button>
-                <button id="open-more" type="button" class="strip-btn" title="Pick the models Improve and Describe use">Models</button>
+                <button id="open-more" type="button" class="strip-btn" title="Pick the model Improve uses">Models</button>
                 <button id="prompt-improve" type="button" class="strip-btn" title="Copy-edit the prompt">Improve</button>
                 <!-- Undo/redo for the prompt box only, at the right end. Visible rather than
                      keyboard-only because this is mainly used on a phone. -->
@@ -290,7 +290,7 @@
       </div>
     </div>
 
-    <!-- The models Improve and Describe use. -->
+    <!-- The model Improve uses. -->
     <div id="sheet-more" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="sheet-more-title">
       <div class="sheet-card">
         <div class="sheet-head">
@@ -305,14 +305,6 @@
             <button id="improve-settings" type="button" class="secondary gear" title="Improve settings" aria-label="Improve settings">Tune</button>
           </div>
           <p id="improve-cost" class="chat-note"></p>
-        </section>
-        <section class="more-tool">
-          <h3>Describe</h3>
-          <p class="chat-note">Captions a gallery image into the prompt box — Describe is on each image in the gallery.</p>
-          <div class="tool">
-            <select id="describe-model" aria-label="Model used by Describe" title="Which model captions the image"></select>
-            <button id="describe-settings" type="button" class="secondary gear" title="Describe settings" aria-label="Describe settings">Tune</button>
-          </div>
         </section>
       </div>
     </div>
@@ -350,12 +342,25 @@
           <h2 id="sheet-gallery-settings-title">Gallery settings</h2>
           <button type="button" class="secondary sheet-close">Close</button>
         </div>
-        <p class="chat-note">Limits apply only to items with no name and in no album — those are kept until you delete them.</p>
-        <label class="field"><span class="field-label">Keep up to</span><select id="limit-image" aria-label="Image limit"></select></label>
-        <label class="field"><span class="field-label">Keep up to</span><select id="limit-video" aria-label="Video limit"></select></label>
-        <label class="field"><span class="field-label">By age</span><select id="limit-days" aria-label="Age limit"></select></label>
-        <p id="storage-note" class="chat-note"></p>
-        <button id="gallery-clear" type="button" class="secondary danger">Delete everything in the gallery</button>
+        <!-- Describe is on each image here, so the model it uses is picked
+             here too. -->
+        <section class="more-tool">
+          <h3>Describe</h3>
+          <p class="chat-note">Describe, on each image, writes a caption of it into the prompt box.</p>
+          <div class="tool">
+            <select id="describe-model" aria-label="Model used by Describe" title="Which model captions the image"></select>
+            <button id="describe-settings" type="button" class="secondary gear" title="Describe settings" aria-label="Describe settings">Tune</button>
+          </div>
+        </section>
+        <section class="more-tool">
+          <h3>Storage</h3>
+          <p class="chat-note">Limits apply only to items with no name and in no album — those are kept until you delete them.</p>
+          <label class="field"><span class="field-label">Keep up to</span><select id="limit-image" aria-label="Image limit"></select></label>
+          <label class="field"><span class="field-label">Keep up to</span><select id="limit-video" aria-label="Video limit"></select></label>
+          <label class="field"><span class="field-label">By age</span><select id="limit-days" aria-label="Age limit"></select></label>
+          <p id="storage-note" class="chat-note"></p>
+          <button id="gallery-clear" type="button" class="secondary danger">Delete everything in the gallery</button>
+        </section>
       </div>
     </div>
 
