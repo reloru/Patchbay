@@ -980,10 +980,18 @@ async function encodeForField(f, file) {
   if (f.asBase64) return await fileToBase64(file);     // Workers AI: inline bytes
   const fd = new FormData();                            // Pruna: upload, use the URL
   fd.append("file", file);
-  const res = await api("/api/upload", { method: "POST", body: fd, retry: true });
-  const data = await res.json();
-  if (!res.ok || !data.url) throw new Error(data.error || data.message || "Upload failed");
-  return data.url;
+  try {
+    const res = await api("/api/upload", { method: "POST", body: fd, retry: true });
+    const data = await res.json();
+    if (!res.ok || !data.url) throw new Error(data.error || data.message || "Upload failed");
+    return data.url;
+  } catch (err) {
+    // Pruna's prediction inputs also take an image inline as a data: URI, so an
+    // image survives /v1/files refusing it. Video, audio and archives have not
+    // been tried inline and still need the upload.
+    if (err && err.message !== "Unauthorized" && file.type.startsWith("image/")) return await fileToDataUri(file);
+    throw err;
+  }
 }
 
 // Files carried across a model switch, consumed by the new model's image fields.
