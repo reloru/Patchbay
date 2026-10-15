@@ -994,6 +994,69 @@ async function encodeForField(f, file) {
   }
 }
 
+// Pruna answers a prediction request much over 350 KB with a bare "Bad Request"
+// (351,626 bytes went through, 400,606 did not; it publishes no limit), and an
+// inline image counts toward that in full. Kept below the measured edge.
+const PRUNA_BODY_BUDGET = 320000;
+const MIN_INLINE_IMAGE = 20000;
+
+function isInlineImage(v) {
+  return typeof v === "string" && v.startsWith("data:image/");
+}
+
+// Re-encodes the inline images in a Pruna input as JPEG until the whole request
+// fits the budget, sharing it out evenly. Uploaded file URLs are left alone.
+async function fitInlineImages(input, budget) {
+  const slots = [];
+  for (const [k, v] of Object.entries(input)) {
+    if (isInlineImage(v)) slots.push({ k, i: -1, uri: v });
+    else if (Array.isArray(v)) v.forEach((x, i) => isInlineImage(x) && slots.push({ k, i, uri: x }));
+  }
+  const size = JSON.stringify({ input }).length;
+  if (!slots.length || size <= budget) return input;
+  const rest = size - slots.reduce((n, s) => n + s.uri.length, 0);
+  const each = Math.floor((budget - rest) / slots.length);
+  if (each < MIN_INLINE_IMAGE) throw new Error("Too many images for one request — remove one and try again.");
+  const out = { ...input };
+  for (const s of slots) {
+    if (s.uri.length <= each) continue;
+    const small = await shrinkImageDataUri(s.uri, each);
+    if (s.i < 0) out[s.k] = small;
+    else {
+      if (out[s.k] === input[s.k]) out[s.k] = input[s.k].slice();
+      out[s.k][s.i] = small;
+    }
+  }
+  return out;
+}
+
+async function shrinkImageDataUri(uri, maxLen) {
+  const img = new Image();
+  img.src = uri;
+  try {
+    await img.decode();
+  } catch {
+    throw new Error("Could not read that image to make it small enough to send.");
+  }
+  let scale = Math.min(1, 2048 / Math.max(img.naturalWidth, img.naturalHeight));
+  let quality = 0.9;
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  for (let tries = 0; tries < 20; tries++) {
+    canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    // JPEG has no alpha; transparent pixels would otherwise turn black.
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const out = canvas.toDataURL("image/jpeg", quality);
+    if (out.length <= maxLen) return out;
+    if (quality > 0.65) quality -= 0.1;
+    else scale *= 0.8;
+  }
+  throw new Error("Could not make that image small enough to send.");
+}
+
 // Files carried across a model switch, consumed by the new model's image fields.
 let carryFiles = [];
 
@@ -1677,16 +1740,31 @@ $("gen-form").addEventListener("submit", (e) => {
   // Taken now rather than when the result lands: the point is the settings that
   // produced this run, and Improve or a model switch could move them meanwhile.
   const promptEl = primaryPromptEl();
-  startJob({
-    model: currentModel,
-    input,
-    meta: {
-      modelId: currentModel.id,
-      prompt: promptEl ? promptEl.value : "",
-      setup: currentSetupSnapshot(),
+  const model = currentModel;
+  const meta = {
+    modelId: model.id,
+    prompt: promptEl ? promptEl.value : "",
+    setup: currentSetupSnapshot(),
+  };
+  const files = attachedFilesByField();
+  if (model.provider !== "pruna") {
+    startJob({ model, input, meta, files });
+    return;
+  }
+  // Shrinking can take a moment on a phone; Generate stays held through it.
+  submitting = true;
+  refreshGenerate();
+  fitInlineImages(input, PRUNA_BODY_BUDGET).then(
+    (fitted) => {
+      submitting = false;
+      startJob({ model, input: fitted, meta, files });
     },
-    files: attachedFilesByField(),
-  });
+    (err) => {
+      submitting = false;
+      refreshGenerate();
+      setStatus(err.message, "err");
+    }
+  );
 });
 
 // The File behind every upload the run is about to use, by field, so the
