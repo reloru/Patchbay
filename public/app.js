@@ -1078,6 +1078,20 @@ let pendingAdoptKind = "image";
 // shown straight away and the provider encoding runs behind it, because each
 // provider wants a different one (a Pruna upload, base64, a data: URI) and a
 // restored file has no usable encoding from last time.
+// A picked file is a handle on the device's own copy, and iOS can stop letting
+// the page read it later: a model switch then failed to carry it over with
+// "Could not read file", once Pruna refusing uploads (#110) meant the bytes had
+// to be read again. Copied into memory when picked, it stays readable for as
+// long as the page is open. Where even that read fails, the handle is kept and
+// the error surfaces as it did before.
+async function ownCopy(file) {
+  try {
+    return new File([await file.arrayBuffer()], file.name, { type: file.type, lastModified: file.lastModified });
+  } catch {
+    return file;
+  }
+}
+
 function adoptFiles(f, files, redraw, failPrefix) {
   for (const file of files) {
     const placeholder = { file, url: null, name: file.name, isImage: file.type.startsWith("image/"), preview: null, uploading: true };
@@ -1189,8 +1203,9 @@ function imageControl(f) {
       for (const u of uploads[f.name]) releasePreview(u);
       uploads[f.name].length = 0;
     }
-    for (const file of files) {
+    for (const picked of files) {
       if (uploads[f.name].length >= maxItems) break;
+      const file = await ownCopy(picked);
       const placeholder = { file, url: null, name: file.name, isImage: file.type.startsWith("image/"), preview: null, uploading: true };
       if (placeholder.isImage) placeholder.preview = URL.createObjectURL(file);
       uploads[f.name].push(placeholder);
@@ -1473,10 +1488,13 @@ function buildOptionRow(f, tag) {
   const note = document.createElement("span");
   note.className = "opt-note";
   head.appendChild(name);
-  head.appendChild(note);
   row.appendChild(head);
 
   row.appendChild(inputControl(f));
+  // Under the control, not beside the name: beside it the note wrapped onto a
+  // second line in one column and not the other, and the two controls of a row
+  // stopped lining up.
+  row.appendChild(note);
   if (f.help) {
     const h = document.createElement("p");
     h.className = "help";

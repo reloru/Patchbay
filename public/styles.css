@@ -223,7 +223,8 @@ textarea { resize: vertical; min-height: 74px; }
 }
 .opt-name { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .opt-row.changed .opt-name { color: var(--text); }
-.opt-note { font-size: 11px; color: var(--muted); }
+.opt-note { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
+.opt-note:empty { display: none; }
 .opt-row.blocked { opacity: .5; }
 .opt-row.blocked select,
 .opt-row.blocked input { cursor: not-allowed; }
