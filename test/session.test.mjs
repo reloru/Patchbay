@@ -2519,6 +2519,16 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("the prompt sits below the settings, next to Generate and the output", prompt.y > ar.y);
   await page.fill('[data-field="seed"]', "9");
   await page.waitForTimeout(200);
+  await page.selectOption('[data-field="aspect_ratio"]', "9:16");
+  await page.fill('[data-field="seed"]', "71055");
+  await page.waitForTimeout(200);
+  const arBox = await page.locator('[data-field="aspect_ratio"]').boundingBox();
+  const seedBox = await page.locator('[data-field="seed"]').boundingBox();
+  check(
+    "with both changed, their default notes do not knock the boxes out of line",
+    Math.abs(arBox.y - seedBox.y) < 2 && (await page.locator(".opt-row.changed .opt-note").count()) === 2,
+    JSON.stringify({ ar: arBox.y, seed: seedBox.y })
+  );
   check("no Reset appears once something is changed", (await page.locator(".opt-reset, .opt-reset-all").count()) === 0);
   check("and no orange bar marks it",
     await page.locator(".opt-row.changed").first().evaluate((el) => getComputedStyle(el).borderLeftStyle === "none" || getComputedStyle(el).borderLeftWidth === "0px"));
