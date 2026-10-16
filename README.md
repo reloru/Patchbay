@@ -347,7 +347,10 @@ from the viewer or for a selection. Deleting an album keeps its items.
 days and cap images at 200 and clips at 25. Now the caps — per kind, so clips
 cannot evict stills — default to 2,000 images and 300 videos with no age
 limit, and are settings under the gallery's *Settings* (up to no limit at all). A named
-item or one in an album is never removed by them, only by Delete. The same sheet
+item or one in an album is never removed by them, nor by any delete that
+covers more than one item: *Delete everything not named or in an album* in the
+same sheet, and *Delete* on a selection, both skip them and say how many were
+kept. Only the *Delete* in an item's own view removes one. The same sheet
 shows how much storage the app uses against what the browser allows, and
 whether the browser has made it persistent. The binding limit is the browser's
 own quota — on a Home Screen web app a large share of the disk — and the app
@@ -358,9 +361,8 @@ result the browser refuses to store says so under the result.
 A trained LoRA `.zip` is not kept. It is not previewable, and its link expires
 about half an hour after the run either way.
 
-Clearing the gallery does not disturb a generation in progress, and an archive
-write already under way is dropped rather than landing in the gallery just
-emptied — while a result that finishes later is still kept.
+Deleting from the gallery does not disturb a generation in progress, and its
+result is kept when it finishes.
 
 Stored as `ArrayBuffer`s rather than Blobs: WebKit aborts an IndexedDB
 transaction outright for any value containing a Blob, which is how the session

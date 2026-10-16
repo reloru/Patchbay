@@ -940,7 +940,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("and the named one stays", (await page.locator(".recent-strip .thumb").count()) === 1);
   await page.evaluate(() => localStorage.removeItem("patchbay_gallery_limits"));
 
-  // Clear removes the lot, from the gallery's ⚙.
+  // The gallery's delete removes everything not named or in an album.
   await page.locator("#tab-create").click();
   await page.selectOption("#model-select", "p-image");
   await gen("to be cleared");
@@ -960,15 +960,65 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   );
   await page.locator("#sheet-tools .sheet-close").click();
   check("closing it goes back to the gallery's settings", await page.locator("#sheet-gallery-settings").isVisible());
-  page.once("dialog", (d) => d.accept());
+  let asked = "";
+  page.once("dialog", (d) => {
+    asked = d.message();
+    d.accept();
+  });
   await page.locator("#gallery-clear").click();
   await page.waitForTimeout(400);
-  check("Clear empties the gallery", (await readStores(page, ["gallery"])).gallery.length === 0);
-  check("and the strip", (await page.locator(".recent-strip .thumb").count()) === 0);
+  check("the question says what is kept", asked.includes("1 item") && asked.includes("1 named or in an album is kept"), asked);
+  let left = (await readStores(page, ["gallery"])).gallery;
+  check("Delete removes what is not named or in an album", left.length === 1, String(left.length));
+  check("and keeps the named one", left.length === 1 && Boolean(left[0].name), JSON.stringify(left.map((r) => r.name)));
+  check("the strip follows", (await page.locator(".recent-strip .thumb").count()) === 1);
+  await page.locator("#gallery-settings").click();
+  await page.locator("#gallery-clear").click();
+  await page.waitForTimeout(300);
+  check("with nothing left to delete, it says so and asks nothing", (await page.locator("#storage-note").textContent()).includes("Nothing to delete"));
+  await page.locator("#sheet-gallery-settings .sheet-close").click();
+
+  // Select → All → Delete keeps them too; an item in an album is as safe as a
+  // named one.
+  await page.locator("#tab-create").click();
+  await gen("in an album");
+  await gen("a loose one");
+  await page.evaluate(async () => {
+    const all = await galleryAll();
+    const rec = all.find((r) => r.prompt === "in an album");
+    rec.albums = ["album-test"];
+    await galleryUpdate(rec);
+  });
+  await page.locator("#tab-gallery").click();
+  await page.waitForSelector("#gallery-grid .tile");
+  await page.locator("#gallery-select").click();
+  await page.locator("#sel-all").click();
+  page.once("dialog", (d) => {
+    asked = d.message();
+    d.accept();
+  });
+  await page.locator("#sel-delete").click();
+  await page.waitForTimeout(400);
+  left = (await readStores(page, ["gallery"])).gallery;
+  check("deleting a selection skips named and album items", left.length === 2 && left.every((r) => r.name || (r.albums || []).length), JSON.stringify(left.map((r) => r.prompt)));
+  check("and the question says so", asked.includes("Delete 1 item") && asked.includes("2 named or in an album are kept"), asked);
+  await page.locator("#gallery-select").click();
+  await page.locator("#sel-all").click();
+  await page.locator("#sel-delete").click();
+  await page.waitForTimeout(300);
+  check("a selection of only kept items deletes nothing", (await readStores(page, ["gallery"])).gallery.length === 2 && (await page.locator("#status").textContent()).includes("own view"));
+  await page.locator("#sel-done").click();
+  // Only an item's own Delete removes a kept one.
+  await page.locator("#gallery-grid .tile").first().click();
+  await page.waitForSelector("#viewer:not(.hidden)");
+  page.once("dialog", (d) => d.accept());
+  await page.locator("#viewer-delete").click();
+  await page.waitForTimeout(400);
+  check("its own Delete does remove it", (await readStores(page, ["gallery"])).gallery.length === 1);
+  if (await page.locator("#viewer").isVisible()) await page.locator("#viewer-close").click();
   await page.locator("#tab-create").click();
 
-  // Clearing while a job runs must not look like it stopped the job, and an
-  // archive write already in flight must not put an item back afterwards.
+  // Deleting while a job runs must not look like it stopped the job.
   await gen("something to clear later");
   await page.request.get(BASE + "__slow?on=1");
   await page.fill(promptSel, "a run that must survive a Clear");
@@ -982,18 +1032,18 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.locator("#gallery-clear").click();
   await page.waitForTimeout(1500);
   check(
-    "clearing does not write over a running job's status",
+    "deleting does not write over a running job's status",
     /elapsed/.test(await page.locator("#status").textContent()),
     await page.locator("#status").textContent()
   );
   check("the run is still going", (await page.locator("#jobs-btn").textContent()).includes("running"));
-  check("and the gallery did empty", (await readStores(page, ["gallery"])).gallery.length === 0);
+  check("and only the kept item is left", (await readStores(page, ["gallery"])).gallery.length === 1);
   await page.request.get(BASE + "__slow?on=0");
   await page.waitForSelector("#status.ok", { timeout: 20000 });
   await page.waitForTimeout(600);
   check(
-    "a result finishing after the Clear is still kept",
-    (await readStores(page, ["gallery"])).gallery.length === 1
+    "a result finishing after the delete is still kept",
+    (await readStores(page, ["gallery"])).gallery.length === 2
   );
   await page.close();
   await context.close();

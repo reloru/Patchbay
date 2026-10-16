@@ -3291,18 +3291,6 @@ async function galleryDelete(id) {
   return idbRun(GALLERY_STORE, "readwrite", (st) => st.delete(id)).then((r) => r.ok);
 }
 
-// Bumped by every Clear. An archive write can be seconds in flight, so one that
-// started before a Clear would otherwise land after it, leaving a stray item in
-// a gallery the user just emptied.
-let galleryEpoch = 0;
-
-async function galleryClear() {
-  galleryEpoch++;
-  for (const store of [GALLERY_BYTES_STORE, GALLERY_THUMBS_STORE, GALLERY_INPUTS_STORE]) {
-    await idbRun(store, "readwrite", (st) => st.clear());
-  }
-  return idbRun(GALLERY_STORE, "readwrite", (st) => st.clear()).then((r) => r.ok);
-}
 
 // Every item's metadata, newest first. Never touches the media or thumbnails.
 async function galleryAll() {
@@ -3568,14 +3556,10 @@ let galleryProblem = "";
 // while the inputs are still being copied, `inputsPending`. Resolves to the new
 // item's id, or null when it could not be kept.
 async function archiveGeneration(blob, meta, kind) {
-  const epoch = galleryEpoch;
   try {
     const bytes = await blob.arrayBuffer();
     const thumb = await makeThumb(blob, kind);
     const inputs = meta.inputsPending ? await meta.inputsPending : meta.inputs;
-    // Cleared while this was being prepared. The user asked for an empty
-    // gallery; writing into it now would put back the item they were watching.
-    if (epoch !== galleryEpoch) return null;
     const rec = {
       // Sortable and unique enough for one device: two results from the same
       // generation land in the same millisecond otherwise.
@@ -4072,6 +4056,16 @@ async function deleteItems(ids) {
   for (const id of ids) await galleryDelete(id);
   scheduleInputSweep();
 }
+
+// No bulk delete removes a named item or one in an album: only its own Delete,
+// in the viewer, does. Splits `recs` into what goes and what is kept.
+function splitKept(recs) {
+  const doomed = recs.filter((r) => r && !isProtected(r));
+  const kept = recs.filter((r) => r && isProtected(r)).length;
+  return { doomed, kept };
+}
+
+const keptText = (kept) => (kept ? `${kept} named or in an album ${kept === 1 ? "is" : "are"} kept.` : "");
 
 // --- albums sheet -----------------------------------------------------------
 
@@ -4695,13 +4689,19 @@ function initGallery() {
     refreshGalleryViews();
   });
   $("sel-delete").addEventListener("click", async () => {
-    const n = gallery.selected.size;
-    if (!n || !window.confirm(`Delete ${n} item${n === 1 ? "" : "s"} from the device?`)) return;
-    await deleteItems([...gallery.selected]);
+    if (!gallery.selected.size) return;
+    const { doomed, kept } = splitKept(await Promise.all([...gallery.selected].map(galleryGet)));
+    if (!doomed.length) {
+      setStatus(`${kept === 1 ? "That item is" : "Those items are"} named or in an album, so kept. Delete one from its own view.`, "err");
+      return;
+    }
+    const n = doomed.length;
+    if (!window.confirm(`Delete ${n} item${n === 1 ? "" : "s"} from the device? ${keptText(kept)}`.trim())) return;
+    await deleteItems(doomed.map((r) => r.id));
     gallery.selected.clear();
     setSelecting(false);
     refreshGalleryViews();
-    setStatus(`Deleted ${n} item${n === 1 ? "" : "s"}.`, "ok");
+    setStatus(`Deleted ${n} item${n === 1 ? "" : "s"}. ${keptText(kept)}`.trim(), "ok");
   });
   $("gallery-albums").addEventListener("click", () => openAlbums([]));
   $("album-new-form").addEventListener("submit", async (e) => {
@@ -4739,13 +4739,20 @@ function initGallery() {
     });
   }
   $("gallery-clear").addEventListener("click", async () => {
-    if (!window.confirm("Delete everything in the gallery from this device — named items and albums' contents included?")) return;
-    await galleryClear();
+    const { doomed, kept } = splitKept(await galleryAll());
+    const n = doomed.length;
+    // The status line belongs to a run while one is going: writing "Deleted…"
+    // over "Processing… 2m 10s elapsed" reads as the generation having stopped.
+    const say = (text) => {
+      $("storage-note").textContent = text;
+      if (!anyJobRunning()) setStatus(text, "ok");
+    };
+    if (!n) return say(`Nothing to delete: everything is named or in an album.`);
+    if (!window.confirm(`Delete ${n} item${n === 1 ? "" : "s"} that ${n === 1 ? "is" : "are"} not named or in an album? ${keptText(kept)}`.trim())) return;
+    await deleteItems(doomed.map((r) => r.id));
     closeSheet("sheet-gallery-settings");
     refreshGalleryViews();
-    // The status line belongs to a run while one is going: writing "Cleared…"
-    // over "Processing… 2m 10s elapsed" reads as the generation having stopped.
-    if (!anyJobRunning()) setStatus("Cleared the gallery.", "ok");
+    say(`Deleted ${n} item${n === 1 ? "" : "s"}. ${keptText(kept)}`.trim());
   });
 
   // The viewer.
