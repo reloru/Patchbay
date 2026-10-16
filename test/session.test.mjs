@@ -1577,6 +1577,31 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await context.close();
 }
 
+// ── A finished job with its output somewhere unexpected, or nowhere ───────
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+  await page.selectOption("#model-select", "p-image");
+  await page.waitForTimeout(200);
+  await page.fill(promptSel, "output moved");
+  await page.waitForTimeout(700);
+  await page.request.get(BASE + "__statusshape?v=moved");
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#status.ok, #status.err", { timeout: 20000 });
+  check("an output outside generation_url is still collected", (await page.locator("#result .result-run img").count()) === 1, await page.locator("#status").textContent());
+  await page.request.get(BASE + "__statusshape?v=none");
+  await page.fill(promptSel, "no output at all");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#status.err", { timeout: 20000 });
+  const said = await page.locator("#status").textContent();
+  check("with no output at all, the provider's own reply is shown", said.includes("no output came back") && said.includes('"seed":7'), said);
+  check("and the job is not kept to be asked about again", (await page.evaluate(() => localStorage.getItem("patchbay_jobs"))) === null);
+  await page.request.get(BASE + "__statusshape?v=");
+  await page.close();
+  await context.close();
+}
+
 // ── Runs that overlap share the result panel ──────────────────────────────
 // Each run used to empty the panel when it started and again when it landed,
 // so of two runs going at once only the last to finish stayed on screen.

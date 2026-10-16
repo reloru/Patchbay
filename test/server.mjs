@@ -77,6 +77,9 @@ const slowIds = new Set();
 // Set by the test through /__statusfail: the next N polls answer 503, standing
 // in for a provider or edge that is briefly down.
 let statusFails = 0;
+// Set by the test through /__statusshape: "moved" puts a finished job's output
+// somewhere other than generation_url, "none" leaves it out altogether.
+let statusShape = "";
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
   "base64"
@@ -172,6 +175,8 @@ const server = createServer(async (req, res) => {
     const modelId = jobModels.get(id) || (lastGenerate && lastGenerate.model);
     const spec = modelId && MODELS_BY_ID.get(modelId);
     const ext = spec && spec.kind === "video" ? "mp4" : "png";
+    if (statusShape === "moved") return json(res, { status: "succeeded", metadata: {}, output: { url: `https://files.pruna.ai/stub/moved.${ext}` } });
+    if (statusShape === "none") return json(res, { status: "succeeded", metadata: { seed: 7 } });
     return json(res, { status: "succeeded", generation_url: `https://files.pruna.ai/stub/out.${ext}` });
   }
   if (path === "/api/result") {
@@ -293,6 +298,11 @@ const server = createServer(async (req, res) => {
     return json(res, { slowIds: [...slowIds] });
   }
   if (path === "/__jobs") return json(res, { jobCount });
+  if (path === "/__statusshape") {
+    const v = url.searchParams.get("v") || "";
+    statusShape = ["moved", "none"].includes(v) ? v : "";
+    return json(res, { statusShape });
+  }
   if (path === "/__statusfail") {
     statusFails = Number(url.searchParams.get("n")) || 0;
     return json(res, { statusFails });

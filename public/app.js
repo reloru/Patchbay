@@ -2410,7 +2410,7 @@ async function runJob(job) {
       actualUsd = r.actualUsd;
     }
     ticker.stop();
-    if (!urls.length) throw new Error("No output URL returned.");
+    if (!urls.length) throw noOutputError({});
     // The provider is finished but nothing is on screen yet; the count keeps
     // going through the download rather than freezing until the result lands.
     downloading = progressTicker(progress, job.clock);
@@ -2481,7 +2481,11 @@ async function submitJob(job) {
 
     // Workers AI returns finished images inline as data URIs (no job to poll).
     if (Array.isArray(data.images) && data.images.length) return data.images;
-    if (data.status === "succeeded" && data.generation_url) return asUrlList(data.generation_url);
+    if (data.status === "succeeded") {
+      const urls = outputUrls(data);
+      if (!urls.length) throw noOutputError(data);
+      return urls;
+    }
     if (data.status === "failed" || data.status === "error") {
       throw new Error(providerErrorText(data, res.status, "Generation failed."));
     }
@@ -2588,8 +2592,14 @@ async function pollJob(job, onState) {
       // xAI reports the job's real dollar cost — prefer that over any estimate.
       // The record stays until the result is kept, so a download cut short by
       // the app closing is collected again on the next load.
+      const urls = outputUrls(s);
+      if (!urls.length) {
+        // Asking again will not make an output appear.
+        dropJobRecord(job.id);
+        throw noOutputError(s);
+      }
       return {
-        urls: asUrlList(s.generation_url || s.output || s.output_url),
+        urls,
         actualUsd: typeof s.actual_cost_usd === "number" ? s.actual_cost_usd : null,
       };
     }
@@ -4819,6 +4829,38 @@ function initGallery() {
 function asUrlList(v) {
   if (!v) return [];
   return (Array.isArray(v) ? v : [v]).filter(Boolean);
+}
+
+const isMediaUrl = (v) => typeof v === "string" && /^(https?:|data:(image|video|audio)\/)/.test(v);
+
+// The output of a finished job. Pruna documents `generation_url`; `output` and
+// `output_url` are older shapes. Should a reply carry none of those, any media
+// URL in it is taken instead (other than the status link itself), so a field
+// moving does not lose a result that was paid for.
+function outputUrls(s) {
+  const named = asUrlList(s.generation_url || s.output_url || s.output).filter(isMediaUrl);
+  if (named.length) return named;
+  const found = [];
+  const walk = (v, key) => {
+    if (isMediaUrl(v)) {
+      if (key !== "get_url" && !/\/predictions\/status\//.test(v)) found.push(v);
+    } else if (Array.isArray(v)) v.forEach((x) => walk(x, key));
+    else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) walk(x, k);
+  };
+  walk(s, "");
+  return found;
+}
+
+// Said when a provider reports success with nothing to collect: its own reply,
+// trimmed, is the only clue to why.
+function noOutputError(s) {
+  let reply = "";
+  try {
+    reply = JSON.stringify(s);
+  } catch {
+    /* unprintable */
+  }
+  return new Error(`Finished, but no output came back.${reply ? " The provider replied: " + reply.slice(0, 400) : ""}`);
 }
 
 // A short-lived token for media URLs. <img>, <video> and <a download> cannot
