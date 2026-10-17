@@ -837,6 +837,9 @@ button.danger:hover { border-color: var(--danger); }
 .album-row button { padding: 6px 10px; font-size: 13px; }
 .album-new { display: flex; gap: 8px; }
 .album-new input { flex: 1; min-width: 0; }
+.album-quick { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.album-quick select { font-size: 16px; }
+.album-quick .chat-note { margin: 0; }
 
 /* Jobs */
 .jobs-list { display: flex; flex-direction: column; gap: 8px; }
@@ -878,6 +881,23 @@ body.viewer-open { overflow: hidden; }
   flex: 0 0 auto;
 }
 .viewer-icon:hover { background: rgba(255, 255, 255, .2); }
+.viewer-quick {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 48vw;
+  height: 42px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, .25);
+  background: rgba(255, 255, 255, .1);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.viewer-quick[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #1a1206; }
 .viewer-bottom {
   display: flex;
   justify-content: center;
