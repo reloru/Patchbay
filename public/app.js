@@ -4486,6 +4486,11 @@ function renderViewerInfo(rec) {
     describe.title = "Caption this image into the prompt box";
     actions.appendChild(describe);
   }
+  // One tap files the item in the quick-add album; tapped again, takes it out.
+  // Its own full-width row, under the picture where the thumb already is.
+  const quick = button("", "secondary viewer-quick", quickAddToggle);
+  quick.id = "viewer-quick";
+  actions.appendChild(quick);
   box.appendChild(actions);
 
   // Name
@@ -4896,7 +4901,6 @@ function initGallery() {
   $("viewer-close-bottom").addEventListener("click", () => closeViewer());
   $("viewer-prev").addEventListener("click", () => stepViewer(-1));
   $("viewer-next").addEventListener("click", () => stepViewer(1));
-  $("viewer-quick").addEventListener("click", quickAddToggle);
   $("viewer-zoom").addEventListener("click", () => {
     viewer.zoom = !viewer.zoom;
     $("viewer-media").classList.toggle("zoomed", viewer.zoom);

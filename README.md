@@ -343,7 +343,8 @@ input could not be kept.
 **Albums and names.** An item can be named and put in any number of albums,
 from the viewer or for a selection. Deleting an album keeps its items.
 
-**Quick add.** The button at the top of the viewer files the item in one album
+**Quick add.** The full-width button under *Describe*, among the actions just
+below the picture, files the item in one album
 with one tap (*+ Portraits*), and takes it out again when tapped while it reads
 *✓ Portraits*, so a run of pictures can be sorted while stepping through them.
 Its album is whichever you last ticked or made in the Albums sheet; the

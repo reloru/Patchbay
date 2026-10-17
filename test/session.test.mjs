@@ -2673,6 +2673,14 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     return a ? s.gallery.filter((r) => (r.albums || []).includes(a.id)).length : -1;
   };
   check("with no album chosen, quick add reads + Album", (await quick()) === "+ Album", await quick());
+  check(
+    "it sits with the actions under the picture, right after Describe",
+    await page.evaluate(() => {
+      const q = document.querySelector("#viewer-quick");
+      const media = document.querySelector("#viewer-media").getBoundingClientRect();
+      return q.closest(".viewer-actions") && q.previousElementSibling.id === "viewer-describe" && q.getBoundingClientRect().top >= media.bottom;
+    })
+  );
   await page.locator("#viewer-quick").click();
   await page.waitForSelector("#sheet-albums:not(.hidden)");
   check("and opens the Albums sheet", true);
