@@ -177,6 +177,12 @@ const server = createServer(async (req, res) => {
     const ext = spec && spec.kind === "video" ? "mp4" : "png";
     if (statusShape === "moved") return json(res, { status: "succeeded", metadata: {}, output: { url: `https://files.pruna.ai/stub/moved.${ext}` } });
     if (statusShape === "none") return json(res, { status: "succeeded", metadata: { seed: 7 } });
+    // Pruna's own reply, seen once ten seconds into a p-video-2-pro run.
+    if (statusShape === "ise") return json(res, { message: "Internal Server Error", status: "succeeded" });
+    if (statusShape === "ise-once") {
+      statusShape = "";
+      return json(res, { message: "Internal Server Error", status: "succeeded" });
+    }
     return json(res, { status: "succeeded", generation_url: `https://files.pruna.ai/stub/out.${ext}` });
   }
   if (path === "/api/result") {
@@ -300,7 +306,7 @@ const server = createServer(async (req, res) => {
   if (path === "/__jobs") return json(res, { jobCount });
   if (path === "/__statusshape") {
     const v = url.searchParams.get("v") || "";
-    statusShape = ["moved", "none"].includes(v) ? v : "";
+    statusShape = ["moved", "none", "ise", "ise-once"].includes(v) ? v : "";
     return json(res, { statusShape });
   }
   if (path === "/__statusfail") {
