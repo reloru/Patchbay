@@ -2199,6 +2199,11 @@ const STATUS_TIMEOUT_MS = 8000;
 // Waits between status checks once they start failing: the provider or the
 // connection is down, and hammering it does not bring it back sooner.
 const RECONNECT_BACKOFF_MS = [2500, 5000, 10000, 20000, 30000];
+// How many more times a job that reports itself finished with nothing to
+// collect is asked again before that is taken as the answer. Pruna has replied
+// {"message":"Internal Server Error","status":"succeeded"} ten seconds into a
+// video: its status check failing, which says nothing certain about the job.
+const EMPTY_FINISH_RECHECKS = 3;
 const FORGOTTEN = "__forgotten__";
 const FINISHED_KEEP = 10;
 
@@ -2512,6 +2517,7 @@ async function submitJob(job) {
 async function pollJob(job, onState) {
   const timer = job.timer;
   let failures = 0;
+  let emptyFinished = 0;
   for (;;) {
     if (job.forgotten) throw new Error(FORGOTTEN);
     const age = Date.now() - job.startedAt;
@@ -2594,9 +2600,15 @@ async function pollJob(job, onState) {
       // the app closing is collected again on the next load.
       const urls = outputUrls(s);
       if (!urls.length) {
-        // Asking again will not make an output appear.
+        if (emptyFinished < EMPTY_FINISH_RECHECKS) {
+          const wait = RECONNECT_BACKOFF_MS[Math.min(emptyFinished, RECONNECT_BACKOFF_MS.length - 1)];
+          emptyFinished++;
+          onState(`finished with nothing to collect, checking again in ${Math.round(wait / 1000)}s`);
+          await jobSleep(job, wait);
+          continue;
+        }
         dropJobRecord(job.id);
-        throw noOutputError(s);
+        throw noOutputError(s, emptyFinished + 1);
       }
       return {
         urls,
@@ -4853,14 +4865,18 @@ function outputUrls(s) {
 
 // Said when a provider reports success with nothing to collect: its own reply,
 // trimmed, is the only clue to why.
-function noOutputError(s) {
+function noOutputError(s, checks = 1) {
   let reply = "";
   try {
     reply = JSON.stringify(s);
   } catch {
     /* unprintable */
   }
-  return new Error(`Finished, but no output came back.${reply ? " The provider replied: " + reply.slice(0, 400) : ""}`);
+  const said = s && typeof s.message === "string" && s.message.trim() ? ` It said “${s.message.trim()}”.` : "";
+  const asked = checks > 1 ? ` Still nothing after asking ${checks} times.` : "";
+  return new Error(
+    `The provider marked this finished but sent no output.${said}${asked}${reply && reply !== "{}" ? " Its reply: " + reply.slice(0, 400) : ""}`
+  );
 }
 
 // A short-lived token for media URLs. <img>, <video> and <a download> cannot

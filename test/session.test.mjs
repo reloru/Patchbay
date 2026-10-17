@@ -1589,13 +1589,30 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.locator("#generate-btn").click();
   await page.waitForSelector("#status.ok, #status.err", { timeout: 20000 });
   check("an output outside generation_url is still collected", (await page.locator("#result .result-run img").count()) === 1, await page.locator("#status").textContent());
-  await page.request.get(BASE + "__statusshape?v=none");
+  // Pruna answered {"message":"Internal Server Error","status":"succeeded"}
+  // once; asked again, the job's output came back.
+  await page.request.get(BASE + "__statusshape?v=ise-once");
+  await page.fill(promptSel, "status check fails once");
+  await page.waitForTimeout(700);
+  await page.locator("#generate-btn").click();
+  await page.waitForSelector("#status.ok, #status.err", { timeout: 30000 });
+  check(
+    "a finished reply with nothing in it is asked about again, and the output collected",
+    (await page.locator("#status").evaluate((el) => el.classList.contains("ok"))) && (await page.locator("#result .result-run img").count()) === 1,
+    await page.locator("#status").textContent()
+  );
+
+  await page.request.get(BASE + "__statusshape?v=ise");
   await page.fill(promptSel, "no output at all");
   await page.waitForTimeout(700);
   await page.locator("#generate-btn").click();
-  await page.waitForSelector("#status.err", { timeout: 20000 });
+  await page.waitForSelector("#status.err", { timeout: 45000 });
   const said = await page.locator("#status").textContent();
-  check("with no output at all, the provider's own reply is shown", said.includes("no output came back") && said.includes('"seed":7'), said);
+  check(
+    "when it never comes, the provider's message and reply are shown, after asking four times",
+    said.includes("no output") && said.includes("“Internal Server Error”") && said.includes("asking 4 times") && said.includes('"status":"succeeded"'),
+    said
+  );
   check("and the job is not kept to be asked about again", (await page.evaluate(() => localStorage.getItem("patchbay_jobs"))) === null);
   await page.request.get(BASE + "__statusshape?v=");
   await page.close();
