@@ -348,6 +348,11 @@
           <input id="album-new" type="text" placeholder="New album name" aria-label="New album name" />
           <button type="submit" class="secondary">Add</button>
         </form>
+        <label id="album-quick-row" class="album-quick hidden">
+          Quick-add button in the viewer files into
+          <select id="album-quick"></select>
+          <span class="chat-note">It follows the album you last ticked or made.</span>
+        </label>
       </div>
     </div>
 
@@ -399,6 +404,8 @@
       <div class="viewer-top">
         <button id="viewer-close" type="button" class="viewer-icon" aria-label="Close">✕</button>
         <span id="viewer-pos" class="viewer-pos"></span>
+        <!-- One tap files the item in the quick-add album; tapped again, takes it out. -->
+        <button id="viewer-quick" type="button" class="viewer-quick" aria-pressed="false">+ Album</button>
         <button id="viewer-zoom" type="button" class="viewer-icon" aria-label="Actual size" title="Actual size">⤢</button>
       </div>
       <div class="viewer-body">

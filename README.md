@@ -343,6 +343,19 @@ input could not be kept.
 **Albums and names.** An item can be named and put in any number of albums,
 from the viewer or for a selection. Deleting an album keeps its items.
 
+**Quick add.** The button at the top of the viewer files the item in one album
+with one tap (*+ Portraits*), and takes it out again when tapped while it reads
+*✓ Portraits*, so a run of pictures can be sorted while stepping through them.
+Its album is whichever you last ticked or made in the Albums sheet; the
+*Quick-add button* menu at the bottom of that sheet sets it directly. With
+none chosen the button reads *+ Album* and opens the sheet.
+
+While the viewer is open, the grid and the strip behind it are rebuilt once
+when it closes, not after every change made in it, and closing the Albums
+sheet redraws the item's details without reloading the picture. A downward
+swipe on the picture closes the viewer only when the details are scrolled to
+the top; with them scrolled, that drag is the page scrolling back up.
+
 **Nothing expires by default.** The gallery used to drop everything after seven
 days and cap images at 200 and clips at 25. Now the caps — per kind, so clips
 cannot evict stills — default to 2,000 images and 300 videos with no age

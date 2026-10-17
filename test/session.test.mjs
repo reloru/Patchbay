@@ -2638,11 +2638,108 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.locator("#viewer-delete").click();
   await shows("second");
   check("Delete moves on to the neighbour instead of closing", (await page.locator("#viewer-pos").textContent()) === "2 of 2");
-  check("and the strip follows", (await page.locator(".recent-strip .thumb").count()) === 2);
   // The phone's own Back closes the viewer rather than leaving the app.
   await page.goBack();
   await page.waitForFunction(() => document.getElementById("viewer").classList.contains("hidden"));
   check("Back closes the viewer and stays in the app", (await page.locator("#app").isVisible()) && page.url().startsWith(BASE));
+  await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length === 2, null, { timeout: 3000 }).catch(() => {});
+  check("and the strip has followed the delete", (await page.locator(".recent-strip .thumb").count()) === 2);
+  await page.close();
+  await context.close();
+}
+
+// ── Quick add from the viewer, and what the viewer leaves alone ────────────
+{
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await open(context);
+  await page.selectOption("#model-select", "cf-flux-1-schnell");
+  await page.waitForTimeout(200);
+  for (const [i, text] of ["one", "two", "three"].entries()) {
+    await page.fill(promptSel, text);
+    await page.waitForTimeout(100);
+    await page.locator("#generate-btn").click();
+    await page.waitForSelector("#status.ok");
+    await page.waitForFunction((n) => document.querySelectorAll(".recent-strip .thumb").length === n, i + 1);
+  }
+  await page.locator("#tab-gallery").click();
+  await page.waitForFunction(() => document.querySelectorAll("#gallery-grid .tile").length === 3);
+  await page.locator("#gallery-grid .tile").first().click();
+  await page.waitForSelector("#viewer:not(.hidden)");
+  const quick = () => page.locator("#viewer-quick").textContent();
+  const quickIs = (t) => page.waitForFunction((t) => document.querySelector("#viewer-quick").textContent === t, t, { timeout: 3000 }).catch(() => {});
+  const inPicks = async () => {
+    const s = await readStores(page, ["gallery", "albums"]);
+    const a = s.albums.find((x) => x.name === "Picks");
+    return a ? s.gallery.filter((r) => (r.albums || []).includes(a.id)).length : -1;
+  };
+  check("with no album chosen, quick add reads + Album", (await quick()) === "+ Album", await quick());
+  await page.locator("#viewer-quick").click();
+  await page.waitForSelector("#sheet-albums:not(.hidden)");
+  check("and opens the Albums sheet", true);
+  await page.fill("#album-new", "Picks");
+  await page.locator("#album-new-form button").click();
+  await page.waitForSelector(".album-check input");
+  check("a new album becomes the quick-add album", (await page.locator("#album-quick option:checked").textContent()) === "Picks");
+  await page.evaluate(() => {
+    window.__media = document.querySelector("#viewer-media img");
+    window.__tile = document.querySelector("#gallery-grid .tile");
+  });
+  await page.locator("#sheet-albums .sheet-close").click();
+  await quickIs("✓ Picks");
+  check("closing the sheet shows the item filed", (await quick()) === "✓ Picks" && (await page.getAttribute("#viewer-quick", "aria-pressed")) === "true", await quick());
+  check("without reloading the picture", await page.evaluate(() => document.querySelector("#viewer-media img") === window.__media));
+
+  await page.locator("#viewer-next").click();
+  await page.waitForFunction(() => document.querySelector("#viewer-pos").textContent === "2 of 3");
+  await quickIs("+ Picks");
+  check("the next item reads + Picks", (await quick()) === "+ Picks", await quick());
+  await page.locator("#viewer-quick").click();
+  await quickIs("✓ Picks");
+  check("one tap files it", (await inPicks()) === 2);
+  check("and its album chip appears", (await page.locator(".album-chip").allTextContents()).includes("Picks"));
+  check("the grid behind the viewer is not rebuilt meanwhile", await page.evaluate(() => document.querySelector("#gallery-grid .tile") === window.__tile));
+  await page.locator("#viewer-quick").click();
+  await quickIs("+ Picks");
+  check("a second tap takes it out", (await inPicks()) === 1);
+  await page.locator("#viewer-quick").click();
+  await quickIs("✓ Picks");
+
+  // Making another album moves quick add to it; the menu moves it back.
+  await page.locator(".album-add").click();
+  await page.waitForSelector("#sheet-albums:not(.hidden)");
+  await page.fill("#album-new", "Others");
+  await page.locator("#album-new-form button").click();
+  await page.waitForFunction(() => document.querySelector("#album-quick option:checked").textContent === "Others");
+  await page.selectOption("#album-quick", { label: "Picks" });
+  await page.locator("#sheet-albums .sheet-close").click();
+  await quickIs("✓ Picks");
+  check("the sheet's menu chooses the quick-add album", (await quick()) === "✓ Picks", await quick());
+
+  // With the details scrolled, a downward drag on the picture is the page
+  // scrolling back up, not a swipe to close.
+  const drag = () =>
+    page.evaluate(() => {
+      const el = document.querySelector("#viewer-stage");
+      const touch = (y) => new Touch({ identifier: 1, target: el, clientX: 200, clientY: y });
+      el.dispatchEvent(new TouchEvent("touchstart", { touches: [touch(150)], changedTouches: [touch(150)], bubbles: true }));
+      el.dispatchEvent(new TouchEvent("touchend", { touches: [], changedTouches: [touch(400)], bubbles: true }));
+    });
+  const scrolled = await page.evaluate(() => {
+    const b = document.querySelector(".viewer-body");
+    b.scrollTop = 300;
+    return b.scrollTop;
+  });
+  await drag();
+  await page.waitForTimeout(300);
+  check("a downward drag with the details scrolled leaves the viewer open", scrolled > 0 && (await page.locator("#viewer").isVisible()), `scrollTop ${scrolled}`);
+  await page.evaluate(() => (document.querySelector(".viewer-body").scrollTop = 0));
+  await drag();
+  await page.waitForFunction(() => document.getElementById("viewer").classList.contains("hidden"), null, { timeout: 3000 }).catch(() => {});
+  check("at the top it still closes", await page.locator("#viewer").isHidden());
+
+  await page.selectOption("#gallery-album", { label: "Picks" });
+  await page.waitForFunction(() => document.querySelectorAll("#gallery-grid .tile").length === 2, null, { timeout: 3000 }).catch(() => {});
+  check("the grid has the quick-added items once the viewer closes", (await page.locator("#gallery-grid .tile").count()) === 2);
   await page.close();
   await context.close();
 }

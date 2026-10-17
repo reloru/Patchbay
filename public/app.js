@@ -3458,6 +3458,30 @@ async function deleteAlbum(id) {
   await loadAlbums();
 }
 
+// The album the viewer's quick-add button files into: whichever was last
+// chosen, by ticking it for an item, making it, or picking it in the Albums
+// sheet. Null once that album is gone.
+const QUICK_ALBUM_KEY = "patchbay_quick_album";
+
+function quickAlbumId() {
+  let id = null;
+  try {
+    id = localStorage.getItem(QUICK_ALBUM_KEY);
+  } catch {
+    /* unreadable: no quick album */
+  }
+  return albums.some((a) => a.id === id) ? id : null;
+}
+
+function setQuickAlbum(id) {
+  try {
+    if (id) localStorage.setItem(QUICK_ALBUM_KEY, id);
+    else localStorage.removeItem(QUICK_ALBUM_KEY);
+  } catch {
+    /* this visit only */
+  }
+}
+
 async function setAlbumMembership(ids, albumId, on) {
   for (const id of ids) {
     const rec = await galleryGet(id);
@@ -3657,6 +3681,9 @@ function releaseThumb(img) {
 }
 
 function releaseThumbsIn(container) {
+  // Every tile's image is observed from the moment it is made, loaded or not,
+  // and an observer keeps hold of what it watches.
+  if (thumbObserver) for (const img of container.querySelectorAll("img")) thumbObserver.unobserve(img);
   for (const img of [...liveThumbs.keys()]) {
     if (!img.isConnected || container.contains(img)) {
       if (thumbObserver) thumbObserver.unobserve(img);
@@ -3981,7 +4008,9 @@ function fillAlbumFilter() {
 
 let galleryRenderSeq = 0;
 
-async function renderGallery() {
+// keepPlace: as many items as were already loaded come back, so a change to one
+// item does not drop the grid back to its first page under the reader.
+async function renderGallery({ keepPlace = false } = {}) {
   const seq = ++galleryRenderSeq;
   const all = await galleryAll();
   await loadAlbums();
@@ -4034,16 +4063,17 @@ async function renderGallery() {
   empty.classList.toggle("hidden", list.length > 0);
 
   const grid = $("gallery-grid");
+  const loaded = keepPlace ? gallery.shown : 0;
   releaseThumbsIn(grid);
   grid.innerHTML = "";
   gallery.shown = 0;
-  appendGalleryPage();
+  appendGalleryPage(loaded);
   refreshSelectionBar();
 }
 
-function appendGalleryPage() {
+function appendGalleryPage(atLeast = 0) {
   const grid = $("gallery-grid");
-  const next = gallery.list.slice(gallery.shown, gallery.shown + GALLERY_PAGE);
+  const next = gallery.list.slice(gallery.shown, gallery.shown + Math.max(GALLERY_PAGE, atLeast - gallery.shown));
   for (const rec of next) {
     const t = thumbTile(rec, "tile");
     if (rec.name) {
@@ -4149,6 +4179,7 @@ async function renderAlbumSheet() {
       c.checked = inCount === recs.length;
       c.indeterminate = inCount > 0 && inCount < recs.length;
       c.addEventListener("change", async () => {
+        if (c.checked) setQuickAlbum(a.id);
         await setAlbumMembership(recs.map((r) => r.id), a.id, c.checked);
         await renderAlbumSheet();
         refreshGalleryViews();
@@ -4183,6 +4214,21 @@ async function renderAlbumSheet() {
     );
     box.appendChild(row);
   }
+
+  const pick = $("album-quick");
+  pick.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "None: the button opens this list";
+  pick.appendChild(none);
+  for (const a of albums) {
+    const o = document.createElement("option");
+    o.value = a.id;
+    o.textContent = a.name;
+    pick.appendChild(o);
+  }
+  pick.value = quickAlbumId() || "";
+  $("album-quick-row").classList.toggle("hidden", !albums.length);
 }
 
 // --- gallery settings sheet -------------------------------------------------
@@ -4243,6 +4289,8 @@ async function openViewer(id, { from, order } = {}) {
   if (from) viewer.from = from;
   const seq = ++viewer.seq;
   const rec = await galleryGet(id);
+  // Opened from Create, the Gallery may never have loaded them.
+  if (!albums.length) await loadAlbums();
   if (seq !== viewer.seq) return;
   if (!rec) {
     viewer.order = viewer.order.filter((x) => x !== id);
@@ -4311,6 +4359,7 @@ function closeViewer({ viaHistory = false } = {}) {
   $("viewer-media").innerHTML = "";
   $("viewer-info").innerHTML = "";
   releaseViewerUrl();
+  if (galleryViewsStale) refreshGalleryViews();
   if (!viaHistory && history.state && history.state.patchbayViewer) {
     try {
       history.back();
@@ -4339,6 +4388,44 @@ function stepViewer(step) {
   if (!viewerOpen()) return;
   const id = viewerNeighbour(step);
   if (id) openViewer(id);
+}
+
+// Re-reads the open item and redraws its details and the quick-add button. The
+// picture is left as it is: reloading it decodes the full-size file again.
+async function refreshViewerItem() {
+  const id = viewer.id;
+  if (!id || !viewerOpen()) return;
+  const rec = await galleryGet(id);
+  if (!rec || viewer.id !== id) return;
+  viewer.rec = rec;
+  renderViewerInfo(rec);
+}
+
+function renderViewerQuick(rec) {
+  const b = $("viewer-quick");
+  const id = quickAlbumId();
+  const name = id ? albumName(id) : "";
+  const on = Boolean(id) && (rec.albums || []).includes(id);
+  b.setAttribute("aria-pressed", String(on));
+  b.textContent = id ? `${on ? "✓" : "+"} ${name}` : "+ Album";
+  b.title = id ? (on ? `In "${name}". Tap to take it out.` : `Add to "${name}"`) : "Choose an album";
+  b.setAttribute("aria-label", id ? `In album ${name}` : "Add to an album");
+}
+
+async function quickAddToggle() {
+  const rec = viewer.rec;
+  if (!rec) return;
+  const id = quickAlbumId();
+  if (!id) return void openAlbums([rec.id]);
+  const btn = $("viewer-quick");
+  btn.disabled = true;
+  try {
+    await setAlbumMembership([rec.id], id, !(rec.albums || []).includes(id));
+    await refreshViewerItem();
+    refreshGalleryViews();
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function fmtBytes(n) {
@@ -4565,16 +4652,23 @@ function renderViewerInfo(rec) {
   });
   del.id = "viewer-delete";
   box.appendChild(del);
+  renderViewerQuick(rec);
 }
 
 function safeFileName(s) {
   return (s || "").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").trim().slice(0, 80);
 }
 
-// The gallery grid and the strip both follow any change to an item.
+// The gallery grid and the strip both follow any change to an item. Under the
+// viewer neither shows, so they are rebuilt once when it closes rather than on
+// every change made in it: each rebuild reloads the thumbnails on screen.
+let galleryViewsStale = false;
+
 function refreshGalleryViews() {
+  if (viewerOpen()) return void (galleryViewsStale = true);
+  galleryViewsStale = false;
   renderRecent();
-  if (currentScreen === "gallery") renderGallery();
+  if (currentScreen === "gallery") renderGallery({ keepPlace: true });
 }
 
 // Puts a past run back on Create: the model, every setting as it stood (and
@@ -4706,7 +4800,7 @@ function initGallery() {
     saveGalleryView();
     renderGallery();
   });
-  $("gallery-more").addEventListener("click", appendGalleryPage);
+  $("gallery-more").addEventListener("click", () => appendGalleryPage());
   if ("IntersectionObserver" in window) {
     new IntersectionObserver((es) => {
       if (es.some((e) => e.isIntersecting) && gallery.shown < gallery.list.length) appendGalleryPage();
@@ -4750,12 +4844,14 @@ function initGallery() {
     const album = await createAlbum(input.value);
     input.value = "";
     if (!album) return;
+    setQuickAlbum(album.id);
     if (albumTargets.length) await setAlbumMembership(albumTargets, album.id, true);
     await renderAlbumSheet();
     refreshGalleryViews();
   });
+  $("album-quick").addEventListener("change", (e) => setQuickAlbum(e.target.value || null));
   sheetAfterClose["sheet-albums"] = () => {
-    if (viewer.rec && viewerOpen()) openViewer(viewer.rec.id);
+    refreshViewerItem();
     if (gallery.selecting && albumTargets.length > 1) setSelecting(false);
   };
 
@@ -4800,6 +4896,7 @@ function initGallery() {
   $("viewer-close-bottom").addEventListener("click", () => closeViewer());
   $("viewer-prev").addEventListener("click", () => stepViewer(-1));
   $("viewer-next").addEventListener("click", () => stepViewer(1));
+  $("viewer-quick").addEventListener("click", quickAddToggle);
   $("viewer-zoom").addEventListener("click", () => {
     viewer.zoom = !viewer.zoom;
     $("viewer-media").classList.toggle("zoomed", viewer.zoom);
@@ -4817,13 +4914,19 @@ function initGallery() {
   // A sideways swipe across the picture steps: left for the next item in the
   // list, right for the previous; a downward one closes it. Mostly one
   // direction only, and not while zoomed, where a drag pans the picture.
+  // On a phone the picture scrolls with the details under it, so a downward
+  // drag that began with them scrolled is the page scrolling back up, and
+  // closes nothing.
   let touchX = null;
   let touchY = null;
+  let touchScrolled = false;
   const stage = $("viewer-stage");
+  const body = stage.parentElement;
   stage.addEventListener("touchstart", (e) => {
     if (e.touches.length !== 1 || viewer.zoom) return void (touchX = null);
     touchX = e.touches[0].clientX;
     touchY = e.touches[0].clientY;
+    touchScrolled = body.scrollTop > 0;
   }, { passive: true });
   stage.addEventListener("touchend", (e) => {
     if (touchX == null) return;
@@ -4832,7 +4935,7 @@ function initGallery() {
     const dy = t.clientY - touchY;
     touchX = null;
     if (Math.abs(dx) >= 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) stepViewer(dx < 0 ? 1 : -1);
-    else if (dy >= 80 && dy > 1.5 * Math.abs(dx)) closeViewer();
+    else if (dy >= 80 && dy > 1.5 * Math.abs(dx) && !touchScrolled && body.scrollTop <= 0) closeViewer();
   }, { passive: true });
 }
 
