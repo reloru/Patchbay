@@ -210,13 +210,18 @@ textarea { resize: vertical; min-height: 74px; }
    width. */
 .settings-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .settings-head .section-title { margin-bottom: 10px; }
-.opt-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; }
-.opt-row { min-width: 0; }
+.opt-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+/* Each setting is four rows (name, control, note, help) shared with its
+   neighbour in the pair, so a name that wraps or a note under one side only
+   moves both controls together instead of knocking them out of line. */
+.opt-row { min-width: 0; display: grid; grid-row: span 4; grid-template-rows: subgrid; padding-bottom: 14px; }
 .opt-row.wide { grid-column: 1 / -1; }
 .opt-row input, .opt-row select { width: 100%; }
+.opt-row input:not([type="checkbox"]):not([type="range"]), .opt-row select { height: 44px; }
 .opt-row-head {
   display: flex;
   align-items: center;
+  align-self: end;
   flex-wrap: wrap;
   gap: 4px 10px;
   margin-bottom: 6px;
@@ -224,7 +229,7 @@ textarea { resize: vertical; min-height: 74px; }
 .opt-name { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .opt-row.changed .opt-name { color: var(--text); }
 .opt-note { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
-.opt-note:empty { display: none; }
+.opt-note:empty { margin: 0; }
 .opt-row.blocked { opacity: .5; }
 .opt-row.blocked select,
 .opt-row.blocked input { cursor: not-allowed; }
