@@ -676,3 +676,27 @@ test("/api/result reports the Worker's wait on the provider and still streams th
     }
   );
 });
+
+// A provider's own 401 must not look like the app password being refused: the
+// browser answers that status by dropping the saved password and showing the
+// password screen, which hides a bad API key and cannot be fixed by retyping.
+test("a provider's 401 is not reported as an app-password failure", async () => {
+  await withProvider(
+    () => new Response(JSON.stringify({ message: "Invalid API key" }), { status: 401, headers: { "content-type": "application/json" } }),
+    async () => {
+      const form = new FormData();
+      form.append("file", new File([new Uint8Array([1, 2, 3])], "a.png", { type: "image/png" }));
+      const res = await call("/api/upload", { password: PASSWORD, method: "POST", body: form });
+      assert.equal(res.status, 502);
+      const body = await res.json();
+      assert.match(body.error, /provider rejected its API key/);
+      assert.match(body.error, /Invalid API key/);
+      assert.match(body.error, /app password is fine/);
+    }
+  );
+});
+
+test("the gate's own 401 still reads as 401", async () => {
+  const res = await call("/api/upload", { password: "wrong", method: "POST" });
+  assert.equal(res.status, 401);
+});
