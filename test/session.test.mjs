@@ -2571,6 +2571,38 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     Math.abs(arBox.y - seedBox.y) < 2 && (await page.locator(".opt-row.changed .opt-note").count()) === 2,
     JSON.stringify({ ar: arBox.y, seed: seedBox.y })
   );
+  // Every pair of settings on one line: controls start at the same height and
+  // are the same height, whatever the labels wrap to or the notes say.
+  const pairsAligned = () =>
+    page.evaluate(() => {
+      const rows = [...document.querySelectorAll(".opt-list .opt-row:not(.wide)")].filter((r) => r.offsetParent);
+      const bad = [];
+      const byTop = new Map();
+      for (const r of rows) {
+        const c = r.querySelector("input:not([type=checkbox]), select, textarea");
+        if (!c) continue;
+        const b = c.getBoundingClientRect();
+        const key = Math.round(r.getBoundingClientRect().top);
+        (byTop.get(key) || byTop.set(key, []).get(key)).push({ r, b });
+      }
+      for (const group of byTop.values()) {
+        for (const g of group) {
+          if (Math.abs(g.b.top - group[0].b.top) > 1 || Math.abs(g.b.height - group[0].b.height) > 1) bad.push(g.r.querySelector(".opt-name").textContent);
+        }
+      }
+      return { bad, pairs: [...byTop.values()].filter((g) => g.length === 2).length };
+    });
+  let aligned = await pairsAligned();
+  check("aspect ratio and seed are the same height and start together", aligned.bad.length === 0 && aligned.pairs > 0, JSON.stringify(aligned));
+  await page.selectOption("#model-select", "p-video-2-pro");
+  await page.waitForTimeout(300);
+  await page.fill('[data-field="duration"]', "8");
+  await page.selectOption('[data-field="mode"]', { index: 1 }).catch(() => {});
+  await page.waitForTimeout(200);
+  aligned = await pairsAligned();
+  check("with wrapping names and notes on one side, the video model's pairs still line up", aligned.bad.length === 0 && aligned.pairs >= 2, JSON.stringify(aligned));
+  await page.selectOption("#model-select", "p-image-edit");
+  await page.waitForTimeout(200);
   check("no Reset appears once something is changed", (await page.locator(".opt-reset, .opt-reset-all").count()) === 0);
   check("and no orange bar marks it",
     await page.locator(".opt-row.changed").first().evaluate((el) => getComputedStyle(el).borderLeftStyle === "none" || getComputedStyle(el).borderLeftWidth === "0px"));
