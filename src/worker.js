@@ -120,8 +120,31 @@ async function resultTokenOk(token, env) {
   return safeEqual(token.slice(dot + 1), await signExpiry(exp, env));
 }
 
+// The one 401 the browser is meant to act on: the app password was refused.
+const gateRefusals = new WeakSet();
+
 export default {
+  // A provider's own 401 (a bad or revoked key) is passed through by several
+  // handlers. The browser reads any 401 as "app password wrong", drops the saved
+  // password and shows the password screen, which hides the real problem and
+  // cannot be fixed by typing the password again. Only the gate's refusal keeps
+  // that status.
   async fetch(request, env, ctx) {
+    const res = await route(request, env, ctx);
+    if (res.status !== 401 || gateRefusals.has(res)) return res;
+    let said = "";
+    try {
+      const body = JSON.parse(await res.clone().text());
+      said = String(body.error || body.message || "").slice(0, 200);
+    } catch {
+      /* not JSON */
+    }
+    return json({ error: `A provider rejected its API key (HTTP 401). The app password is fine.${said ? " It said: " + said : ""}` }, 502);
+  },
+};
+
+async function route(request, env, ctx) {
+  {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -162,7 +185,9 @@ export default {
       if (!authOk(request, env)) {
         const viaToken = path === "/api/result" && (await resultTokenOk(url.searchParams.get("t"), env));
         if (!viaToken) {
-          return json({ error: "Unauthorized. Wrong or missing app password." }, 401);
+          const refusal = json({ error: "Unauthorized. Wrong or missing app password." }, 401);
+          gateRefusals.add(refusal);
+          return refusal;
         }
       }
 
@@ -217,8 +242,8 @@ export default {
     } catch (err) {
       return json({ error: "Worker error: " + (err && err.message ? err.message : String(err)) }, 500);
     }
-  },
-};
+  }
+}
 
 async function handleGenerate(request, env) {
   const body = await request.json().catch(() => null);
