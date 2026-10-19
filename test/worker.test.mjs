@@ -525,7 +525,7 @@ test("Improve takes a custom instruction and still falls back to the default", a
   const custom = await improveWith("@cf/meta/llama-3.2-3b-instruct", { system: "Haiku." });
   assert.equal(custom.input.messages[0].content, "Haiku.");
   const plain = await improveWith("@cf/meta/llama-3.2-3b-instruct");
-  assert.match(plain.input.messages[0].content, /improve its clarity/);
+  assert.match(plain.input.messages[0].content, /You rewrite prompts for an image-editing model/);
 });
 
 test("embeddings follow each model's documented input", async () => {
@@ -598,7 +598,7 @@ test("a model with no system role gets the instruction in the user message", asy
   const res = await postTool("/api/improve-prompt", { prompt: "a old lighthouse", model: "@cf/google/gemma-7b-it-lora" }, aiEnv);
   assert.equal(seen.messages.length, 1);
   assert.equal(seen.messages[0].role, "user");
-  assert.match(seen.messages[0].content, /improve its clarity[\s\S]*Text:\na old lighthouse$/);
+  assert.match(seen.messages[0].content, /You rewrite prompts for an image-editing model[\s\S]*Text:\na old lighthouse$/);
   assert.deepEqual(outcome(await readEvents(res)).data, { prompt: "An old lighthouse.", neurons: null }, "the 'Sure, here is' line is dropped");
 
   const chat = await chatWith({ model: "@cf/google/gemma-7b-it-lora", messages: [{ role: "user", content: "hi" }] });
