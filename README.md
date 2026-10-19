@@ -69,8 +69,9 @@ rewrite is the prompt Undo button's job, so the button stays Improve rather than
 turning into a one-shot undo of its own.
 
 **Image description.** Describe, on each image in the gallery's viewer,
-captions that image with one of 9 Workers AI vision models and drops the
-caption into the prompt box on Create as a starting prompt (one Undo step). Its
+captions that image with one of 9 Workers AI vision models and shows the
+caption right there under the picture, with *Copy*; the prompt box on Create is
+left alone. A caption stays with its item while the viewer is open. Its
 model and its own settings are in the gallery's *Settings*. Its instruction
 is editable like Improve's and the chat's. Moondream's caption mode takes no text, so with an instruction of
 your own it is asked as a question through its `query` mode instead.
@@ -221,7 +222,7 @@ source video or audio are proxied to the provider and referenced by URL.
 
 **Reuse an output as an input.** A finished image can go straight back in as
 the thing to edit or as a reference, without a trip through the camera roll.
-The button names its target before you press it — Edit this when the image
+The button names its target before you press it — Edit when the image
 becomes an editing model's subject, Use as reference when it joins a prompt,
 and Edit in P-Image-Edit when the current model has nowhere to put it, which
 switches and carries the image across. The receiving field is scrolled into
@@ -272,7 +273,7 @@ archive too, since nothing is kept without them.
 
 **Prompt undo/redo.** Undo and Redo on the tool strip cover the main
 prompt box and nothing else (the instruction editor has its own). Typing is grouped into one entry per burst rather
-than one per keystroke, and an Improve rewrite, a Describe caption, a loaded
+than one per keystroke, and an Improve rewrite, a loaded
 saved prompt, a reused setup or a Reset is a single entry, so one press reverses the whole
 replacement. Editing after an undo drops the redo tail, as it does in any
 editor. The history is text rather than a handle on the element it was typed
@@ -318,10 +319,11 @@ Tapping an item opens it full screen: the picture or clip (*⤢* shows an image
 at its own pixels to pan around), stepped with ‹ ›, a sideways swipe or the
 arrow keys through the list it was opened from; the phone's Back closes it.
 Under it: a name, its albums, the whole prompt with *Copy*, every setting with
-the ones changed from the model's default marked — each with a 🔍 that finds
-everything made with that value — and the input files. Its actions are
-*Reuse parameters*, *Use as input* (the button names where it will go, as on a
-fresh result), *Save* and *Delete*.
+the ones whose value differs from the model's default marked (a setting left
+at its default is not marked, even if it was touched) — each with a *Find* that
+finds everything made with that value — and the input images as pictures. Its
+actions, two to a row, are *Reuse parameters*, *Use as input* (the button names
+where it will go, as on a fresh result), *Save*, *Describe* and *Delete*.
 
 **Reuse parameters.** Puts the run back on Create: the model, every setting,
 which settings were deliberately set (that flag alone decides whether a value
@@ -343,8 +345,7 @@ input could not be kept.
 **Albums and names.** An item can be named and put in any number of albums,
 from the viewer or for a selection. Deleting an album keeps its items.
 
-**Quick add.** The full-width button under *Describe*, among the actions just
-below the picture, files the item in one album
+**Quick add.** The button in the viewer's top bar files the item in one album
 with one tap (*+ Portraits*), and takes it out again when tapped while it reads
 *✓ Portraits*, so a run of pictures can be sorted while stepping through them.
 Its album is whichever you last ticked or made in the Albums sheet; the
