@@ -933,18 +933,29 @@ body.viewer-open { overflow: hidden; }
   .viewer-media { height: 100%; }
   .viewer-info { overflow-y: auto; border-left: 1px solid var(--border); }
 }
-.viewer-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.viewer-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .viewer-actions button { padding: 10px 8px; }
-.viewer-actions .viewer-quick {
-  grid-column: 1 / -1;
+/* Two to a row, so four actions make two even rows; an odd last one takes the
+   row rather than leaving a hole beside it. */
+.viewer-actions > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+.viewer-quick {
+  flex: 0 1 auto;
   min-width: 0;
-  padding: 12px 14px;
+  max-width: 48vw;
+  height: 42px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, .25);
+  background: rgba(255, 255, 255, .1);
+  color: #fff;
+  font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.viewer-actions .viewer-quick[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #1a1206; }
+.viewer-quick[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #1a1206; }
+.viewer-prompt.err { color: var(--danger); }
 .viewer-section h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .viewer-name { width: 100%; font-size: 16px; font-weight: 600; }
 .viewer-meta { margin: 6px 2px 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
@@ -960,7 +971,9 @@ body.viewer-open { overflow: hidden; }
 .param-row.changed dt { color: var(--text); font-weight: 600; }
 .param-row dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .param-find { padding: 4px 6px; background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 12px; font-weight: 500; }
-.viewer-inputs { display: flex; flex-direction: column; gap: 4px; font-size: 13px; overflow-wrap: anywhere; }
+.viewer-inputs { display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; overflow-wrap: anywhere; }
+.viewer-input { flex: 1 1 100%; }
+.viewer-input-thumb { width: 96px; height: 96px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2); }
 
 /* ── Prompt library ────────────────────────────────────────────────────── */
 .lib-search-row { display: flex; gap: 8px; }

@@ -401,9 +401,13 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
 
   // Describe → Undo (from a gallery image)
   await describeFromGallery(page);
-  await page.waitForFunction((s) => document.querySelector(s).value === "STUB CAPTION TEXT", promptSel);
-  await undo.click();
-  check("Describe is undoable in one press", (await page.inputValue(promptSel)) === "cat on a skateboard");
+  await page.waitForFunction(() => (document.querySelector("#viewer-description-text") || {}).textContent === "STUB CAPTION TEXT", null, { timeout: 5000 }).catch(() => {});
+  check(
+    "Describe captions the image in the viewer and leaves the prompt alone",
+    (await page.locator("#viewer-description-text").textContent()) === "STUB CAPTION TEXT" && (await page.inputValue(promptSel)) === "cat on a skateboard"
+  );
+  check("with a Copy for the caption", await page.locator("#viewer-description-copy").isVisible());
+  await page.locator("#viewer-close").click();
 
   // Saved prompt load → Undo
   await page.evaluate(() =>
@@ -650,7 +654,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   // On an editing model whose image field is its required subject, the label
   // says so rather than calling it a reference.
   await generate();
-  check("label reads Edit this on an editing model", (await page.locator(".reuse").first().textContent()) === "Edit this");
+  check("label reads Edit on an editing model", (await page.locator(".reuse").first().textContent()) === "Edit");
   await page.locator(".reuse").first().click();
   await page.waitForTimeout(300);
   check("adds to the same field rather than switching", (await page.inputValue("#model-select")) === "p-image-edit");
@@ -1086,7 +1090,12 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   const uploadsBefore = (await (await fetch(BASE + "__uploads")).json()).uploadCount;
   await page.locator(".recent-strip .thumb").first().click();
   await page.waitForSelector("#viewer:not(.hidden)");
-  check("the viewer lists the input file", (await page.locator(".viewer-input").first().textContent()).includes("cat.png"));
+  await page.waitForFunction(() => (document.querySelector(".viewer-input-thumb") || {}).src, null, { timeout: 3000 }).catch(() => {});
+  check(
+    "the viewer shows the input as a picture",
+    (await page.locator(".viewer-input-thumb").first().getAttribute("alt")).includes("cat.png") &&
+      (await page.locator(".viewer-input-thumb").first().evaluate((i) => i.src.startsWith("blob:")))
+  );
   await page.locator("#viewer-reuse").click();
   await page.waitForFunction(() => (uploads.images || []).length === 1, null, { timeout: 5000 }).catch(() => {});
   check("Reuse parameters switches back to the model", (await page.inputValue("#model-select")) === "p-image-edit");
@@ -1742,10 +1751,11 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.fill(promptSel, "edit me");
   await page.waitForTimeout(700);
   await describeFromGallery(page);
-  await page.waitForTimeout(900);
-  check("a caption seeds the prompt, which is what captioning is for", (await page.inputValue(promptSel)) === "STUB CAPTION TEXT");
+  await page.waitForFunction(() => (document.querySelector("#viewer-description-text") || {}).textContent === "STUB CAPTION TEXT", null, { timeout: 5000 }).catch(() => {});
+  check("the caption shows in the viewer", (await page.locator("#viewer-description-text").textContent()) === "STUB CAPTION TEXT");
   check("Describe sends no question and no prompt", posted.length === 1 && !("question" in posted[0]) && !("prompt" in posted[0]), JSON.stringify(posted[0] && Object.keys(posted[0])));
-  check("and goes back to Create so the caption is seen landing", (await page.locator("#viewer").isHidden()) && (await page.locator("#screen-create").isVisible()));
+  check("and stays in the viewer, leaving the prompt as it was", (await page.locator("#viewer").isVisible()) && (await page.inputValue(promptSel)) === "edit me");
+  await page.locator("#viewer-close").click();
   check("the tool row has no Describe of its own any more", (await page.locator("#prompt-tools button", { hasText: "Describe" }).count()) === 0);
 
   // A model with no prompt box used to swallow a tool's tap without a word;
@@ -2204,7 +2214,8 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await page.locator("#sheet-tools .sheet-close").click();
   await page.locator("#tab-create").click();
   await describeFromGallery(page);
-  await page.waitForFunction((s) => document.querySelector(s).value === "STUB CAPTION TEXT", promptSel);
+  await page.waitForFunction(() => (document.querySelector("#viewer-description-text") || {}).textContent === "STUB CAPTION TEXT", null, { timeout: 5000 }).catch(() => {});
+  await page.locator("#viewer-close").click();
   const described = await (await page.request.get(BASE + "__describe")).json();
   check("and Describe sends it", described.settings && described.settings.system === "Name the colours only.", JSON.stringify(described.settings));
 
@@ -2571,6 +2582,9 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     Math.abs(arBox.y - seedBox.y) < 2 && (await page.locator(".opt-row.changed .opt-note").count()) === 2,
     JSON.stringify({ ar: arBox.y, seed: seedBox.y })
   );
+  check("no Reset appears once something is changed", (await page.locator(".opt-reset, .opt-reset-all").count()) === 0);
+  check("and no orange bar marks it",
+    await page.locator(".opt-row.changed").first().evaluate((el) => getComputedStyle(el).borderLeftStyle === "none" || getComputedStyle(el).borderLeftWidth === "0px"));
   // Every pair of settings on one line: controls start at the same height and
   // are the same height, whatever the labels wrap to or the notes say.
   const pairsAligned = () =>
@@ -2603,9 +2617,6 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("with wrapping names and notes on one side, the video model's pairs still line up", aligned.bad.length === 0 && aligned.pairs >= 2, JSON.stringify(aligned));
   await page.selectOption("#model-select", "p-image-edit");
   await page.waitForTimeout(200);
-  check("no Reset appears once something is changed", (await page.locator(".opt-reset, .opt-reset-all").count()) === 0);
-  check("and no orange bar marks it",
-    await page.locator(".opt-row.changed").first().evaluate((el) => getComputedStyle(el).borderLeftStyle === "none" || getComputedStyle(el).borderLeftWidth === "0px"));
 
   // The viewer closes from the bottom, or with a downward swipe.
   await page.waitForFunction(() => document.querySelectorAll(".recent-strip .thumb").length > 0);
@@ -2706,12 +2717,21 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   };
   check("with no album chosen, quick add reads + Album", (await quick()) === "+ Album", await quick());
   check(
-    "it sits with the actions under the picture, right after Describe",
+    "it sits in the viewer's top bar",
+    await page.evaluate(() => Boolean(document.querySelector("#viewer-quick").closest(".viewer-top")))
+  );
+  check(
+    "the four actions make two full rows, with no gap beside a lone button",
     await page.evaluate(() => {
-      const q = document.querySelector("#viewer-quick");
-      const media = document.querySelector("#viewer-media").getBoundingClientRect();
-      return q.closest(".viewer-actions") && q.previousElementSibling.id === "viewer-describe" && q.getBoundingClientRect().top >= media.bottom;
+      const b = [...document.querySelectorAll(".viewer-actions > button")].map((x) => x.getBoundingClientRect());
+      return b.length === 4 && Math.abs(b[0].top - b[1].top) < 1 && Math.abs(b[2].top - b[3].top) < 1 && Math.abs(b[0].width - b[3].width) < 1;
     })
+  );
+  check(
+    "a setting left at the model's default is not marked changed, even if it was touched",
+    await page.evaluate(() =>
+      recordParams({ modelId: "p-image-edit", setup: { fields: { aspect_ratio: "match_input_image", seed: "" }, touched: ["aspect_ratio", "seed"] } }).every((p) => !p.changed)
+    )
   );
   await page.locator("#viewer-quick").click();
   await page.waitForSelector("#sheet-albums:not(.hidden)");

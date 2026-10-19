@@ -3829,7 +3829,7 @@ function recordParams(rec) {
       label: f.label,
       raw,
       display,
-      changed: !isDefault || touched.has(f.name),
+      changed: !isDefault,
       numeric: f.type === "int" || f.type === "number",
     });
   }
@@ -4272,7 +4272,16 @@ async function renderGallerySettings() {
 
 // --- the viewer -------------------------------------------------------------
 
-const viewer = { id: null, order: [], from: "gallery", url: null, seq: 0, zoom: false, rec: null, blob: null };
+const viewer = { id: null, order: [], from: "gallery", url: null, seq: 0, zoom: false, rec: null, blob: null, inputUrls: [] };
+
+// Captions made in the viewer, by item, for this visit: a redraw of the details
+// (a name saved, an album ticked) or stepping away and back keeps them.
+const viewerDescriptions = new Map();
+
+function releaseViewerInputUrls() {
+  for (const u of viewer.inputUrls) URL.revokeObjectURL(u);
+  viewer.inputUrls = [];
+}
 
 function releaseViewerUrl() {
   if (viewer.url) URL.revokeObjectURL(viewer.url);
@@ -4359,6 +4368,7 @@ function closeViewer({ viaHistory = false } = {}) {
   $("viewer-media").innerHTML = "";
   $("viewer-info").innerHTML = "";
   releaseViewerUrl();
+  releaseViewerInputUrls();
   if (galleryViewsStale) refreshGalleryViews();
   if (!viaHistory && history.state && history.state.patchbayViewer) {
     try {
@@ -4446,6 +4456,7 @@ function infoSection(title) {
 function renderViewerInfo(rec) {
   const box = $("viewer-info");
   box.innerHTML = "";
+  releaseViewerInputUrls();
   const kind = recordKind(rec);
   const model = MODELS.find((m) => m.id === rec.modelId);
 
@@ -4476,22 +4487,17 @@ function renderViewerInfo(rec) {
   actions.appendChild(save);
   if (kind === "image") {
     // Captions this picture into the prompt box on Create.
-    const describe = button("Describe", "secondary", () => {
-      const file = new File([viewer.blob], `gallery-${rec.createdAt}.${extFromType(rec.type, kind)}`, { type: viewer.blob.type });
-      closeViewer();
-      showScreen("create");
-      describeImage(file);
-    });
+    const describe = button("Describe", "secondary", () => describeInViewer(rec));
     describe.id = "viewer-describe";
-    describe.title = "Caption this image into the prompt box";
+    describe.title = "Caption this image here, to read or copy";
     actions.appendChild(describe);
   }
-  // One tap files the item in the quick-add album; tapped again, takes it out.
-  // Its own full-width row, under the picture where the thumb already is.
-  const quick = button("", "secondary viewer-quick", quickAddToggle);
-  quick.id = "viewer-quick";
-  actions.appendChild(quick);
   box.appendChild(actions);
+
+  const descSec = infoSection("Description");
+  descSec.id = "viewer-description";
+  box.appendChild(descSec);
+  renderViewerDescription(rec);
 
   // Name
   const nameSec = infoSection("");
@@ -4621,29 +4627,47 @@ function renderViewerInfo(rec) {
   }
   box.appendChild(parSec);
 
-  // Inputs
+  // Inputs: the pictures themselves. A file name like generated-1792….jpg
+  // says nothing about which picture went in.
   if (rec.inputs && Object.keys(rec.inputs).length) {
-    const inSec = infoSection("Input files");
+    const inSec = infoSection("Inputs");
     const list = document.createElement("div");
     list.className = "viewer-inputs";
+    const loads = [];
     for (const [field, refs] of Object.entries(rec.inputs)) {
       const f = model && model.fields.find((x) => x.name === field);
+      const label = f ? f.label : field;
       for (const ref of refs) {
-        const row = document.createElement("div");
-        row.className = "viewer-input";
-        row.textContent = `${f ? f.label : field}: ${ref.name}${ref.size ? ` (${fmtBytes(ref.size)})` : ""}${ref.missing ? ` — not kept, ${ref.missing}` : ""}`;
-        list.appendChild(row);
+        if (ref.hash && (ref.type || "").startsWith("image/")) {
+          const img = document.createElement("img");
+          img.className = "viewer-input-thumb";
+          img.alt = `${label}: ${ref.name}`;
+          img.title = img.alt;
+          list.appendChild(img);
+          loads.push([img, ref]);
+        } else {
+          const row = document.createElement("div");
+          row.className = "viewer-input";
+          row.textContent = `${label}: ${ref.name}${ref.size ? ` (${fmtBytes(ref.size)})` : ""}${ref.missing ? ` — not kept, ${ref.missing}` : ""}`;
+          list.appendChild(row);
+        }
       }
     }
     inSec.appendChild(list);
     box.appendChild(inSec);
-  } else if (rec.inputs) {
-    const inSec = infoSection("Input files");
-    const p = document.createElement("p");
-    p.className = "chat-note";
-    p.textContent = "None — this was made from the prompt and settings alone.";
-    inSec.appendChild(p);
-    box.appendChild(inSec);
+    for (const [img, ref] of loads) {
+      idbRun(GALLERY_INPUTS_STORE, "readonly", (st) => st.get(ref.hash)).then((r) => {
+        const got = r.value;
+        if (!img.isConnected) return;
+        if (!got || !got.bytes) {
+          img.replaceWith(Object.assign(document.createElement("div"), { className: "viewer-input", textContent: `${img.alt} — no longer stored` }));
+          return;
+        }
+        const url = URL.createObjectURL(new Blob([got.bytes], { type: ref.type || got.type || "image/jpeg" }));
+        viewer.inputUrls.push(url);
+        img.src = url;
+      });
+    }
   }
 
   const del = button("Delete", "secondary danger", async () => {
@@ -4901,6 +4925,7 @@ function initGallery() {
   $("viewer-close-bottom").addEventListener("click", () => closeViewer());
   $("viewer-prev").addEventListener("click", () => stepViewer(-1));
   $("viewer-next").addEventListener("click", () => stepViewer(1));
+  $("viewer-quick").addEventListener("click", quickAddToggle);
   $("viewer-zoom").addEventListener("click", () => {
     viewer.zoom = !viewer.zoom;
     $("viewer-media").classList.toggle("zoomed", viewer.zoom);
@@ -5292,7 +5317,7 @@ function reuseLabel(f, kind = "image") {
   if (kind === "video") {
     return currentModel.group === "Video" && f.required ? "Edit this clip" : "Use as source";
   }
-  return (currentModel.group === "Image editing" || currentModel.edits) && f.required ? "Edit this" : "Use as reference";
+  return (currentModel.group === "Image editing" || currentModel.edits) && f.required ? "Edit" : "Use as reference";
 }
 
 // Every reuse button on screen, so their labels can follow the current target.
@@ -5860,47 +5885,63 @@ function initDescribe() {
   });
 }
 
-let describing = null;
-
-// Captions an image into the prompt box on Create, as one Undo step. Reached
-// from Describe on a gallery image; the model is the one picked under Models.
-async function describeImage(file) {
-  const el = primaryPromptEl();
-  if (!el) return void setStatus("This model has no prompt box for the caption to go in — pick one that does.", "err");
-  if (describing) return;
+// One caption from the Describe model picked in the gallery's settings.
+async function captionImage(file, controller, onProgress) {
   const modelId = $("describe-model").value;
-  describing = new AbortController();
-  const cancel = () => describing && describing.abort();
-  setStatus("Describing the image…", "load", { cancel });
-  try {
-    const image = await toolImage(file);
-    if (!image) throw new Error("Could not read that image.");
-    const data = await streamTool(
-      "/api/describe",
-      { image_b64: image.b64, mime: image.mime, model: modelId, settings: toolSettingsFor("describe", modelId) },
-      {
-        controller: describing,
-        onEvent: (name, d) => {
-          if (name === "progress") {
-            setStatus(d.chars ? `Describing the image… ${d.chars} characters` : "Describing the image… thinking", "load", { cancel });
-          }
-        },
-      }
-    );
-    if (!data.description) throw new Error("The model returned no description.");
-    el.value = data.description;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    commitPromptHistory(); // the caption is one entry, so Undo puts back what you had
-    setStatus("Prompt filled from the image — press Undo to get yours back.", "ok");
-    if (typeof data.neurons === "number") sessionNeurons += data.neurons;
-    updateSpendBar();
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    setTimeout(refreshNeurons, 4000);
-  } catch (e) {
-    if (e.message === TOOL_CANCELLED) setStatus("Describe cancelled. The prompt is unchanged.", "ok");
-    else setStatus("Describe failed: " + e.message, "err");
-  } finally {
-    describing = null;
+  const image = await toolImage(file);
+  if (!image) throw new Error("Could not read that image.");
+  const data = await streamTool(
+    "/api/describe",
+    { image_b64: image.b64, mime: image.mime, model: modelId, settings: toolSettingsFor("describe", modelId) },
+    { controller, onEvent: (name, d) => name === "progress" && onProgress && onProgress(d) }
+  );
+  if (!data.description) throw new Error("The model returned no description.");
+  if (typeof data.neurons === "number") sessionNeurons += data.neurons;
+  updateSpendBar();
+  setTimeout(refreshNeurons, 4000);
+  return data.description;
+}
+
+// Describe in the viewer: the caption appears under the picture with a Copy,
+// and the prompt box on Create is left alone.
+function describeInViewer(rec) {
+  const had = viewerDescriptions.get(rec.id);
+  if (had && had.busy) return;
+  const entry = { busy: true, text: "", error: "", progress: "" };
+  viewerDescriptions.set(rec.id, entry);
+  const file = new File([viewer.blob], `gallery-${rec.createdAt}.${extFromType(rec.type, recordKind(rec))}`, { type: viewer.blob.type });
+  const redraw = () => viewer.id === rec.id && renderViewerDescription(rec);
+  redraw();
+  captionImage(file, new AbortController(), (d) => {
+    entry.progress = d.chars ? `${d.chars} characters` : "thinking";
+    redraw();
+  })
+    .then((text) => (entry.text = text))
+    .catch((e) => (entry.error = e.message))
+    .finally(() => {
+      entry.busy = false;
+      redraw();
+    });
+}
+
+function renderViewerDescription(rec) {
+  const sec = $("viewer-description");
+  if (!sec) return;
+  const entry = viewerDescriptions.get(rec.id);
+  sec.classList.toggle("hidden", !entry);
+  const btn = $("viewer-describe");
+  if (btn) btn.disabled = Boolean(entry && entry.busy);
+  if (!entry) return;
+  for (const el of [...sec.children].slice(1)) el.remove();
+  const p = document.createElement("p");
+  p.id = "viewer-description-text";
+  p.className = entry.error ? "viewer-prompt err" : "viewer-prompt";
+  p.textContent = entry.busy ? `Describing… ${entry.progress}`.trim() : entry.error ? "Describe failed: " + entry.error : entry.text;
+  sec.appendChild(p);
+  if (entry.text && !entry.busy) {
+    const copy = button("Copy", "secondary", () => copyText(entry.text, copy, "Copy"));
+    copy.id = "viewer-description-copy";
+    sec.appendChild(copy);
   }
 }
 
