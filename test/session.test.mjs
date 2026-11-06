@@ -3067,6 +3067,23 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("a reference clip counts only up to the output length plus 0.5 s", Math.abs(reference.capped - (5 * 0.035 + 5.5 * 0.06)) < 1e-9, String(reference.capped));
   check("and a 15 s request bills 14 s, with its clip capped at 14.5 s", Math.abs(reference.fifteen - (14 * 0.035 + 14.5 * 0.06)) < 1e-9, String(reference.fifteen));
 
+  // What goes out untouched: Turbo off where Pruna defaults it on, and no
+  // array-wrapped default strength for a LoRA that is not set.
+  const untouched = {};
+  for (const id of ["qwen-image-edit-plus", "p-image-edit-lora", "qwen-image", "z-image-turbo-lora"]) {
+    await page.selectOption("#model-select", id);
+    untouched[id] = await page.evaluate(() => buildInput().input);
+  }
+  check("qwen-image-edit-plus sends Turbo off", untouched["qwen-image-edit-plus"].go_fast === false, JSON.stringify(untouched["qwen-image-edit-plus"]));
+  check("p-image-edit-lora sends Turbo off", untouched["p-image-edit-lora"].turbo === false, JSON.stringify(untouched["p-image-edit-lora"]));
+  check("qwen-image sends no strength for an unset second LoRA", !("extra_lora_scale" in untouched["qwen-image"]), JSON.stringify(untouched["qwen-image"]));
+  check("z-image-turbo-lora leaves its default strength out", !("lora_scales" in untouched["z-image-turbo-lora"]), JSON.stringify(untouched["z-image-turbo-lora"]));
+  await page.selectOption("#model-select", "qwen-image");
+  await page.fill('#gen-form [data-field="extra_lora_scale"]', "0.6");
+  await page.waitForTimeout(100);
+  const changed = await page.evaluate(() => buildInput().input.extra_lora_scale);
+  check("a changed strength is still sent as a list", JSON.stringify(changed) === "[0.6]", JSON.stringify(changed));
+
   await page.selectOption("#model-select", "p-video-2-pro");
   const pro4k = await page.evaluate(() => estimateCost(currentModel, { resolution: "4k", mode: "quality", duration: 10 }, 1));
   check("p-video-2-pro prices 4k", Math.abs(pro4k - 10 * 0.155) < 1e-9, String(pro4k));

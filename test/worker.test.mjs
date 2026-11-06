@@ -791,3 +791,22 @@ test("the watermark check refuses a file that is not on Pruna", async () => {
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /Upload the file first/);
 });
+
+// ── Values Pruna's validation refused, checked live 2026-11-06 ─────────────
+test("the catalogue offers only values Pruna's schemas accept", async () => {
+  const { MODELS } = await import("../src/models.js");
+  const field = (id, name) => MODELS.find((m) => m.id === id).fields.find((f) => f.name === name);
+  assert.deepEqual(
+    field("flux-dev-lora", "speed_mode").options.map((o) => o.value),
+    ["Base Model (compiled)", "Lightly Juiced 🍊", "Juiced 🧃", "Extra Juiced 🔥"]
+  );
+  assert.equal(field("flux-dev-lora", "image_size"), undefined, "refused as an unknown key");
+  assert.equal(field("flux-dev-lora", "guidance").max, 10);
+  for (const v of field("p-video-avatar", "voice").options) assert.match(v.value, / \((Female|Male)\)$/, v.value);
+  for (const n of ["width", "height"]) {
+    assert.ok(field("wan-image-small", n).max <= 900 && field("wan-image-small", n).default <= 900, n);
+    assert.ok(field("z-image-turbo-lora", n).max <= 1440, n);
+  }
+  assert.equal(field("z-image-turbo-lora", "go_fast"), undefined, "refused as an unknown key");
+  for (const id of ["flux-dev", "flux-dev-lora", "wan-image-small"]) assert.equal(field(id, "output_quality").min, 1, id);
+});

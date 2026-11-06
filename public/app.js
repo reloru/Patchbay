@@ -1685,6 +1685,10 @@ function buildInput() {
     // what the provider would do on its own; otherwise sending it is just noise.
     if (v === undefined || v === "") continue;
     if (Array.isArray(v)) {
+      // A wrapArray field reads back as [value]. Compared as an array it never
+      // equals its default, so qwen-image sent a strength for a second LoRA
+      // that was never set; the value inside is what is compared.
+      if (f.wrapArray && v.length === 1 && v[0] === apiDefaultOf(f) && !touchedNames.has(f.name)) continue;
       if (v.length) input[f.name] = v;
       continue;
     }
