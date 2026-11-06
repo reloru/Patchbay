@@ -3,12 +3,12 @@
 </p>
 
 Patchbay is a web front end for image and video generation and editing. It puts
-50 models from three providers behind one interface and runs entirely on
+55 models from three providers behind one interface and runs entirely on
 Cloudflare Workers — no server to maintain, no build step, no framework.
 
 | Provider | Models | Credentials |
 |----------|--------|-------------|
-| [Pruna AI](https://docs.api.pruna.ai/) | 32 | `PRUNA_API_KEY` |
+| [Pruna AI](https://docs.api.pruna.ai/) | 37 | `PRUNA_API_KEY` |
 | [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/) | 13 | none |
 | [xAI (Grok)](https://docs.x.ai/) | 5 | `XAI_API_KEY` |
 
@@ -16,8 +16,8 @@ A further 42 models run behind the prompt tools rather than appearing in the
 picker: 32 Workers AI models rewrite prompts, 33 hold the chat, 9 vision models
 caption images — all nine of which can also be shown the attached images in the
 chat, and eight of which can rewrite for Improve — 7 embedding models measure
-text in the Embeddings panel, and Pruna's `p-judger` scores an image against a
-prompt.
+text in the Embeddings panel, Pruna's `p-judger` scores an image against a
+prompt, and Pruna's `p-watermark` checks a file for Pruna's watermark.
 
 ## Features
 
@@ -194,8 +194,13 @@ Cloudflare serves it over a WebSocket only.
 
 **Other.** In Lab, a section for the catalogue models that fit nowhere else:
 a safety check with Llama Guard 3 8B, sentiment with DistilBERT SST-2, image
-labels with ResNet-50 (on the attached image, or a picked one), and ranking
-passages against a query with the BGE reranker.
+labels with ResNet-50 (on the attached image, or a picked one), ranking
+passages against a query with the BGE reranker, and a watermark check with
+Pruna's `p-watermark`. The watermark check takes the attached image or video, or
+a picked one, uploads the original file (re-encoding it would strip the
+Content Credentials being checked for), and shows the verdict: whether Pruna's
+invisible watermark is there, and whether a valid Pruna-signed Content
+Credential is. It is free.
 
 **Embeddings.** In Lab, a panel of its own, with its own text box: write something,
 change it, and watch the numbers move. About a second after you stop typing
@@ -462,7 +467,7 @@ Browser (public/)  ──►  Cloudflare Worker (src/worker.js)  ──┬──
    /api/embed           embeds text for the Embeddings panel
    /api/translate       translates the prompt via m2m100
    /api/transcribe      speech to text for the chat's Mic
-   /api/other           the Other section's tools
+   /api/other           the Other section's tools (Workers AI, and Pruna p-watermark)
    /api/judge           scores an image against a prompt via Pruna p-judger
    /api/neurons         current-day Workers AI neuron spend
 ```
@@ -484,13 +489,13 @@ poll around.
 
 ## Models
 
-### Pruna (32)
+### Pruna (37)
 
 | Group | Models |
 |-------|--------|
 | Image editing | `p-image-edit`, `p-image-edit-lora`, `p-image-edit-text-aware`, `p-image-rmbg`, `p-image-try-on`, `p-try-on-glasses`, `p-image-upscale`, `qwen-image-edit-plus` |
 | Image generation | `flux-dev`, `flux-dev-lora`, `flux-2-klein-4b`, `qwen-image`, `qwen-image-fast`, `z-image-turbo`, `z-image-turbo-lora`, `z-image-turbo-small`, `p-image`, `p-image-lora`, `p-image-ideogram`, `wan-image-small` |
-| Video | `wan-t2v`, `wan-i2v`, `p-video`, `p-video-edit`, `p-video-2`, `p-video-infiniteworlds`, `p-video-animate`, `p-video-replace`, `p-video-avatar`, `vace` |
+| Video | `wan-t2v`, `wan-i2v`, `p-video`, `p-video-edit`, `p-video-2`, `p-video-2-pro`, `p-video-2-pro-reference`, `p-video-infiniteworlds`, `p-video-animate`, `p-video-replace`, `p-video-2-pro-replace`, `p-video-avatar`, `p-video-2-pro-avatar`, `p-video-upscale`, `vace` |
 | LoRA training | `p-image-trainer`, `p-image-edit-trainer` |
 
 `p-video-edit` rewrites an existing clip from a text prompt, with up to 4
@@ -505,6 +510,22 @@ from the prompt. Nothing can be estimated in that case, and no estimate is shown
 rather than a guessed one. Where audio is attached to `p-video`, `p-video-2` or
 `p-video-infiniteworlds`, the track sets the length and therefore the bill, so
 the browser reads its duration and prices from that instead of the Length box.
+
+Three newer models in the `p-video-2-pro` family each offer 480p and 768p
+generated, and 1080p, 2k and 4k as the 768p video upscaled. They name their
+filter `enable_safety_filter`, true meaning on. `p-video-2-pro-reference` makes a 5–15 s
+video from a prompt guided by up to 9 reference images, 3 reference videos and
+3 audio clips, and needs at least one image or video. It is billed on the output
+and on every reference, so the estimate waits until every reference clip's
+length has been read. `p-video-2-pro-avatar` makes a talking video from one
+portrait and a script or uploaded speech, up to 3 minutes; the script is its
+prompt box, and with a typed script there is no length to price until the run
+reports one. `p-video-2-pro-replace` swaps the person in a 1–120 s video for one
+or two people from pictures; it is the one model documented with its filter on
+by default, so off is sent. `p-video-upscale` takes a video to 720p, 1080p, 2k
+or 4k, billed per second of the result and double above 30 fps; the browser
+cannot read a clip's frame rate, so a source above 30 fps with the rate left
+empty is estimated at the lower rate.
 
 `p-image-rmbg` returns a transparent PNG and takes exactly one input, the image
 — no options at all. `p-image-edit-text-aware` routes to whichever edit model

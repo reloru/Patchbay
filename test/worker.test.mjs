@@ -700,3 +700,94 @@ test("the gate's own 401 still reads as 401", async () => {
   const res = await call("/api/upload", { password: "wrong", method: "POST" });
   assert.equal(res.status, 401);
 });
+
+// ── The models added from Pruna's v0.6.0 spec and model pages ──────────────
+test("the new video models are in the catalogue the Worker allows", async () => {
+  const res = await call("/api/config");
+  const ids = new Set((await res.json()).models.map((m) => m.id));
+  for (const id of ["p-video-2-pro-avatar", "p-video-2-pro-replace", "p-video-2-pro-reference", "p-video-upscale"]) {
+    assert.ok(ids.has(id), id);
+  }
+});
+
+test("p-video-2-pro-replace's filter is the only one that defaults on, so the catalogue sends it off", async () => {
+  const { MODELS } = await import("../src/models.js");
+  const f = MODELS.find((m) => m.id === "p-video-2-pro-replace").fields.find((x) => x.name === "enable_safety_filter");
+  assert.equal(f.hidden, true);
+  assert.equal(f.apiDefault, true);
+  assert.equal(f.default, false, "the value sent wherever it differs from the provider's");
+});
+
+test("p-video-2-pro-avatar's voices carry the (Female)/(Male) suffix its enum requires", async () => {
+  const { MODELS } = await import("../src/models.js");
+  const voices = MODELS.find((m) => m.id === "p-video-2-pro-avatar").fields.find((x) => x.name === "voice").options;
+  assert.equal(voices.length, 30);
+  for (const v of voices) assert.match(v.value, / \((Female|Male)\)$/, v.value);
+});
+
+// The watermark check runs on Pruna from the Other route, waits for the
+// verdict itself, and never needs the Workers AI binding.
+const watermarkCall = (url, e = { ...env, POLL_MS: 0 }) =>
+  call("/api/other", {
+    password: PASSWORD,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tool: "watermark", url }),
+  }, e);
+
+test("the watermark check sends one Pruna file to p-watermark and returns the verdict", async () => {
+  const verdict = { watermark_detected: true, bit_accuracy: 0.98, c2pa_present: true, c2pa_valid: true, verdict: "Verified Pruna content" };
+  const sent = [];
+  await withProvider(
+    (url, init) => {
+      sent.push({ url: String(url), init });
+      return new Response(JSON.stringify({ status: "succeeded", generation_url: verdict }), { status: 201 });
+    },
+    async () => {
+      const res = await watermarkCall("https://api.pruna.ai/v1/files/abc");
+      assert.equal(res.status, 200);
+      assert.deepEqual((await res.json()).result, verdict);
+    }
+  );
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url, "https://api.pruna.ai/v1/predictions");
+  assert.equal(sent[0].init.headers.Model, "p-watermark");
+  assert.equal(sent[0].init.headers["Try-Sync"], "true");
+  assert.deepEqual(JSON.parse(sent[0].init.body), { input: { media: "https://api.pruna.ai/v1/files/abc" } });
+});
+
+test("a watermark check that comes back as a job id is polled to its verdict", async () => {
+  const answers = [
+    { status: 201, body: { id: "pred1", get_url: "https://api.pruna.ai/v1/predictions/status/pred1" } },
+    { status: 200, body: { status: "processing" } },
+    { status: 200, body: { status: "succeeded", generation_url: JSON.stringify({ verdict: "no Pruna mark found" }) } },
+  ];
+  await withProvider(
+    () => {
+      const a = answers.shift();
+      return new Response(JSON.stringify(a.body), { status: a.status });
+    },
+    async () => {
+      const res = await watermarkCall("https://api.pruna.ai/v1/files/abc");
+      assert.equal(res.status, 200);
+      assert.deepEqual((await res.json()).result, { verdict: "no Pruna mark found" });
+    }
+  );
+});
+
+test("a failed watermark check reports Pruna's reason, not just 'Prediction failed'", async () => {
+  await withProvider(
+    () => new Response(JSON.stringify({ status: "failed", message: "Prediction failed", error: "Unsupported file type." }), { status: 201 }),
+    async () => {
+      const res = await watermarkCall("https://api.pruna.ai/v1/files/abc");
+      assert.equal(res.status, 502);
+      assert.equal((await res.json()).error, "Unsupported file type.");
+    }
+  );
+});
+
+test("the watermark check refuses a file that is not on Pruna", async () => {
+  const res = await watermarkCall("https://example.com/a.jpg");
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /Upload the file first/);
+});

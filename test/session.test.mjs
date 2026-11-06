@@ -126,6 +126,25 @@ const seedGallery = (page, make, n) =>
     { src: make.toString(), n }
   );
 
+// A one-finger swipe on the viewer's picture, from (x0, y0) to (x1, y1). Plain
+// events carrying the touch lists the handler reads, because desktop WebKit
+// refuses `new Touch()` outside a touch-enabled context ("Illegal
+// constructor"), which used to abort the whole WebKit run.
+function swipeStage(page, [x0, y0], [x1, y1]) {
+  return page.evaluate(([a, b]) => {
+    const el = document.querySelector("#viewer-stage");
+    const touch = ([x, y]) => ({ identifier: 1, target: el, clientX: x, clientY: y });
+    const fire = (type, touches, changedTouches) => {
+      const ev = new Event(type, { bubbles: true });
+      Object.defineProperty(ev, "touches", { value: touches });
+      Object.defineProperty(ev, "changedTouches", { value: changedTouches });
+      el.dispatchEvent(ev);
+    };
+    fire("touchstart", [touch(a)], [touch(a)]);
+    fire("touchend", [], [touch(b)]);
+  }, [[x0, y0], [x1, y1]]);
+}
+
 // The tool strip acts straight away; the models it uses are picked in ⚙
 // Options, a sheet over the form.
 async function openOptions(page) {
@@ -1278,9 +1297,9 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
 
 // ── Every model in the catalogue renders ───────────────────────────────────
 //
-// Breadth rather than depth: selecting each of the 48 models in turn catches a
-// field definition that throws while rendering, and confirms the undo buttons
-// end up in a sane state on every one — including the five with no prompt field,
+// Breadth rather than depth: selecting each model in turn catches a field
+// definition that throws while rendering, and confirms the undo buttons end up
+// in a sane state on every one — including the six with no prompt field,
 // which hold the history rather than dropping it.
 {
   const context = await browser.newContext();
@@ -1310,7 +1329,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     }
   }
   check(`all ${ids.length} models render with sane undo state`, broken.length === 0, broken.join("; "));
-  check("the promptless models are the five expected", promptless.length === 5, promptless.join(","));
+  check("the promptless models are the six expected", promptless.length === 6, promptless.join(","));
   await page.close();
   await context.close();
 }
@@ -2627,12 +2646,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("the viewer has a Close at the bottom", true);
   await page.locator(".recent-strip .thumb").first().click();
   await page.waitForSelector("#viewer:not(.hidden)");
-  await page.evaluate(() => {
-    const el = document.querySelector("#viewer-stage");
-    const touch = (y) => new Touch({ identifier: 1, target: el, clientX: 200, clientY: y });
-    el.dispatchEvent(new TouchEvent("touchstart", { touches: [touch(150)], changedTouches: [touch(150)], bubbles: true }));
-    el.dispatchEvent(new TouchEvent("touchend", { touches: [], changedTouches: [touch(320)], bubbles: true }));
-  });
+  await swipeStage(page, [200, 150], [200, 320]);
   await page.waitForFunction(() => document.getElementById("viewer").classList.contains("hidden"));
   check("and a downward swipe closes it", true);
   await page.close();
@@ -2669,12 +2683,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   await shows("second");
   check("← goes back", true);
   // A swipe right-to-left moves on to the next item.
-  await page.evaluate(() => {
-    const el = document.querySelector("#viewer-stage");
-    const touch = (x) => new Touch({ identifier: 1, target: el, clientX: x, clientY: 200 });
-    el.dispatchEvent(new TouchEvent("touchstart", { touches: [touch(300)], changedTouches: [touch(300)], bubbles: true }));
-    el.dispatchEvent(new TouchEvent("touchend", { touches: [], changedTouches: [touch(150)], bubbles: true }));
-  });
+  await swipeStage(page, [300, 200], [150, 200]);
   await shows("first");
   check("a swipe steps too", true);
   page.once("dialog", (d) => d.accept());
@@ -2777,13 +2786,7 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
 
   // With the details scrolled, a downward drag on the picture is the page
   // scrolling back up, not a swipe to close.
-  const drag = () =>
-    page.evaluate(() => {
-      const el = document.querySelector("#viewer-stage");
-      const touch = (y) => new Touch({ identifier: 1, target: el, clientX: 200, clientY: y });
-      el.dispatchEvent(new TouchEvent("touchstart", { touches: [touch(150)], changedTouches: [touch(150)], bubbles: true }));
-      el.dispatchEvent(new TouchEvent("touchend", { touches: [], changedTouches: [touch(400)], bubbles: true }));
-    });
+  const drag = () => swipeStage(page, [200, 150], [200, 400]);
   const scrolled = await page.evaluate(() => {
     const b = document.querySelector(".viewer-body");
     b.scrollTop = 300;
@@ -3006,6 +3009,58 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   check("prompt survived a browser restart", (await page.inputValue(promptSel)) === "survives a process restart");
   check("upload survived a browser restart", (await page.locator(".thumbs .thumb").count()) === 1);
   await ctx.close();
+}
+
+// ── The four video models added from Pruna's spec and model pages ──────────
+// What each sends and what each is estimated to cost, read straight off the
+// page: the uploads are stood in for by their probed lengths, which is all the
+// estimates read.
+{
+  const context = await browser.newContext();
+  const page = await open(context);
+
+  await page.selectOption("#model-select", "p-video-2-pro-avatar");
+  check(
+    "the avatar's script, not its scene line, is the prompt box",
+    await page.evaluate(() => primaryPromptEl() && primaryPromptEl().dataset.field === "voice_script")
+  );
+  const avatar = await page.evaluate(() => {
+    uploads.audio = [{ url: "https://api.pruna.ai/v1/files/a", durationSec: 12.3 }];
+    return estimateCost(currentModel, {}, 1);
+  });
+  check("the avatar is priced from the speech's length, at 768p by default", Math.abs(avatar - 13 * 0.04) < 1e-9, String(avatar));
+
+  await page.selectOption("#model-select", "p-video-2-pro-replace");
+  const replace = await page.evaluate(() => {
+    uploads.video = [{ url: "https://api.pruna.ai/v1/files/v", durationSec: 150 }];
+    return { input: buildInput().input, cost: estimateCost(currentModel, { resolution: "480p" }, 1) };
+  });
+  check("replace sends its filter off, since it defaults on", replace.input.enable_safety_filter === false, JSON.stringify(replace.input));
+  check("replace is priced on at most the 120 s it keeps", Math.abs(replace.cost - 120 * 0.05) < 1e-9, String(replace.cost));
+
+  await page.selectOption("#model-select", "p-video-2-pro-reference");
+  const reference = await page.evaluate(() => {
+    uploads.video = [{ url: "https://api.pruna.ai/v1/files/v", durationSec: 4 }];
+    uploads.audio = [{ url: "https://api.pruna.ai/v1/files/a", durationSec: 3 }];
+    const full = estimateCost(currentModel, { image: ["a", "b"], last_frame_image: "c" }, 1);
+    uploads.audio = [{ url: "https://api.pruna.ai/v1/files/a" }];
+    return { full, unmeasured: estimateCost(currentModel, {}, 1) };
+  });
+  // 5 s at 768p speed, 3 reference images, 4 s of reference video, 3 s of audio.
+  const expected = 5 * 0.035 + 3 * 0.01 + 4 * 0.06 + 3 * 0.0025;
+  check("reference prices the output and every reference", Math.abs(reference.full - expected) < 1e-9, String(reference.full));
+  check("and gives no estimate while a clip is unmeasured", reference.unmeasured === null, String(reference.unmeasured));
+
+  await page.selectOption("#model-select", "p-video-upscale");
+  const upscale = await page.evaluate(() => {
+    uploads.video = [{ url: "https://api.pruna.ai/v1/files/v", durationSec: 10.2 }];
+    return { std: estimateCost(currentModel, { target: "4k" }, 1), high: estimateCost(currentModel, { target: "4k", fps: 60 }, 1) };
+  });
+  check("upscale bills whole seconds at the target's rate", Math.abs(upscale.std - 11 * 0.08) < 1e-9, String(upscale.std));
+  check("and twice that above 30 fps", Math.abs(upscale.high - 11 * 0.16) < 1e-9, String(upscale.high));
+
+  await page.close();
+  await context.close();
 }
 
 await browser.close();
