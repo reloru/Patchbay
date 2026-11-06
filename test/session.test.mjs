@@ -2072,9 +2072,9 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
   );
 
   // The breakdown under the result.
-  const summary = (await page.locator(".timing summary").textContent()).trim();
+  const summary = (await page.locator(".timing > summary").textContent()).trim();
   check("a timing line sits under the result", summary.startsWith("Timing") && /download/.test(summary), summary);
-  await page.locator(".timing summary").click();
+  await page.locator(".timing > summary").click();
   const rows = await page.locator(".timing li").allTextContents();
   for (const want of ["Submit:", "Provider states first seen:", "Status checks:", "Download:", "Visible at", "Saved to gallery at", "App in background:"]) {
     check(`the breakdown has "${want}"`, rows.some((r) => r.startsWith(want)), JSON.stringify(rows));
@@ -2086,6 +2086,14 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     JSON.stringify({ submit: rec.submit, states: rec.states, dl: rec.downloads[0] && rec.downloads[0].start, visible: rec.visible, saved: rec.saved })
   );
   check("the download leg is at least the held time", rec.downloads[0].ms >= 3400, String(rec.downloads[0].ms));
+  check(
+    "the record keeps the request and the provider's replies as JSON",
+    rec.request && rec.request.input && typeof rec.request.model === "string" && rec.submitResponse && rec.lastStatus && rec.lastStatus.status === "succeeded",
+    JSON.stringify({ request: rec.request, submitResponse: rec.submitResponse, lastStatus: rec.lastStatus }).slice(0, 300)
+  );
+  await page.locator(".timing-json summary").click();
+  const jsonText = await page.locator(".timing-json pre").textContent();
+  check("and the breakdown shows them", /Request:[\s\S]*"input"[\s\S]*First reply:[\s\S]*Last status:[\s\S]*"succeeded"/.test(jsonText), jsonText.slice(0, 200));
 
   // History is capped.
   await page.evaluate(() => {
@@ -3043,13 +3051,25 @@ console.log(`engine: ${ENGINE_NAME} ${browser.version()}`);
     uploads.video = [{ url: "https://api.pruna.ai/v1/files/v", durationSec: 4 }];
     uploads.audio = [{ url: "https://api.pruna.ai/v1/files/a", durationSec: 3 }];
     const full = estimateCost(currentModel, { image: ["a", "b"], last_frame_image: "c" }, 1);
+    // A 20 s clip on a 5 s output counts 5.5 s; a 15 s request bills 14 s.
+    uploads.video = [{ url: "https://api.pruna.ai/v1/files/v", durationSec: 20 }];
+    uploads.audio = [];
+    const capped = estimateCost(currentModel, {}, 1);
+    const fifteen = estimateCost(currentModel, { duration: 15 }, 1);
+    uploads.video = [{ url: "https://api.pruna.ai/v1/files/v", durationSec: 4 }];
     uploads.audio = [{ url: "https://api.pruna.ai/v1/files/a" }];
-    return { full, unmeasured: estimateCost(currentModel, {}, 1) };
+    return { full, capped, fifteen, unmeasured: estimateCost(currentModel, {}, 1) };
   });
   // 5 s at 768p speed, 3 reference images, 4 s of reference video, 3 s of audio.
   const expected = 5 * 0.035 + 3 * 0.01 + 4 * 0.06 + 3 * 0.0025;
   check("reference prices the output and every reference", Math.abs(reference.full - expected) < 1e-9, String(reference.full));
   check("and gives no estimate while a clip is unmeasured", reference.unmeasured === null, String(reference.unmeasured));
+  check("a reference clip counts only up to the output length plus 0.5 s", Math.abs(reference.capped - (5 * 0.035 + 5.5 * 0.06)) < 1e-9, String(reference.capped));
+  check("and a 15 s request bills 14 s, with its clip capped at 14.5 s", Math.abs(reference.fifteen - (14 * 0.035 + 14.5 * 0.06)) < 1e-9, String(reference.fifteen));
+
+  await page.selectOption("#model-select", "p-video-2-pro");
+  const pro4k = await page.evaluate(() => estimateCost(currentModel, { resolution: "4k", mode: "quality", duration: 10 }, 1));
+  check("p-video-2-pro prices 4k", Math.abs(pro4k - 10 * 0.155) < 1e-9, String(pro4k));
 
   await page.selectOption("#model-select", "p-video-upscale");
   const upscale = await page.evaluate(() => {
