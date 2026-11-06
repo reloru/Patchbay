@@ -82,6 +82,38 @@ function moderationFilter(name = "disable_safety_checker", apiDefault = false) {
   return { name, label: "Content moderation filter", type: "bool", default: true, apiDefault, invert: true, hidden: true };
 }
 
+// The newer models name the switch the other way round: `enable_safety_filter`,
+// true meaning the filter runs. Same intent as above — the filter off — so
+// false is sent wherever the provider would otherwise turn it on.
+function safetyFilterOff(apiDefault) {
+  return { name: "enable_safety_filter", label: "Content moderation filter", type: "bool", default: false, apiDefault, hidden: true };
+}
+
+// Gemini TTS voices, spelled as the p-video-2-pro-avatar schema's enum spells
+// them: the (Female)/(Male) suffix is part of each value.
+const GEMINI_VOICES = [
+  "Zephyr (Female)", "Puck (Male)", "Charon (Male)", "Kore (Female)", "Fenrir (Male)", "Leda (Female)",
+  "Orus (Male)", "Aoede (Female)", "Callirrhoe (Female)", "Autonoe (Female)", "Enceladus (Male)",
+  "Iapetus (Male)", "Umbriel (Male)", "Algenib (Male)", "Despina (Female)", "Erinome (Female)",
+  "Laomedeia (Female)", "Achernar (Female)", "Algieba (Male)", "Schedar (Male)", "Gacrux (Female)",
+  "Pulcherrima (Female)", "Achird (Male)", "Zubenelgenubi (Male)", "Vindemiatrix (Female)",
+  "Sadachbia (Male)", "Sadaltager (Male)", "Sulafat (Female)", "Alnilam (Male)", "Rasalgethi (Male)",
+].map((v) => ({ value: v, label: v }));
+
+const VOICE_LANGUAGES = [
+  "English (US)", "English (UK)", "Spanish", "French", "German", "Italian",
+  "Portuguese (Brazil)", "Japanese", "Korean", "Hindi",
+].map((v) => ({ value: v, label: v }));
+
+// 480p and 768p are generated; 1080p, 2k and 4k are the 768p video upscaled.
+const PRO_RESOLUTIONS = [
+  { value: "480p", label: "480p" },
+  { value: "768p", label: "768p" },
+  { value: "1080p", label: "1080p (upscaled)" },
+  { value: "2k", label: "2k (upscaled)" },
+  { value: "4k", label: "4k (upscaled)" },
+];
+
 export const MODELS = [
   // ───────────────────────── Image generation ─────────────────────────
   {
@@ -1070,6 +1102,77 @@ export const MODELS = [
     ],
   },
   {
+    id: "p-video-2-pro-reference",
+    label: "P-Video-2-Pro-Reference",
+    group: "Video",
+    kind: "video",
+    blurb: "Video from a prompt guided by reference images, videos and audio; 5–15s, 480p to 4k. Needs at least one image or video.",
+    fields: [
+      { name: "prompt", label: "Prompt", type: "textarea", required: true },
+      {
+        name: "image",
+        label: "Reference image(s)",
+        type: "image",
+        maxItems: 9,
+        asArray: true,
+        help: "Up to 9, counting the opening and closing images below. Send at least one image or video.",
+      },
+      {
+        name: "video",
+        label: "Reference video(s)",
+        type: "image",
+        accept: "video/*",
+        maxItems: 3,
+        asArray: true,
+        help: "Up to 3, each 2–15 s, 15 s combined.",
+      },
+      {
+        name: "audio",
+        label: "Reference audio (optional)",
+        type: "image",
+        accept: "audio/*",
+        maxItems: 3,
+        asArray: true,
+        help: "Up to 3 clips, 15 s combined.",
+      },
+      { name: "first_frame_image", label: "Opening image (optional)", type: "image" },
+      { name: "last_frame_image", label: "Closing image (optional)", type: "image" },
+      { name: "keep_audio", label: "Use the audio as the soundtrack", type: "bool", default: false, help: "Needs exactly one audio clip." },
+      { name: "duration", label: "Length (seconds)", type: "int", default: 5, min: 5, max: 15 },
+      { name: "resolution", label: "Resolution", type: "enum", default: "768p", options: PRO_RESOLUTIONS },
+      {
+        // No quality mode on this model, unlike p-video-2-pro.
+        name: "mode",
+        label: "Generation recipe",
+        type: "enum",
+        default: "speed",
+        options: [
+          { value: "cost", label: "Cost (cheapest)" },
+          { value: "speed", label: "Speed" },
+        ],
+      },
+      {
+        name: "aspect_ratio",
+        label: "Aspect ratio",
+        type: "enum",
+        default: "16:9",
+        options: [{ value: "adaptive", label: "Follow the references" }, ...AR_COMMON],
+      },
+      {
+        name: "prompt_upsampler",
+        label: "Expand prompt before generation",
+        type: "enum",
+        default: "turbo",
+        options: [
+          { value: "off", label: "Off" },
+          { value: "turbo", label: "Turbo" },
+          { value: "max", label: "Max" },
+        ],
+      },
+      SEED,
+    ],
+  },
+  {
     id: "p-video-infiniteworlds",
     label: "P-Video-InfiniteWorlds",
     group: "Video",
@@ -1163,6 +1266,39 @@ export const MODELS = [
     ],
   },
   {
+    id: "p-video-2-pro-replace",
+    label: "P-Video-2-Pro-Replace",
+    group: "Video",
+    kind: "video",
+    blurb: "Swap the person in a video (1–120 s) for one or two people from pictures, keeping motion, scene and soundtrack; 480p to 4k.",
+    fields: [
+      {
+        name: "video",
+        label: "Source video",
+        type: "image",
+        accept: "video/*",
+        required: true,
+        help: "MP4, MOV or WebM, 1–120 s, up to 8K. Longer videos are cut to 120 s.",
+      },
+      {
+        name: "images",
+        label: "Identity photo(s)",
+        type: "image",
+        required: true,
+        maxItems: 2,
+        asArray: true,
+        help: "One person, or two people with one picture each.",
+      },
+      { name: "instruction_prompt", label: "Extra guidance (optional)", type: "text", default: "", help: "Who replaces whom, or other placement instructions." },
+      { name: "resolution", label: "Resolution", type: "enum", default: "768p", options: PRO_RESOLUTIONS },
+      { name: "save_audio", label: "Keep audio", type: "bool", default: true },
+      { name: "ignore_audio", label: "Ignore source audio", type: "bool", default: false },
+      SEED,
+      // The one model documented with its filter on by default.
+      safetyFilterOff(true),
+    ],
+  },
+  {
     id: "p-video-avatar",
     label: "P-Video-Avatar",
     group: "Video",
@@ -1215,6 +1351,88 @@ export const MODELS = [
       { name: "disable_prompt_upsampling", label: "Auto-improve prompt", type: "bool", default: false, invert: true },
       SEED,
       moderationFilter("disable_safety_filter", true),
+    ],
+  },
+  {
+    id: "p-video-2-pro-avatar",
+    label: "P-Video-2-Pro-Avatar",
+    group: "Video",
+    kind: "video",
+    blurb: "Talking video from one portrait and a script or uploaded speech, up to 3 minutes, 480p to 4k.",
+    fields: [
+      { name: "image", label: "Portrait photo", type: "image", required: true, help: "jpg, png or webp, up to 20 MiB." },
+      {
+        // Not required by the API: uploaded speech can stand in for it. It is
+        // the prompt box all the same, since the words spoken are what the
+        // prompt tools should work on, not the short scene note below.
+        name: "voice_script",
+        label: "Script to speak",
+        type: "textarea",
+        default: "",
+        primary: true,
+        help: "Needed unless you upload speech below. If both are set, the uploaded speech is used.",
+      },
+      {
+        name: "audio",
+        label: "Speech audio (optional, sets length)",
+        type: "image",
+        accept: "audio/*",
+        help: "1 s to 3 minutes; the video is as long as the audio.",
+      },
+      { name: "voice", label: "Voice", type: "enum", default: "Zephyr (Female)", options: GEMINI_VOICES },
+      { name: "voice_language", label: "Language", type: "enum", default: "English (US)", options: VOICE_LANGUAGES },
+      { name: "voice_prompt", label: "How they should speak", type: "text", default: "Say the following." },
+      { name: "prompt", label: "What the video should show", type: "text", default: "The person is talking." },
+      { name: "prompt_upsampling", label: "Add the scene's own motion", type: "bool", default: true },
+      {
+        name: "resolution",
+        label: "Resolution",
+        type: "enum",
+        default: "768p",
+        options: PRO_RESOLUTIONS,
+        help: "4k is limited to 125 s of audio.",
+      },
+      SEED,
+    ],
+  },
+  {
+    id: "p-video-upscale",
+    label: "P-Video-Upscale",
+    group: "Video",
+    kind: "video",
+    blurb: "Upscale a video to 720p, 1080p, 2k or 4k, optionally at a higher frame rate. Source audio is kept.",
+    fields: [
+      {
+        name: "video",
+        label: "Video to upscale",
+        type: "image",
+        accept: "video/*",
+        required: true,
+        help: "Up to 512 MiB. Longest clip by target: 2,400 frames at 720p, 1,200 at 1080p, 600 at 2k, 300 at 4k.",
+      },
+      {
+        name: "target",
+        label: "Target resolution",
+        type: "enum",
+        default: "1080p",
+        options: [
+          { value: "720p", label: "720p" },
+          { value: "1080p", label: "1080p" },
+          { value: "2k", label: "2k" },
+          { value: "4k", label: "4k" },
+        ],
+      },
+      {
+        name: "fps",
+        label: "Frames per second",
+        type: "int",
+        default: "",
+        min: 16,
+        max: 60,
+        defaultLabel: "same as source",
+        help: "Above 30 the price doubles. A higher rate than the source is interpolated.",
+      },
+      { name: "turbo", label: "Turbo", type: "bool", default: false, hidden: true },
     ],
   },
   {
@@ -1579,6 +1797,51 @@ const PRICING = {
     usd: {
       "480p": { cost: 0.01, speed: 0.02, quality: 0.04 },
       "768p": { cost: 0.025, speed: 0.035, quality: 0.075 },
+    },
+  },
+  // Per second of output by resolution, and nothing else changes the rate.
+  // `from` names the upload whose probed length is the output's length: the
+  // speech for the avatar (a typed script has no length to read, so no
+  // estimate), the source clip for replace, capped at the 120 s it is cut to.
+  "p-video-2-pro-avatar": {
+    type: "per_second_res",
+    from: "audio",
+    usd: { "480p": 0.02, "768p": 0.04, "1080p": 0.06, "2k": 0.08, "4k": 0.12 },
+  },
+  "p-video-2-pro-replace": {
+    type: "per_second_res",
+    from: "video",
+    maxSeconds: 120,
+    usd: { "480p": 0.05, "768p": 0.1, "1080p": 0.12, "2k": 0.14, "4k": 0.18 },
+  },
+  // Billed on the output and on every reference: images each, reference video
+  // and audio per second. Reference video above 768p bills at the 768p rate;
+  // the docs key that rate by resolution without saying whose, and it is read
+  // here as the output's.
+  "p-video-2-pro-reference": {
+    type: "reference_video",
+    outUsd: {
+      "480p": { cost: 0.015, speed: 0.02 },
+      "768p": { cost: 0.025, speed: 0.035 },
+      "1080p": { cost: 0.045, speed: 0.055 },
+      "2k": { cost: 0.065, speed: 0.075 },
+      "4k": { cost: 0.105, speed: 0.115 },
+    },
+    refVideoUsd: { "480p": { cost: 0.03, speed: 0.04 }, "768p": { cost: 0.06, speed: 0.06 } },
+    refImageUsd: { cost: 0.005, speed: 0.01 },
+    refAudioUsd: { cost: 0.0015, speed: 0.0025 },
+  },
+  // Per second of the returned video, rounded up, by target; double above
+  // 30 fps. A source above 30 fps keeps its rate when fps is left empty, and
+  // the browser cannot read a clip's frame rate, so that case is priced at
+  // the lower rate and the blurb says so.
+  "p-video-upscale": {
+    type: "upscale_video",
+    usd: {
+      "720p": { std: 0.01, high: 0.02 },
+      "1080p": { std: 0.02, high: 0.04 },
+      "2k": { std: 0.04, high: 0.08 },
+      "4k": { std: 0.08, high: 0.16 },
     },
   },
   // One rate at every resolution — the model exposes no resolution setting.
@@ -2372,11 +2635,14 @@ export const STT_MODEL_IDS = new Set(STT_MODELS.map((m) => m.id));
 export const DEFAULT_STT_MODEL = "@cf/openai/whisper-large-v3-turbo";
 
 // The "Other" section: catalogue models that fit no other panel.
+// `provider: "pruna"` marks the one tool that runs on Pruna rather than Workers
+// AI; it takes a Pruna file URL, image or video, and is free.
 export const OTHER_TOOLS = [
   { id: "guard", model: "@cf/meta/llama-guard-3-8b", label: "Safety check · Llama Guard 3 8B", input: "text" },
   { id: "sentiment", model: "@cf/huggingface/distilbert-sst-2-int8", label: "Sentiment · DistilBERT SST-2 INT8", input: "text" },
   { id: "labels", model: "@cf/microsoft/resnet-50", label: "Image labels · ResNet-50", input: "image" },
   { id: "rerank", model: "@cf/baai/bge-reranker-base", label: "Rerank · BGE Reranker Base", input: "rerank" },
+  { id: "watermark", model: "p-watermark", provider: "pruna", label: "Pruna watermark check · P-Watermark", input: "media" },
 ];
 export const DEFAULT_IMPROVE_MODEL = "@cf/meta/llama-3.2-3b-instruct";
 

@@ -703,6 +703,26 @@ function priceBlurb(model) {
   if (p.type === "per_second_flat") {
     return `List price: ${fmtUsd(p.usd)} per second of output video, at any resolution.`;
   }
+  if (p.type === "per_second_res") {
+    const rates = Object.values(p.usd);
+    const length = p.from === "audio"
+      ? "The video is as long as the speech, so an estimate needs uploaded audio."
+      : "The output is as long as your source clip.";
+    return `List price: ${fmtUsd(Math.min(...rates))}–${fmtUsd(Math.max(...rates))}/s by resolution. ${length}`;
+  }
+  if (p.type === "reference_video") {
+    return (
+      `List price: ${fmtUsd(p.outUsd["480p"].cost)}–${fmtUsd(p.outUsd["4k"].speed)}/s of output by resolution and mode, ` +
+      `plus each reference: ${fmtUsd(p.refImageUsd.cost)}–${fmtUsd(p.refImageUsd.speed)} per image, ` +
+      `and reference video and audio per second.`
+    );
+  }
+  if (p.type === "upscale_video") {
+    return (
+      `List price: ${fmtUsd(p.usd["720p"].std)}–${fmtUsd(p.usd["4k"].std)}/s of video by target, double above 30 fps. ` +
+      `The estimate assumes a source at 30 fps or less unless you set the rate.`
+    );
+  }
   if (p.type === "per_second_mode") {
     return (
       `List price: ${fmtUsd(p.usd["480p"].cost)}–${fmtUsd(p.usd["768p"].quality)}/s ` +
@@ -756,6 +776,10 @@ function priceBlurb(model) {
 // The model's main text box, the one the prompt tools act on. Same order as
 // primaryPromptEl(), which finds it again once the form is built.
 function primaryFieldOf(model) {
+  // A model whose `prompt` is a side note (p-video-2-pro-avatar's scene line)
+  // names its real prompt box with `primary`.
+  const flagged = model.fields.find((x) => x.primary);
+  if (flagged) return flagged;
   for (const name of ["prompt", "voice_script", "instruction_prompt"]) {
     const f = model.fields.find((x) => x.name === name);
     if (f) return f;
@@ -5511,6 +5535,8 @@ const folderName = (id) => (library.folders.find((f) => f.id === id) || {}).name
 // The box a saved prompt should load into, for whichever model is selected.
 function primaryPromptEl() {
   const form = $("gen-form");
+  const flagged = currentModel && currentModel.fields.find((f) => f.primary);
+  if (flagged) return form.querySelector(`[data-field="${flagged.name}"]`);
   return (
     form.querySelector('[data-field="prompt"]') ||
     form.querySelector('[data-field="voice_script"]') ||
@@ -6362,9 +6388,10 @@ const TOOL_INFO = {
     writes: "The Embeddings panel in Lab: each version against the baseline and the one before it.",
   },
   other: {
-    reads: "Its own text box in Lab (Use prompt box copies the prompt in), or for image labels the attached image or one you pick.",
+    reads:
+      "Its own text box in Lab (Use prompt box copies the prompt in); for image labels the attached image or one you pick; for the watermark check the attached image or video, or one you pick.",
     instruction:
-      "None. Llama Guard 3 takes messages only; DistilBERT takes text; ResNet-50 an image; the reranker a query and passages. None of their schemas has an instruction input.",
+      "None. Llama Guard 3 takes messages only; DistilBERT takes text; ResNet-50 an image; the reranker a query and passages; P-Watermark one file. None of their schemas has an instruction input.",
     limits: "None.",
     writes: "The Other panel in Lab.",
   },
@@ -7135,20 +7162,57 @@ function currentOtherTool() {
   return otherTools.find((t) => t.id === $("other-tool").value) || otherTools[0];
 }
 
+// The first attached image or video on the form, for a tool that checks a file.
+function attachedMediaUpload() {
+  if (!currentModel) return null;
+  for (const f of currentModel.fields) {
+    if (f.type !== "image") continue;
+    for (const u of uploads[f.name] || []) {
+      if (u.file && (u.isImage || u.file.type.startsWith("video/"))) return u;
+    }
+  }
+  return null;
+}
+
 function refreshOtherForm() {
   const t = currentOtherTool();
   if (!t) return;
+  const takesFile = t.input === "image" || t.input === "media";
   const text = $("other-text");
-  text.classList.toggle("hidden", t.input === "image");
+  text.classList.toggle("hidden", takesFile);
   text.placeholder = t.input === "rerank" ? "What to rank the passages against" : "Text to check";
   $("other-passages").classList.toggle("hidden", t.input !== "rerank");
-  $("other-use-prompt").classList.toggle("hidden", t.input === "image");
+  $("other-use-prompt").classList.toggle("hidden", takesFile);
+  $("other-file").accept = t.input === "media" ? "image/*,video/*" : "image/*";
   const note = $("other-image-note");
-  note.classList.toggle("hidden", t.input !== "image");
+  note.classList.toggle("hidden", !takesFile);
   if (t.input === "image") {
     note.textContent = attachedImageFile() ? "Labels the attached image." : "No image attached — Run opens a picker.";
+  } else if (t.input === "media") {
+    note.textContent = attachedMediaUpload()
+      ? "Checks the attached image or video. Free."
+      : "Nothing attached — Run opens a picker for an image or video. Free.";
   }
   $("other-result").textContent = "";
+}
+
+// p-watermark's verdict, headline first. Its fields are documented; anything
+// else it returns is still shown below them.
+function watermarkText(r) {
+  if (!r || typeof r !== "object") return JSON.stringify(r, null, 2);
+  const yesNo = (v) => (v === true ? "yes" : v === false ? "no" : "—");
+  const lines = [];
+  if (typeof r.verdict === "string") lines.push(r.verdict);
+  lines.push(`Watermark detected: ${yesNo(r.watermark_detected)}`);
+  if (typeof r.bit_accuracy === "number") lines.push(`Bit accuracy: ${(r.bit_accuracy * 100).toFixed(1)}%`);
+  if (typeof r.p_value === "number") lines.push(`p-value: ${r.p_value.toPrecision(3)}`);
+  lines.push(`Content Credentials present: ${yesNo(r.c2pa_present)}`);
+  if (r.c2pa_present) lines.push(`Content Credentials valid: ${yesNo(r.c2pa_valid)}`);
+  if (r.c2pa_signer) lines.push(`Signed by: ${r.c2pa_signer}`);
+  const known = new Set(["verdict", "watermark_detected", "bit_accuracy", "p_value", "c2pa_present", "c2pa_valid", "c2pa_signer"]);
+  const rest = Object.fromEntries(Object.entries(r).filter(([k]) => !known.has(k)));
+  if (Object.keys(rest).length) lines.push("", JSON.stringify(rest, null, 2));
+  return lines.join("\n");
 }
 
 function showOtherResult(t, result) {
@@ -7156,6 +7220,8 @@ function showOtherResult(t, result) {
   const pct = (x) => `${(x * 100).toFixed(1)}%`;
   if (t.id === "guard") {
     box.textContent = typeof result === "string" ? result.trim() : JSON.stringify(result, null, 2);
+  } else if (t.id === "watermark") {
+    box.textContent = watermarkText(result);
   } else if (t.id === "rerank") {
     const passages = $("other-passages").value.split("\n").map((x) => x.trim()).filter(Boolean);
     box.textContent = result.map((r, i) => `${i + 1}. ${pct(r.score)} — ${passages[r.id] ?? `#${r.id}`}`).join("\n");
@@ -7169,12 +7235,21 @@ function showOtherResult(t, result) {
 async function runOther(imageFile) {
   const t = currentOtherTool();
   const body = { tool: t.id };
+  let mediaFile = null;
   if (t.input === "image") {
     const f = imageFile || attachedImageFile();
     if (!f) return void $("other-file").click();
     const im = await toolImage(f);
     if (!im) return void ($("other-result").textContent = "Failed: could not read that image.");
     body.image_b64 = im.b64;
+  } else if (t.input === "media") {
+    // An attachment already uploaded to Pruna is checked where it is;
+    // anything else goes up first, as the original file, since re-encoding
+    // it would strip the Content Credentials being checked for.
+    const attached = imageFile ? null : attachedMediaUpload();
+    if (attached && PRUNA_URL.test(attached.url || "")) body.url = attached.url;
+    else mediaFile = imageFile || (attached && attached.file);
+    if (!body.url && !mediaFile) return void $("other-file").click();
   } else {
     body.text = $("other-text").value;
     if (t.input === "rerank") body.passages = $("other-passages").value.split("\n");
@@ -7183,11 +7258,14 @@ async function runOther(imageFile) {
   btn.disabled = true;
   $("other-result").textContent = "…";
   try {
-    const { res, data } = await apiWithin("/api/other", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    if (mediaFile) body.url = await uploadForJudge(mediaFile, mediaFile.name);
+    // The watermark check is waited on by the Worker for up to 100 s; the
+    // other tools answer in one call.
+    const { res, data } = await apiWithin(
+      "/api/other",
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+      t.input === "media" ? 120000 : undefined
+    );
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     showOtherResult(t, data.result);
     setTimeout(refreshNeurons, 4000);
@@ -8049,6 +8127,38 @@ function estimateCost(model, input, outputCount) {
   if (p.type === "per_second_flat") {
     const secs = outputSeconds(model, input);
     return secs ? p.usd * secs : null;
+  }
+  if (p.type === "per_second_res") {
+    const rate = p.usd[input.resolution ?? fieldDefault(model, "resolution")];
+    const src = (uploads[p.from] || [])[0];
+    if (rate == null || !src || !src.durationSec) return null;
+    const secs = Math.ceil(Math.min(src.durationSec, p.maxSeconds || Infinity));
+    return rate * secs;
+  }
+  if (p.type === "reference_video") {
+    const resolution = input.resolution ?? fieldDefault(model, "resolution") ?? "768p";
+    const mode = input.mode ?? fieldDefault(model, "mode") ?? "speed";
+    const out = p.outUsd[resolution] && p.outUsd[resolution][mode];
+    const secs = Number(input.duration ?? fieldDefault(model, "duration"));
+    if (out == null || !secs) return null;
+    // Every reference video and audio clip has to have been measured, or the
+    // total would be a guess.
+    const lengths = (name) => (uploads[name] || []).filter((u) => u.url).map((u) => u.durationSec);
+    const videos = lengths("video");
+    const audios = lengths("audio");
+    if ([...videos, ...audios].some((s) => !s)) return null;
+    const sum = (list) => list.reduce((a, b) => a + b, 0);
+    const vidRate = (p.refVideoUsd[resolution] || p.refVideoUsd["768p"])[mode];
+    // The opening and closing images count as reference images too.
+    const images =
+      (Array.isArray(input.image) ? input.image.length : 0) + (input.first_frame_image ? 1 : 0) + (input.last_frame_image ? 1 : 0);
+    return out * secs + images * p.refImageUsd[mode] + sum(videos) * vidRate + sum(audios) * p.refAudioUsd[mode];
+  }
+  if (p.type === "upscale_video") {
+    const tier = p.usd[input.target ?? fieldDefault(model, "target")];
+    const src = (uploads.video || [])[0];
+    if (!tier || !src || !src.durationSec) return null;
+    return Math.ceil(src.durationSec) * (Number(input.fps) > 30 ? tier.high : tier.std);
   }
   if (p.type === "per_second_mode") {
     const resolution = input.resolution ?? fieldDefault(model, "resolution") ?? "768p";
