@@ -752,7 +752,7 @@ test("the watermark check sends one Pruna file to p-watermark and returns the ve
   assert.equal(sent.length, 1);
   assert.equal(sent[0].url, "https://api.pruna.ai/v1/predictions");
   assert.equal(sent[0].init.headers.Model, "p-watermark");
-  assert.equal(sent[0].init.headers["Try-Sync"], "true");
+  assert.equal(sent[0].init.headers["Try-Sync"], undefined, "polled, so the wait stays inside the browser's");
   assert.deepEqual(JSON.parse(sent[0].init.body), { input: { media: "https://api.pruna.ai/v1/files/abc" } });
 });
 

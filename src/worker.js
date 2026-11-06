@@ -1291,9 +1291,9 @@ const JUDGE_POLL_TRIES = 20;
 // Polls a Pruna prediction the Worker itself waits on — the Judge and the
 // watermark check — until it ends or the bounded budget runs out. Each poll is
 // one subrequest. A transport failure comes back as { error } with no status.
-async function pollPrediction(id, env, label) {
-  const pollMs = env.POLL_MS != null ? Number(env.POLL_MS) : JUDGE_POLL_MS;
-  for (let i = 0; i < JUDGE_POLL_TRIES; i++) {
+async function pollPrediction(id, env, label, { tries = JUDGE_POLL_TRIES, everyMs = JUDGE_POLL_MS } = {}) {
+  const pollMs = env.POLL_MS != null ? Number(env.POLL_MS) : everyMs;
+  for (let i = 0; i < tries; i++) {
     await new Promise((r) => setTimeout(r, pollMs));
     let res, text;
     try {
@@ -1322,6 +1322,14 @@ async function pollPrediction(id, env, label) {
 // is waited on here instead of going through the browser's polling loop.
 // Where the verdict object sits in a finished prediction is not documented; it
 // is read from `generation_url` the way p-judger's score is, then `output`.
+//
+// No Try-Sync: it can hold the request for up to 60 s before answering with an
+// id, and polling after that would outlast the browser's wait. Polled from the
+// start instead, for at most WATERMARK_POLLS × WATERMARK_POLL_MS (100 s), which
+// the browser's 120 s deadline for this tool covers with room for the upload.
+const WATERMARK_POLLS = 50;
+const WATERMARK_POLL_MS = 2000;
+
 async function runWatermark(tool, url, env) {
   let parsed;
   try {
@@ -1339,12 +1347,7 @@ async function runWatermark(tool, url, env) {
   try {
     res = await fetch(`${PRUNA_BASE}/predictions`, {
       method: "POST",
-      headers: {
-        apikey: env.PRUNA_API_KEY,
-        Model: tool.model,
-        "content-type": "application/json",
-        "Try-Sync": "true",
-      },
+      headers: { apikey: env.PRUNA_API_KEY, Model: tool.model, "content-type": "application/json" },
       body: JSON.stringify({ input: { media: parsed.toString() } }),
     });
     text = await res.text();
@@ -1363,7 +1366,7 @@ async function runWatermark(tool, url, env) {
   if (!res.ok) return json({ error: "Pruna: " + (reason(data) || `HTTP ${res.status}`) }, res.status);
 
   if (data.status !== "succeeded" && data.id) {
-    data = await pollPrediction(data.id, env, "Watermark check");
+    data = await pollPrediction(data.id, env, "Watermark check", { tries: WATERMARK_POLLS, everyMs: WATERMARK_POLL_MS });
     if (data.error && !data.status) return json({ error: data.error }, 502);
   }
   if (data.status !== "succeeded") {

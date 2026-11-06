@@ -7259,11 +7259,13 @@ async function runOther(imageFile) {
   $("other-result").textContent = "…";
   try {
     if (mediaFile) body.url = await uploadForJudge(mediaFile, mediaFile.name);
-    const { res, data } = await apiWithin("/api/other", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    // The watermark check is waited on by the Worker for up to 100 s; the
+    // other tools answer in one call.
+    const { res, data } = await apiWithin(
+      "/api/other",
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+      t.input === "media" ? 120000 : undefined
+    );
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     showOtherResult(t, data.result);
     setTimeout(refreshNeurons, 4000);

@@ -166,7 +166,8 @@ gives up when the model sends nothing for 60 seconds (120 for LLaVA and
 Moondream, which answer in one piece), and the browser gives up after 60
 seconds with no word at all, which only a lost connection explains. A long
 answer that keeps arriving is never cut off. Translate, speech to text,
-Embeddings, Other and Judge are one-shot calls with a 60-second deadline. Each
+Embeddings, Other and Judge are one-shot calls with a 60-second deadline (120
+seconds for the watermark check, which the Worker polls for up to 100). Each
 failure says so in words, and says the call may still have been billed.
 
 **Llama 2 7B Chat LoRA is not offered.** It produces no language: on
