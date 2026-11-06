@@ -153,7 +153,7 @@ export const MODELS = [
       { name: "guidance", label: "Prompt adherence", type: "number", default: 3.5, min: 0, max: 20, step: 0.1 },
       { name: "image_size", label: "Resolution (longest side)", type: "int", default: 1024, min: 256, max: 2048, step: 16 },
       OUTPUT_FORMAT,
-      OUTPUT_QUALITY,
+      { ...OUTPUT_QUALITY, min: 1 },
       SEED,
     ],
   },
@@ -183,22 +183,34 @@ export const MODELS = [
         ],
       },
       {
+        // Its own four values, not flux-dev's: flux-dev's are refused here
+        // ("matches none of the enum values", checked live 2026-11-06).
         name: "speed_mode",
         label: "Speed vs. quality",
         type: "enum",
-        default: "Extra Juiced 🔥 (more speed)",
+        default: "Juiced 🧃",
         options: [
-          { value: "Lightly Juiced 🍊 (more consistent)", label: "Most consistent" },
-          { value: "Juiced 🔥 (default)", label: "Balanced" },
-          { value: "Extra Juiced 🔥 (more speed)", label: "Faster" },
-          { value: "Blink of an eye 👁️", label: "Fastest" },
+          { value: "Base Model (compiled)", label: "Most consistent" },
+          { value: "Lightly Juiced 🍊", label: "Consistent" },
+          { value: "Juiced 🧃", label: "Balanced" },
+          { value: "Extra Juiced 🔥", label: "Faster" },
         ],
       },
       { name: "num_inference_steps", label: "Detail (steps)", type: "int", default: 28, min: 1, max: 50 },
-      { name: "guidance", label: "Prompt adherence", type: "number", default: 3.5, min: 0, max: 20, step: 0.1 },
-      { name: "image_size", label: "Resolution (longest side)", type: "int", default: 1024, min: 256, max: 2048, step: 16 },
+      { name: "guidance", label: "Prompt adherence", type: "number", default: 3, min: 0, max: 10, step: 0.1 },
+      {
+        // In place of flux-dev's image_size, which this schema refuses.
+        name: "megapixels",
+        label: "Output size",
+        type: "enum",
+        default: "1",
+        options: [
+          { value: "1", label: "1 MP" },
+          { value: "0.25", label: "0.25 MP (smaller)" },
+        ],
+      },
       OUTPUT_FORMAT,
-      OUTPUT_QUALITY,
+      { ...OUTPUT_QUALITY, min: 1 },
       SEED,
     ],
   },
@@ -364,11 +376,11 @@ export const MODELS = [
         help: "URL to a .safetensors, .tar, or .zip LoRA file — HuggingFace or any other host.",
       },
       { name: "lora_scales", label: "LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.05, wrapArray: true },
-      { name: "width", label: "Width", type: "int", default: 1024, min: 64, max: 2048, step: 8 },
-      { name: "height", label: "Height", type: "int", default: 1024, min: 64, max: 2048, step: 8 },
+      // 1440, not z-image-turbo's 2048; and no go_fast in this schema at all.
+      { name: "width", label: "Width", type: "int", default: 1024, min: 64, max: 1440, step: 8 },
+      { name: "height", label: "Height", type: "int", default: 1024, min: 64, max: 1440, step: 8 },
       { name: "num_inference_steps", label: "Detail (steps)", type: "int", default: 8, min: 1, max: 50 },
       { name: "guidance_scale", label: "Prompt adherence", type: "number", default: 0, min: 0, max: 20, step: 0.1 },
-      { name: "go_fast", label: "Turbo", type: "bool", default: false, hidden: true },
       OUTPUT_FORMAT,
       OUTPUT_QUALITY,
       SEED,
@@ -568,12 +580,13 @@ export const MODELS = [
           { value: "custom", label: "Custom size" },
         ],
       },
-      { name: "width", label: "Width (custom size)", type: "int", default: 1024, min: 256, max: 2048, step: 16 },
-      { name: "height", label: "Height (custom size)", type: "int", default: 1024, min: 256, max: 2048, step: 16 },
+      // Capped at 900 by its schema, not 1440 like the others.
+      { name: "width", label: "Width (custom size)", type: "int", default: 896, min: 256, max: 900, step: 16 },
+      { name: "height", label: "Height (custom size)", type: "int", default: 896, min: 256, max: 900, step: 16 },
       { name: "num_outputs", label: "How many images", type: "int", default: 1, min: 1, max: 4 },
       { name: "juiced", label: "Turbo", type: "bool", default: false, hidden: true },
       OUTPUT_FORMAT,
-      OUTPUT_QUALITY,
+      { ...OUTPUT_QUALITY, min: 1 },
       SEED,
     ],
   },
@@ -654,7 +667,8 @@ export const MODELS = [
       },
       { name: "lora_scale", label: "LoRA strength", type: "number", default: 1, min: -1, max: 3, step: 0.05 },
       { name: "hf_api_token", label: "HuggingFace API token", type: "text" },
-      { name: "turbo", label: "Turbo", type: "bool", default: false, hidden: true },
+      // Pruna turns turbo on unless told otherwise, so off has to be sent.
+      { name: "turbo", label: "Turbo", type: "bool", default: false, apiDefault: true, hidden: true },
       {
         name: "aspect_ratio",
         label: "Aspect ratio",
@@ -779,7 +793,8 @@ export const MODELS = [
     fields: [
       { name: "image", label: "Image(s) to edit", type: "image", required: true, maxItems: 2, asArray: true },
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
-      { name: "go_fast", label: "Turbo", type: "bool", default: false, hidden: true },
+      // Defaults on in Pruna's schema, so off has to be sent.
+      { name: "go_fast", label: "Turbo", type: "bool", default: false, apiDefault: true, hidden: true },
       {
         name: "aspect_ratio",
         label: "Aspect ratio",
@@ -1309,29 +1324,10 @@ export const MODELS = [
         help: "Ignored if you upload an audio file below.",
       },
       { name: "audio", label: "Audio file (optional, overrides script)", type: "image", accept: "audio/*" },
-      {
-        name: "voice",
-        label: "Voice",
-        type: "enum",
-        default: "Zephyr (Female)",
-        options: [
-          "Zephyr (Female)", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
-          "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algenib", "Despina",
-          "Erinome", "Laomedeia", "Achernar", "Algieba", "Schedar", "Gacrux", "Pulcherrima",
-          "Achird", "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
-          "Alnilam", "Rasalgethi",
-        ].map((v) => ({ value: v, label: v })),
-      },
-      {
-        name: "voice_language",
-        label: "Language",
-        type: "enum",
-        default: "English (US)",
-        options: [
-          "English (US)", "English (UK)", "Spanish", "French", "German", "Italian",
-          "Portuguese (Brazil)", "Japanese", "Korean", "Hindi",
-        ].map((v) => ({ value: v, label: v })),
-      },
+      // The (Female)/(Male) suffix is part of each value: a bare "Puck" is
+      // refused ("matches none of the enum values", checked live 2026-11-06).
+      { name: "voice", label: "Voice", type: "enum", default: "Zephyr (Female)", options: GEMINI_VOICES },
+      { name: "voice_language", label: "Language", type: "enum", default: "English (US)", options: VOICE_LANGUAGES },
       {
         name: "resolution",
         label: "Resolution",
