@@ -1054,19 +1054,14 @@ export const MODELS = [
     label: "P-Video-2-Pro",
     group: "Video",
     kind: "video",
-    blurb: "Pruna's video model at 480p/768p, 5-15s, 24fps with generated audio; speed/quality/cost recipes.",
+    blurb: "Pruna's video model at 480p to 4k, 5-15s, 24fps with generated audio; speed/quality/cost recipes.",
     fields: [
       { name: "prompt", label: "Prompt", type: "textarea", required: true },
       { name: "image", label: "Starting image (optional)", type: "image" },
       { name: "last_frame_image", label: "Ending image (optional)", type: "image" },
       { name: "duration", label: "Length (seconds)", type: "int", default: 5, min: 5, max: 15 },
-      {
-        name: "resolution",
-        label: "Resolution",
-        type: "enum",
-        default: "768p",
-        options: [{ value: "480p", label: "480p" }, { value: "768p", label: "768p" }],
-      },
+      // 1080p, 2k and 4k accepted live on 2026-11-06, as its page documents.
+      { name: "resolution", label: "Resolution", type: "enum", default: "768p", options: PRO_RESOLUTIONS },
       {
         name: "mode",
         label: "Generation recipe",
@@ -1789,14 +1784,17 @@ const PRICING = {
       "1080p": { normal: 0.05, draft: 0.03 },
     },
   },
-  // Priced by resolution x mode; omitted mode bills as speed. Pruna's listed
-  // 50%-off promo on this model ran through 2026-09-24, so by today's date
-  // (2026-09-26) the billed rate is back to these list prices.
+  // Priced by resolution x mode; omitted mode bills as speed. 1080p, 2k and 4k
+  // are the 768p rate plus p-video-upscale's for that target. List prices: the
+  // model page's 50%-off promo ran until 2026-10-13.
   "p-video-2-pro": {
     type: "per_second_mode",
     usd: {
       "480p": { cost: 0.01, speed: 0.02, quality: 0.04 },
       "768p": { cost: 0.025, speed: 0.035, quality: 0.075 },
+      "1080p": { cost: 0.045, speed: 0.055, quality: 0.095 },
+      "2k": { cost: 0.065, speed: 0.075, quality: 0.115 },
+      "4k": { cost: 0.105, speed: 0.115, quality: 0.155 },
     },
   },
   // Per second of output by resolution, and nothing else changes the rate.
@@ -1815,9 +1813,10 @@ const PRICING = {
     usd: { "480p": 0.05, "768p": 0.1, "1080p": 0.12, "2k": 0.14, "4k": 0.18 },
   },
   // Billed on the output and on every reference: images each, reference video
-  // and audio per second. Reference video above 768p bills at the 768p rate;
-  // the docs key that rate by resolution without saying whose, and it is read
-  // here as the output's.
+  // and audio per second. Reference video is rated by the output's resolution
+  // and mode ("the same pair"), at the 768p rate above 768p. Each reference
+  // clip counts up to the output length plus 0.5 s, reference video 15 s
+  // combined, and a 15 s request bills as 14 s.
   "p-video-2-pro-reference": {
     type: "reference_video",
     outUsd: {

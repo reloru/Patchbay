@@ -446,6 +446,8 @@ button.secondary:hover { border-color: var(--accent); }
 .timing-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .timing-actions button { flex: 1 1 auto; font-size: 13px; }
 .timing-copy { width: 100%; min-height: 80px; margin-top: 8px; font-size: 12px; }
+.timing-json { margin-top: 8px; }
+.timing-json pre { max-height: 320px; overflow: auto; margin: 6px 0 0; padding: 8px; font-size: 11px; line-height: 1.4; white-space: pre-wrap; word-break: break-all; background: rgba(127, 127, 127, 0.1); border-radius: 6px; }
 
 .file-result {
   display: flex;

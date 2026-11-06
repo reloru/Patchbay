@@ -725,7 +725,8 @@ function priceBlurb(model) {
   }
   if (p.type === "per_second_mode") {
     return (
-      `List price: ${fmtUsd(p.usd["480p"].cost)}–${fmtUsd(p.usd["768p"].quality)}/s ` +
+      `List price: ${fmtUsd(Math.min(...Object.values(p.usd).flatMap(Object.values)))}–` +
+      `${fmtUsd(Math.max(...Object.values(p.usd).flatMap(Object.values)))}/s ` +
       `depending on resolution and mode (mode defaults to speed).`
     );
   }
@@ -2082,6 +2083,19 @@ function timingRows(rec) {
   return rows;
 }
 
+// A JSON body for the timing record, with long strings clipped: a Workers AI
+// result is a multi-megabyte data: URI, and the record lives in localStorage.
+function clipForLog(v, max = 400) {
+  if (v === undefined) return null;
+  try {
+    return JSON.parse(
+      JSON.stringify(v, (k, x) => (typeof x === "string" && x.length > max ? `${x.slice(0, max)}… (${x.length} chars)` : x))
+    );
+  } catch {
+    return String(v).slice(0, max);
+  }
+}
+
 function timingSummary(rec) {
   const parts = [];
   if (rec.visible != null) parts.push(`visible ${fmtS(rec.visible)}`);
@@ -2129,6 +2143,22 @@ function timingBlock(rec) {
     list.appendChild(li);
   }
   d.appendChild(list);
+  // What went to the provider and what came back, as JSON.
+  const bodies = [
+    ["Request", rec.request],
+    ["First reply", rec.submitResponse],
+    ["Last status", rec.lastStatus],
+  ].filter(([, v]) => v != null);
+  if (bodies.length) {
+    const j = document.createElement("details");
+    j.className = "timing-json";
+    const js = document.createElement("summary");
+    js.textContent = "Request and response JSON";
+    const pre = document.createElement("pre");
+    pre.textContent = bodies.map(([k, v]) => `${k}:\n${JSON.stringify(v, null, 2)}`).join("\n\n");
+    j.append(js, pre);
+    d.appendChild(j);
+  }
   const actions = document.createElement("div");
   actions.className = "timing-actions";
   const one = document.createElement("button");
@@ -2505,6 +2535,8 @@ async function submitJob(job) {
     const data = await res.json().catch(() => ({}));
     const returned = timer.at();
     timer.rec.submit = { sent, returned, ms: returned - sent, http: res.status, upstream: upstreamMs(res) };
+    timer.rec.request = clipForLog({ model: job.modelId, input: job.input });
+    timer.rec.submitResponse = clipForLog(data);
     timer.checkpoint();
     if (!res.ok) throw new Error(providerErrorText(data, res.status));
 
@@ -2589,6 +2621,7 @@ async function pollJob(job, onState) {
         problem = `an unreadable reply (HTTP ${http})`;
       }
     }
+    if (got) timer.rec.lastStatus = s ? clipForLog(s) : clipForLog(got.text);
     timer.poll({
       sent,
       ms: timer.at() - sent,
@@ -8139,20 +8172,25 @@ function estimateCost(model, input, outputCount) {
     const resolution = input.resolution ?? fieldDefault(model, "resolution") ?? "768p";
     const mode = input.mode ?? fieldDefault(model, "mode") ?? "speed";
     const out = p.outUsd[resolution] && p.outUsd[resolution][mode];
-    const secs = Number(input.duration ?? fieldDefault(model, "duration"));
-    if (out == null || !secs) return null;
+    const asked = Number(input.duration ?? fieldDefault(model, "duration"));
+    if (out == null || !asked) return null;
+    // Billed as int(frames / 24): the page gives 5 s as 5 and 15 s as 14, and
+    // no frame counts in between, so only the 15 s case is adjusted.
+    const secs = asked >= 15 ? 14 : asked;
     // Every reference video and audio clip has to have been measured, or the
     // total would be a guess.
     const lengths = (name) => (uploads[name] || []).filter((u) => u.url).map((u) => u.durationSec);
     const videos = lengths("video");
     const audios = lengths("audio");
     if ([...videos, ...audios].some((s) => !s)) return null;
-    const sum = (list) => list.reduce((a, b) => a + b, 0);
+    // Each clip counts up to the output length plus 0.5 s; reference video
+    // 15 s combined.
+    const sum = (list) => list.reduce((a, b) => a + Math.min(b, secs + 0.5), 0);
     const vidRate = (p.refVideoUsd[resolution] || p.refVideoUsd["768p"])[mode];
     // The opening and closing images count as reference images too.
     const images =
       (Array.isArray(input.image) ? input.image.length : 0) + (input.first_frame_image ? 1 : 0) + (input.last_frame_image ? 1 : 0);
-    return out * secs + images * p.refImageUsd[mode] + sum(videos) * vidRate + sum(audios) * p.refAudioUsd[mode];
+    return out * secs + images * p.refImageUsd[mode] + Math.min(sum(videos), 15) * vidRate + sum(audios) * p.refAudioUsd[mode];
   }
   if (p.type === "upscale_video") {
     const tier = p.usd[input.target ?? fieldDefault(model, "target")];
